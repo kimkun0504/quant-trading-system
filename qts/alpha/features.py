@@ -6,10 +6,15 @@ the value at date ``t`` is a function of ``MarketData`` rows with timestamp
 are ``shift(k >= 0)`` / trailing ``rolling`` windows — and verified by the
 leakage test in ``tests/test_alpha.py``.
 
-Processing (:meth:`FeatureBuilder.process`) is per-date (era-wise):
-winsorize -> industry demean (selected features) -> rank-gaussianise ->
-fill NaN with 0 -> long frame.  The *same* function is used for training and
-live scoring (process parity; see ``trainer.train_live_parity_check``).
+Processing (:meth:`FeatureBuilder.process`) is per-date (era-wise) and
+**restricted to the names eligible at that date** (``MarketData.eligibility()``:
+in the universe as of ``t`` and with a price at ``t``): winsorize -> industry
+demean (selected features) -> rank-gaussianise -> fill NaN with 0 (eligible
+names only) -> long frame containing *only* eligible (date, ticker) rows.
+Ineligible names are therefore absent — never zero-filled — so neither future
+universe entrants nor dead names can sit in the cross-section.  The *same*
+function is used for training and live scoring (process parity; see
+``trainer.train_live_parity_check``).
 
 All rolling statistics are vectorised wide-panel operations; there are no
 Python loops over dates.
@@ -114,6 +119,7 @@ class FeatureBuilder:
         mcap = md.market_cap
         dvol = md.dollar_volume
         ind = md.industry
+        valid = md.eligibility()          # in-universe & alive, per date (PIT)
         f: Dict[str, Wide] = {}
 
         # value
@@ -134,8 +140,8 @@ class FeatureBuilder:
         if md.asset_growth is not None:
             f["investment_ag"] = -md.asset_growth
 
-        # low risk
-        market = rets.mean(axis=1)
+        # low risk (market proxy = equal-weight mean over the names eligible at t)
+        market = rets.where(valid).mean(axis=1)
         beta, idio = rolling_market_beta(rets, market, 252)
         f["beta_252"] = beta
         f["idio_vol_252"] = idio
@@ -155,7 +161,7 @@ class FeatureBuilder:
             f["borrow_fee"] = md.borrow_fee.copy()
 
         # short-term residual reversal (timing feature): -(21d return, industry-demeaned)
-        r21 = _trailing_return(close, 21, 0)
+        r21 = _trailing_return(close, 21, 0).where(valid)   # demean within eligible names only
         f["strev_21"] = -demean_by_group(r21, ind)
 
         ordered = {k: f[k] for k in FEATURE_ORDER if k in f}
@@ -165,20 +171,28 @@ class FeatureBuilder:
         return ordered
 
     # ------------------------------------------------------------------ processing
-    def process(self, features: Dict[str, Wide], md: MarketData) -> Long:
-        """Per-date: winsorize -> industry demean (cfg.industry_demean) -> rank_gauss
-        -> fill 0.  Returns a long frame indexed by (date, ticker)."""
+    def process(self, features: Dict[str, Wide], md: MarketData, valid: Optional[Wide] = None) -> Long:
+        """Per-date, over eligible names only: winsorize -> industry demean
+        (cfg.industry_demean) -> rank_gauss -> fill 0.  Returns a long frame
+        indexed by (date, ticker) that contains **only** rows eligible at that
+        date (``valid`` defaults to ``md.eligibility()``).  Ineligible names are
+        dropped, not zero-filled, so they never enter a cross-sectional
+        statistic or receive a score."""
+        valid = md.eligibility() if valid is None else valid.astype(bool)
         cols = []
         demean_set = set(self.cfg.industry_demean)
         for name in FEATURE_ORDER:
             if name not in features:
                 continue
-            w = _winsorize_rows(features[name], self.cfg.winsor_pct)
+            panel = features[name].where(valid.reindex_like(features[name]).fillna(False).astype(bool))
+            w = _winsorize_rows(panel, self.cfg.winsor_pct)
             if name in demean_set:
                 w = demean_by_group(w, md.industry)
             w = rank_gauss(w)
             cols.append(to_long(w, name))
-        out = pd.concat(cols, axis=1).fillna(0.0)
+        out = pd.concat(cols, axis=1)
+        keep = to_long(valid, "eligible").reindex(out.index).fillna(False).astype(bool)
+        out = out.loc[keep.to_numpy()].fillna(0.0)
         out = out.reindex(columns=[c for c in FEATURE_ORDER if c in out.columns])
         return out
 

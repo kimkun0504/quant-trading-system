@@ -76,6 +76,45 @@ def test_router_tactics(snapshot):
     assert len(tbl) == 6 and "reason" in tbl
 
 
+def test_loc_limit_rounds_to_tick_in_favourable_direction():
+    r = ExecutionRouter(ExecutionConfig(), loc_offset_impact_mult=0.0)
+    # 3 bp on a $7 stock is $0.0021: must still move one tick through the indicative
+    assert r.loc_limit("BUY", 7.0, 3.0) == pytest.approx(7.01)
+    assert r.loc_limit("SELL", 7.0, 3.0) == pytest.approx(6.99)
+    assert r.loc_limit("BUY", 5.0, 3.0) > 5.0 and r.loc_limit("SELL", 10.0, 3.0) < 10.0
+    assert r.loc_limit("BUY", 100.0, 3.0) == pytest.approx(100.03)
+    # sub-dollar tick is $0.0001
+    assert r.loc_limit("BUY", 0.5, 3.0) == pytest.approx(0.5002)
+    assert r.loc_limit("SELL", 0.5, 3.0) == pytest.approx(0.4998)
+    # passive limits round away from the indicative (stay passive)
+    assert r.passive_limit("BUY", 7.0, 3.0) == pytest.approx(6.99)
+    assert r.passive_limit("SELL", 7.0, 3.0) == pytest.approx(7.01)
+    snap = {"adv_shares": pd.Series({"P": 1e6}), "auction_volume_est": pd.Series({"P": 9e4}),
+            "sigma_daily": pd.Series({"P": 0.02}), "half_spread_bps": pd.Series({"P": 3.0}),
+            "indicative_close_px": pd.Series({"P": 7.0})}
+    routed = r.route([Order("P", "BUY", 100), Order("P", "SELL", 100)], snap, 20.0)
+    assert routed[0].order_type == "LOC" and routed[0].limit_px > 7.0
+    assert routed[1].order_type == "LOC" and routed[1].limit_px < 7.0
+
+
+def test_order_ids_unique_across_days():
+    w_t = pd.Series({"A": 0.05}); w_c = pd.Series({"A": 0.0}); px = pd.Series({"A": 50.0})
+    o1 = targets_to_orders(w_t, w_c, 1e6, px, decision_ts="2026-06-01")[0]
+    o2 = targets_to_orders(w_t, w_c, 1e6, px, decision_ts="2026-06-02")[0]
+    assert o1.order_id != o2.order_id and o1.order_id.startswith("20260601-")
+    # FillSimulator prefixes the date when the same id is replayed into one ledger
+    led = TCALedger()
+    sim = FillSimulator(CostConfig())
+    realized = pd.DataFrame({"open": 50.0, "close": 50.0, "next_open": 50.0, "volume": 1e6,
+                             "sigma_daily": 0.02, "half_spread_bps": 2.0, "adv_shares": 1e6}, index=["A"])
+    same = Order("A", "BUY", 100, order_id="A-BUY-100")
+    sim.simulate([same], realized, date="2026-06-01", ledger=led)
+    sim.simulate([same], realized, date="2026-06-02", ledger=led)
+    assert len(led.orders) == 2
+    d = led.decompose()
+    assert (d["venue"] == "auction").all()
+
+
 # ----------------------------------------------------------------------- ibkr
 def test_ib_payloads(snapshot):
     r = ExecutionRouter(ExecutionConfig())

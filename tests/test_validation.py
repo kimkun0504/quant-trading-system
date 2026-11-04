@@ -178,6 +178,32 @@ def test_ledger_round_trip(tmp_path):
     assert TrialLedger.effective_trials(None, n_trials=7) == 7.0
 
 
+def test_ledger_dedupes_identical_reruns_and_family_stats(tmp_path):
+    led = TrialLedger(tmp_path / "t.jsonl")
+    months = pd.period_range("2019-01", periods=36, freq="M")
+    rng = np.random.default_rng(0)
+    base = rng.standard_normal(36) * 0.02
+    for k, sr in enumerate([0.5, 0.8, 1.1]):
+        rm = pd.Series(base + rng.standard_normal(36) * 0.005, index=months.to_timestamp())
+        led.log("pipeline_phase1", {"portfolio": {"risk_aversion": 5 + k}}, {"sharpe_annual": sr, "n_obs": 750},
+                data_hash="d1", config_hash=f"c{k}", returns_monthly=rm, replace_identical=True)
+    assert led.n_trials("pipeline_phase1") == 3
+    # identical config + data: updated in place, not appended
+    rec = led.log("pipeline_phase1", {"portfolio": {"risk_aversion": 7}}, {"sharpe_annual": 1.2, "n_obs": 750},
+                  data_hash="d1", config_hash="c2", returns_monthly=rm, replace_identical=True)
+    assert led.n_trials("pipeline_phase1") == 3 and rec["n_reruns"] == 1
+    assert led.trial_sharpes_annual("pipeline_phase1").round(6).tolist() == [0.5, 0.8, 1.2]
+    # different data hash: a new trial
+    led.log("pipeline_phase1", {"portfolio": {"risk_aversion": 7}}, {"sharpe_annual": 1.0, "n_obs": 750},
+            data_hash="d2", config_hash="c2", returns_monthly=rm, replace_identical=True)
+    assert led.n_trials("pipeline_phase1") == 4
+    v = led.family_sharpe_variance("pipeline_phase1")
+    assert v == pytest.approx(pd.Series([0.5, 0.8, 1.2, 1.0]).var(ddof=1))
+    n_eff = led.effective_trials_for("pipeline_phase1")
+    assert 1.0 <= n_eff <= 4.0        # highly correlated streams -> well below 4
+    assert n_eff < 3.5
+
+
 # --------------------------------------------------------------------------- hurdles
 def test_hurdles_pass_and_fail():
     hr = HurdleReport(ValidationConfig())
@@ -206,6 +232,25 @@ def test_hurdles_pass_and_fail():
                              net_sharpe=0.5, standalone=False)
     assert inc["overall"]
     assert "OVERALL" in HurdleReport.format(inc)
+
+
+def test_hurdles_missing_inputs_are_skipped_unless_required():
+    hr = HurdleReport(ValidationConfig())
+    # standalone run without PBO / fold inputs: those gates are skipped, overall can still PASS
+    r = hr.evaluate_signal(decile_tstat=4.0, breakeven_cost_bps=50.0, modeled_cost_bps=10.0, dsr=0.98,
+                           pbo=None, phase=1, net_sharpe=0.8)
+    assert r["status"]["pbo"] == "skipped" and r["gates"]["pbo"] is None
+    assert r["status"]["net_sharpe_delta"] == "skipped"
+    assert r["overall"], r["reasons"]
+    assert set(r["status"].values()) <= {"PASS", "FAIL", "skipped"}
+    # a required gate (dsr) with a missing input fails overall
+    r2 = hr.evaluate_signal(decile_tstat=4.0, breakeven_cost_bps=50.0, modeled_cost_bps=10.0, dsr=None,
+                            phase=1, net_sharpe=0.8)
+    assert r2["status"]["dsr"] == "FAIL" and not r2["overall"] and "dsr" in r2["failed"]
+    # the required set is configurable
+    r3 = hr.evaluate_signal(decile_tstat=4.0, breakeven_cost_bps=50.0, modeled_cost_bps=10.0, dsr=None,
+                            phase=1, net_sharpe=0.8, required=["phase_sharpe"])
+    assert r3["status"]["dsr"] == "skipped" and r3["overall"]
 
 
 # --------------------------------------------------------------------------- leakage

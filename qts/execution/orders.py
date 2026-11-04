@@ -82,6 +82,8 @@ def targets_to_orders(w_target: pd.Series, w_current: pd.Series, nav: float, pri
             m["decision_ts"] = pd.Timestamp(decision_ts)
         if meta and t in meta:
             m.update(meta[t])
+        # order_id is unique across days when decision_ts is given (TCALedger keys on it)
+        prefix = f"{pd.Timestamp(decision_ts):%Y%m%d}-" if decision_ts is not None else ""
         orders.append(Order(ticker=str(t), side=side, qty=float(shares), order_type="MOC",
-                            venue_hint="auction", order_id=f"{t}-{side}-{shares}", meta=m))
+                            venue_hint="auction", order_id=f"{prefix}{t}-{side}-{shares}", meta=m))
     return orders

@@ -257,6 +257,25 @@ def test_sharadar_sf1_pit_uses_datekey():
     assert out_p["earnings_yield"].loc["2023-05-10", "ABC"] == pytest.approx(1.1 / 20.0)
 
 
+def test_sharadar_asset_growth_ignores_later_restatements():
+    """A restated prior-year row filed *after* the current row's datekey must not
+    change the asset growth visible at that datekey (audit finding 6)."""
+    sf1 = pd.DataFrame({
+        "ticker": ["ABC"] * 3,
+        "dimension": ["ARQ"] * 3,
+        "calendardate": ["2019-12-31", "2020-12-31", "2019-12-31"],
+        "datekey": ["2020-02-14", "2021-02-16", "2021-06-01"],     # last row: 10-K/A restating FY2019
+        "assets": [1000.0, 1200.0, 1500.0],
+    })
+    dates = pd.bdate_range("2020-01-01", "2021-12-31")
+    ag = sharadar_sf1_to_pit_fundamentals(sf1, dimension="ARQ", dates=dates)["asset_growth"]
+    assert ag.loc["2021-02-16", "ABC"] == pytest.approx(0.2)        # 1200/1000 - 1 with the original filing
+    assert ag.loc["2021-05-28", "ABC"] == pytest.approx(0.2)
+    # the restated FY2019 row has no FY2018 row of its own, so it contributes no growth value
+    # (pit_forward_fill carries the last *valid* value); the leaked -0.2 must never appear
+    assert (ag["ABC"].dropna().round(6) == 0.2).all()
+
+
 def test_pit_forward_fill_never_leaks():
     dates = pd.bdate_range("2024-01-01", periods=10)
     long = pd.DataFrame({"available_date": [dates[3], dates[7]], "ticker": ["A", "A"], "value": [1.0, 2.0]})

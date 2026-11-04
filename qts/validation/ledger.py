@@ -23,9 +23,20 @@ independent tests from the eigenvalues of the correlation matrix of trial
 return streams: ``M_eff = 1 + (M - 1) * (1 - Var(lambda) / M)`` (sample
 variance of the eigenvalues).  This is the
 right ``n_trials`` for DSR when trials are highly correlated variants.
+Records may carry ``returns_monthly`` (month -> return) so that
+:meth:`effective_trials_for` can build that correlation matrix from the ledger
+itself.
+
+Identity / de-duplication: a record carries ``config_hash`` (hash of the full
+config) and ``data_hash``.  ``log(..., replace_identical=True)`` *updates* the
+existing record with the same ``(name, config_hash, data_hash)`` instead of
+appending, so re-running an unchanged experiment on unchanged data does not
+inflate ``n_trials`` (an identical re-run is not a new trial).  Anything that
+differs in config or data is a new trial and is always appended.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -58,19 +69,48 @@ class TrialLedger:
         return out
 
     def log(self, name: str, config: Dict, metrics: Dict, data_hash: str = "", code_version: str = "",
-            notes: str = "", family: Optional[str] = None) -> dict:
-        """Append one trial.  ``metrics`` should include ``sharpe_annual`` (or
-        ``sharpe_daily``), ``n_obs`` and optionally ``skew``/``kurt``."""
+            notes: str = "", family: Optional[str] = None, config_hash: Optional[str] = None,
+            returns_monthly: Optional[pd.Series] = None, replace_identical: bool = False) -> dict:
+        """Append one trial (or, with ``replace_identical=True``, update the
+        record with the same ``(name, config_hash, data_hash)``).
+
+        ``metrics`` should include ``sharpe_annual`` (or ``sharpe_daily``),
+        ``n_obs`` and optionally ``skew``/``kurt``.  ``config`` should be the
+        *full* configuration (``SystemConfig.to_dict()``); ``config_hash``
+        defaults to a hash of its canonical JSON.  ``returns_monthly`` (a
+        month-indexed Series) enables :meth:`effective_trials_for`.
+        """
+        cfg_json = _jsonable_nested(config)
+        if config_hash is None:
+            config_hash = hashlib.sha256(json.dumps(cfg_json, sort_keys=True, default=str).encode()).hexdigest()[:16]
         rec = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "name": str(name),
             "family": family if family is not None else str(name).split(":")[0],
-            "config": _jsonable(config),
+            "config": cfg_json,
+            "config_hash": str(config_hash),
             "metrics": _jsonable(metrics),
             "data_hash": str(data_hash),
             "code_version": str(code_version),
             "notes": str(notes),
         }
+        if returns_monthly is not None and len(returns_monthly):
+            rm = pd.Series(returns_monthly, dtype=float)
+            rec["returns_monthly"] = {str(pd.Timestamp(k).strftime("%Y-%m")): float(v) for k, v in rm.items()}
+        if replace_identical and data_hash:
+            recs = self._records()
+            for i, r in enumerate(recs):
+                if (r.get("name") == rec["name"] and r.get("config_hash") == rec["config_hash"]
+                        and r.get("data_hash") == rec["data_hash"]):
+                    rec["ts_first"] = r.get("ts_first", r.get("ts"))
+                    rec["n_reruns"] = int(r.get("n_reruns", 0)) + 1
+                    recs[i] = rec
+                    tmp = self.path + ".tmp"
+                    with open(tmp, "w") as f:
+                        for rr in recs:
+                            f.write(json.dumps(rr, default=str) + "\n")
+                    os.replace(tmp, self.path)
+                    return rec
         with open(self.path, "a") as f:
             f.write(json.dumps(rec, default=str) + "\n")
         return rec
@@ -95,6 +135,53 @@ class TrialLedger:
                 row[f"c.{k}"] = v
             rows.append(row)
         return pd.DataFrame(rows)
+
+    def records(self, family: Optional[str] = None) -> List[dict]:
+        recs = self._records()
+        return recs if family is None else [r for r in recs if r.get("family") == family]
+
+    def trial_sharpes_annual(self, family: Optional[str] = None, periods_per_year: int = 252) -> pd.Series:
+        return self.trial_sharpes_daily(family) * math.sqrt(periods_per_year)
+
+    def family_sharpe_variance(self, family: Optional[str] = None, annual: bool = True,
+                               periods_per_year: int = 252) -> float:
+        """Sample variance (ddof=1) of the logged Sharpe ratios in ``family``
+        (0.0 with fewer than two trials) — the ``V`` of Bailey & LdP's E[max SR]."""
+        srs = self.trial_sharpes_annual(family, periods_per_year) if annual else self.trial_sharpes_daily(family)
+        if len(srs) < 2:
+            return 0.0
+        v = float(srs.var(ddof=1))
+        return v if math.isfinite(v) else 0.0
+
+    def returns_matrix(self, family: Optional[str] = None, min_overlap: int = 12) -> pd.DataFrame:
+        """Month x trial matrix of the stored ``returns_monthly`` streams on
+        their common months (empty if fewer than two trials have ``min_overlap``
+        months in common)."""
+        cols = {}
+        for i, r in enumerate(self.records(family)):
+            rm = r.get("returns_monthly")
+            if rm:
+                cols[f"{r['name']}#{i}"] = pd.Series({pd.Period(k, "M"): float(v) for k, v in rm.items()})
+        if len(cols) < 2:
+            return pd.DataFrame()
+        M = pd.DataFrame(cols).dropna(how="any")
+        return M if len(M) >= min_overlap else pd.DataFrame()
+
+    def effective_trials_for(self, family: Optional[str] = None, min_trials_for_correlation: int = 3) -> float:
+        """Nyholt effective number of trials in ``family`` from the correlation of
+        their stored monthly return streams; falls back to the raw count when
+        fewer than ``min_trials_for_correlation`` trials (or no streams) exist."""
+        n = self.n_trials(family)
+        if n < min_trials_for_correlation:
+            return float(n)
+        M = self.returns_matrix(family)
+        if M.shape[1] < min_trials_for_correlation:
+            return float(n)
+        C = np.array(M.corr().fillna(0.0).to_numpy(), dtype=float, copy=True)
+        np.fill_diagonal(C, 1.0)
+        n_eff = self.effective_trials(C)
+        # streams may cover only a subset of the family: scale the shortfall as independent
+        return float(min(n, n_eff + (n - M.shape[1])))
 
     def trial_sharpes_daily(self, family: Optional[str] = None) -> pd.Series:
         recs = self._records()
@@ -167,4 +254,18 @@ def _jsonable(d):
         elif isinstance(v, (pd.Timestamp, datetime)):
             v = v.isoformat()
         out[str(k)] = v
+    return out
+
+
+def _jsonable_nested(d):
+    """``_jsonable`` applied recursively (full dataclass configs)."""
+    if d is None:
+        return {}
+    out = {}
+    for k, v in _jsonable(d).items():
+        if isinstance(v, dict):
+            v = _jsonable_nested(v)
+        elif isinstance(v, (list, tuple)):
+            v = [x.item() if isinstance(x, (np.floating, np.integer)) else x for x in v]
+        out[k] = v
     return out

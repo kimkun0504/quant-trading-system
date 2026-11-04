@@ -269,3 +269,74 @@ def test_as_of_speed(md, model):
     for d in dates:
         model.as_of(d)
     assert time.perf_counter() - t0 < 5.0
+
+
+# --------------------------------------------------------------------------- audit fixes
+def test_factor_groups_populated(md, cfg, model):
+    out = model.as_of(md.dates[-3])
+    g = out.factor_groups
+    assert set(g) == {"market", "industry", "style", "statistical", "alignment"}
+    assert g["market"] == [MARKET_FACTOR]
+    assert g["style"] == list(cfg.styles) and "beta" in g["style"]
+    assert set(g["industry"]) == set(md.industry.unique())
+    assert g["statistical"] == [] and g["alignment"] == []
+    assert sorted(g["market"] + g["industry"] + g["style"]) == sorted(out.factors)
+
+
+def test_vra_ignores_identically_zero_and_empty_industry_days(model, cfg):
+    from qts.risk.covariance import factor_vra_multiplier
+    F = model.factor_returns.copy()
+    lam = factor_vra_multiplier(F, cfg.vol_half_life, cfg.vra_half_life)
+    F2 = F.copy()
+    F2["EMPTY_IND"] = 0.0
+    assert factor_vra_multiplier(F2, cfg.vol_half_life, cfg.vra_half_life) == pytest.approx(lam, rel=1e-12)
+    # an industry that is empty (exact 0 return) for a stretch must not pull B_t down
+    F3 = F.copy()
+    col = F3.columns[1]
+    F3.iloc[-120:, F3.columns.get_loc(col)] = 0.0
+    lam3 = factor_vra_multiplier(F3, cfg.vol_half_life, cfg.vra_half_life)
+    F4 = F.drop(columns=[col])
+    lam4 = factor_vra_multiplier(F4, cfg.vol_half_life, cfg.vra_half_life)
+    assert lam3 == pytest.approx(lam4, rel=0.05)
+
+
+def test_thin_history_blend_use4_formula(md, cfg, model):
+    d = md.dates[-1]
+    B = model.exposures[d]
+    U = model.specific_returns.loc[:d].copy()
+    gauss, fat = B.index[0], B.index[1]
+    rng = np.random.default_rng(0)
+    U[gauss] = rng.standard_normal(len(U)) * 0.01
+    U[fat] = rng.standard_normal(len(U)) * 0.01
+    U.iloc[-30, U.columns.get_loc(fat)] = 1.0          # one 100-sigma outlier
+    var, det = specific_risk(U, B, md.market_cap.loc[d], cfg, return_details=True)
+    g = det["gamma"]
+    # Gaussian, long history: Z = |sd_eq/sd_robust - 1| ~ 0 -> gamma = 1 (time-series weight)
+    assert g[gauss] == pytest.approx(1.0, abs=0.05)
+    # fat-tailed name: sd_eq >> IQR/1.35 -> Z large -> exp(1 - Z) small
+    window = int(max(6 * cfg.specific_half_life, cfg.min_history_days))   # as in specific_risk
+    Uf = U[fat].tail(window)
+    Z = abs(Uf.std(ddof=0) / ((Uf.quantile(0.75) - Uf.quantile(0.25)) / 1.35) - 1.0)
+    assert Z > 2.0
+    assert g[fat] == pytest.approx(min(1.0, np.exp(1.0 - Z)), rel=1e-6)
+    assert g[fat] < 0.6
+
+
+def test_calibrate_alignment_nu_smoke(md, cfg, model):
+    from qts.risk import calibrate_alignment_nu
+    dates = md.dates[-40::8]
+    rng = np.random.default_rng(3)
+    alphas = {}
+    for d in dates:
+        out = model.as_of(d)
+        a = pd.Series(rng.standard_normal(len(out.tickers)), index=out.tickers)
+        alphas[d] = a - out.exposures.values @ np.linalg.lstsq(out.exposures.values, a.values, rcond=None)[0]
+    res = calibrate_alignment_nu(model, md, alphas, dates, lo=0.01, hi=100.0, n_iter=4)
+    assert res["n_dates"] == len(dates)
+    assert 0.01 <= res["nu_scale"] <= 100.0
+    assert len(res["history"]) >= 3 and all(np.isfinite(b) for _, b in res["history"])
+    # more alignment variance -> larger forecast on the alpha_perp-loaded book -> lower bias
+    hist = dict(res["history"])
+    assert hist[100.0] < hist[0.01]
+    assert res["bias_unaligned"] >= hist[0.01] - 1e-9
+    assert set(res) >= {"nu_scale", "bias", "bias_unaligned", "lower", "upper", "in_band", "converged"}

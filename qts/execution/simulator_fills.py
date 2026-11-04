@@ -121,23 +121,29 @@ class FillSimulator:
                 fill_px = open_ * (1 + s * (impact_bps + spread_bps) / 1e4)
                 filled, status, reason = o.qty, "filled", "market at open"
 
-            fees_usd = self.fees.explicit_cost(filled, fill_px, o.side, date)["total"] if filled > 0 else 0.0
+            fees_usd = self.fees.explicit_cost(filled, fill_px, o.side, date, venue=venue)["total"] if filled > 0 else 0.0
             rows.append(dict(order_id=o.order_id, ticker=o.ticker, side=o.side, order_type=o.order_type,
                              algo=o.algo, qty=o.qty, filled_qty=filled, fill_px=fill_px, venue=venue,
                              impact_bps=impact_bps, spread_bps=spread_bps, fees_usd=fees_usd,
                              status=status, reason=reason))
 
             if ledger is not None:
-                oid = o.order_id or f"{o.ticker}-{o.side}-{date.date()}"
+                oid = o.order_id or f"{date:%Y%m%d}-{o.ticker}-{o.side}"
+                if oid in ledger.orders:            # same id reused on a later day -> date prefix
+                    oid = f"{date:%Y%m%d}-{oid}"
                 dec_px = float(o.meta.get("decision_px", open_))
                 dec_ts = o.meta.get("decision_ts", decision_ts if decision_ts is not None else date)
                 arrival = close if venue == VENUE_AUCTION else open_
                 arr_ts = date + (pd.Timedelta(hours=15, minutes=50) if venue == VENUE_AUCTION else pd.Timedelta(hours=9, minutes=30))
                 ledger.record_order(oid, o.ticker, o.side, o.qty, dec_px, dec_ts, arrival, arr_ts,
-                                    order_type=o.order_type, algo=o.algo)
+                                    venue=venue, order_type=o.order_type, algo=o.algo)
                 if filled > 0:
                     ledger.record_fill(oid, filled, fill_px, date + pd.Timedelta(hours=16), venue)
-                adv = float(r.get("adv_shares", vol))
+                adv = float(r.get("adv_shares", np.nan))
+                if not np.isfinite(adv):
+                    adv = vol                       # fallback: day's realised volume (audit #16)
+                # V the fill was priced on: realised auction volume / realised day volume
+                venue_vol = auc_vol if venue == VENUE_AUCTION else vol
                 ledger.close_order(oid, close, next_open, adv, sigma, fees_usd,
-                                   half_spread_bps=spread_bps)
+                                   half_spread_bps=spread_bps, venue_volume=venue_vol)
         return pd.DataFrame(rows, columns=FILL_COLS)

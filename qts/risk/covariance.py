@@ -112,8 +112,16 @@ def factor_vra_multiplier(F: pd.DataFrame, vol_half_life: float, vra_half_life: 
     and the factor covariance is scaled by ``lambda_F^2``.  Returns 1.0 when
     there is too little history."""
     f2 = F.pow(2)
+    # columns that are identically zero (industries with no members over the
+    # whole history) carry no information; an exact 0.0 on a given day means
+    # "no members that day" (the regression reports empty industries as 0) and
+    # is excluded from that day's cross-sectional mean rather than counted as
+    # a perfectly forecast zero, which would bias B_t (and lambda_F) down.
+    f2 = f2.loc[:, (f2 != 0).any(axis=0)]
+    if f2.shape[1] == 0:
+        return 1.0
     sig2_prev = f2.ewm(halflife=vol_half_life, min_periods=min_periods).mean().shift(1)
-    z2 = (f2 / sig2_prev.replace(0.0, np.nan))
+    z2 = (f2 / sig2_prev.replace(0.0, np.nan)).where(f2 != 0)
     B2 = z2.mean(axis=1, skipna=True).dropna()
     if len(B2) < min_periods:
         return 1.0
@@ -393,7 +401,7 @@ def specific_risk(specific_returns: pd.DataFrame, exposures_latest: pd.DataFrame
        (``newey_west_lags_vol``) variance of each stock's specific returns.
     2. Thin-history blend: ``gamma_i = clip((h_i - 60)/120, 0, 1) *
        min(1, exp(1 - Z_i))`` where ``h_i`` is the number of observations and
-       ``Z_i`` the ratio of the equal-weight sd to a robust (1.35 x IQR) sd
+       ``Z_i = |sd_eq / sd_robust - 1|`` with ``sd_robust = IQR / 1.35``
        (USE4 eq. for the "delta" blending weight); ``sigma = gamma sigma_TS +
        (1 - gamma) sigma_STR`` with the structural model of
        :func:`structural_specific_vol`.
@@ -408,11 +416,12 @@ def specific_risk(specific_returns: pd.DataFrame, exposures_latest: pd.DataFrame
     var_ts, n_obs = ewma_nw_variance(U, cfg.specific_half_life, cfg.newey_west_lags_vol)
     sigma_ts = np.sqrt(var_ts)
 
-    # robust-vs-equal sd ratio for outlier damping
+    # robust-vs-equal sd ratio for outlier damping (USE4: sigma_robust = IQR/1.35,
+    # Z = |sigma_eq / sigma_robust - 1|, gamma = clip((h-60)/120) * min(1, exp(1 - Z)))
     q75, q25 = U.quantile(0.75), U.quantile(0.25)
-    sd_robust = (1.35 * (q75 - q25)).replace(0.0, np.nan)
+    sd_robust = ((q75 - q25) / 1.35).replace(0.0, np.nan)
     sd_eq = U.std(ddof=0)
-    Z = (sd_eq / sd_robust).fillna(1.0)
+    Z = (sd_eq / sd_robust - 1.0).abs().fillna(0.0)
     gamma = ((n_obs - 60) / 120.0).clip(0.0, 1.0) * np.minimum(1.0, np.exp(1.0 - Z))
     gamma = gamma.fillna(0.0)
 

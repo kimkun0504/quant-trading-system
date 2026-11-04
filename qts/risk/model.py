@@ -27,7 +27,7 @@ drifts slowly).
 """
 from __future__ import annotations
 
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -36,8 +36,21 @@ from qts.core.config import RiskConfig
 from qts.core.types import MarketData, RiskModelOutput
 from qts.risk.alignment import alpha_alignment
 from qts.risk.covariance import factor_covariance, specific_risk, shrunk_residual_covariance
-from qts.risk.exposures import exposure_history
+from qts.risk.exposures import exposure_history, split_factor_columns
 from qts.risk.factor_returns import estimate_factor_return_history
+
+
+def factor_groups_for(columns, cfg: RiskConfig, statistical=None) -> Dict[str, List[str]]:
+    """``RiskModelOutput.factor_groups`` for an exposure frame built by this
+    package: ``market`` / ``industry`` / ``style`` from
+    :func:`split_factor_columns`, plus the (optional) ``statistical`` block.
+    ``alignment`` is always empty: the Saxena-Stubbs term is carried as
+    ``alignment_vector`` / ``alignment_var``, not as a column."""
+    stat = [str(c) for c in (statistical or [])]
+    cols = [c for c in columns if c not in stat]
+    market, industries, styles = split_factor_columns(cols, cfg)
+    return {"market": list(market), "industry": list(industries), "style": list(styles),
+            "statistical": stat, "alignment": []}
 
 
 class BarraStyleRiskModel:
@@ -80,8 +93,14 @@ class BarraStyleRiskModel:
 
     # ------------------------------------------------------------------ helpers
     def _check_fitted(self):
-        if self.md is None or self.factor_returns is None:
+        if self.md is None or self.factor_returns is None or self.specific_returns is None:
             raise RuntimeError("call fit() first")
+
+    def _fitted_state(self):
+        """``(md, factor_returns, specific_returns)`` with the Optionals narrowed."""
+        self._check_fitted()
+        assert self.md is not None and self.factor_returns is not None and self.specific_returns is not None
+        return self.md, self.factor_returns, self.specific_returns
 
     def exposures_as_of(self, date: pd.Timestamp) -> pd.DataFrame:
         date = pd.Timestamp(date)
@@ -108,9 +127,9 @@ class BarraStyleRiskModel:
               nu_scale: float = 1.0) -> RiskModelOutput:
         """Risk model as of ``date`` (factor returns through ``date`` inclusive,
         exposures as of ``date``)."""
-        self._check_fitted()
+        md, factor_returns, specific_returns = self._fitted_state()
         date = pd.Timestamp(date)
-        F_hist = self.factor_returns.loc[:date]
+        F_hist = factor_returns.loc[:date]
         if len(F_hist) < self.cfg.min_history_days:
             raise ValueError(f"only {len(F_hist)} factor-return days <= {date}; "
                              f"need {self.cfg.min_history_days}")
@@ -118,17 +137,35 @@ class BarraStyleRiskModel:
         F_hist = F_hist.reindex(columns=B.columns).fillna(0.0)
         v = self._eigen_bias(F_hist)
         F = factor_covariance(F_hist, self.cfg, eigen_bias=v, seed=self.seed)
-        mcap = self.md.market_cap.loc[:date].iloc[-1]
-        U_hist = self.specific_returns.loc[:date]
+        mcap = md.market_cap.loc[:date].iloc[-1]
+        U_hist = specific_returns.loc[:date]
         D = specific_risk(U_hist, B, mcap, self.cfg)
-        out = RiskModelOutput(date=date, exposures=B, factor_cov=F, specific_var=D, factor_returns=F_hist)
+        y: Optional[pd.Series] = None
+        nu = 0.0
         if alpha is not None and self.cfg.alignment:
             y, nu = alpha_alignment(alpha.reindex(B.index), B, D, nu_scale=nu_scale,
                                     factor_cov=F, cfg=self.cfg)
-            out.alignment_vector, out.alignment_var = y, nu
-        return out
+        return RiskModelOutput(date=date, exposures=B, factor_cov=F, specific_var=D, factor_returns=F_hist,
+                               alignment_vector=y, alignment_var=float(nu),
+                               factor_groups=factor_groups_for(B.columns, self.cfg))
 
     def residual_covariance_as_of(self, date: pd.Timestamp, window: Optional[int] = None) -> pd.DataFrame:
         """Full shrunk residual covariance (QIS / Ledoit-Wolf) for evaluation."""
-        self._check_fitted()
-        return shrunk_residual_covariance(self.specific_returns.loc[:pd.Timestamp(date)], self.cfg, window)
+        _, _, specific_returns = self._fitted_state()
+        return shrunk_residual_covariance(specific_returns.loc[:pd.Timestamp(date)], self.cfg, window)
+
+
+def build_risk_model(cfg: Optional[RiskConfig] = None, **kwargs):
+    """Factory: ``HybridRiskModel`` (fundamental + APCA companion on the
+    residuals, see ``qts.risk.hybrid``) when ``cfg.statistical_companion`` is
+    on, otherwise a plain ``BarraStyleRiskModel``.  ``kwargs`` (``warmup_days``,
+    ``eigen_refresh_days``, ``seed``, ``constraint_weights``,
+    ``weight_cap_quantile``) go to the fundamental model either way.  Both
+    classes share ``fit(md) / as_of(date, alpha) / exposures_as_of(date) /
+    factor_returns / specific_returns``."""
+    cfg = cfg or RiskConfig()
+    fundamental = BarraStyleRiskModel(cfg, **kwargs)
+    if cfg.statistical_companion:
+        from qts.risk.hybrid import HybridRiskModel  # local import: hybrid imports this module
+        return HybridRiskModel(fundamental, cfg)
+    return fundamental

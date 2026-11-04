@@ -47,9 +47,12 @@ def planted_run(md, risk_model, alpha_model):
     return sim.run(md, dates, alpha_model.as_of, risk_model.as_of, opt, nav0=1e6, rebalance_every=1)
 
 
-def _check_identity(res: BacktestResult, md):
+def _check_identity(res: BacktestResult, md, haircut: float = -0.30):
     R = md.close.loc[res.nav.index].pct_change(fill_method=None)
-    r = np.nan_to_num(R.values[1:])
+    raw = R.values[1:]
+    w = res.weights.values
+    # delisting: a held name with NaN next close earns the haircut against its sign
+    r = np.where(np.isnan(raw), np.where(w != 0, haircut * np.sign(w), 0.0), raw)
     lhs = res.nav.values[1:]
     rhs = res.nav.values[:-1] * (1.0 + (res.weights.values * r).sum(axis=1)) - res.costs["total"].values
     assert np.max(np.abs(lhs - rhs) / res.nav.values[:-1]) < 1e-8
@@ -148,11 +151,93 @@ def test_delisting_is_liquidated_and_flagged(md, risk_model, alpha_model):
     held_before = res.weights.loc[dates[13], tick]
     assert held_before > 0
     dl = res.diagnostics["delistings"]
-    assert any(d["ticker"] == tick and d["date"] == kill_from for d in dl)
+    ev = [d for d in dl if d["ticker"] == tick and d["date"] == kill_from]
+    assert len(ev) == 1
+    ev = ev[0]
+    last = dates[14]                                    # decision row on which the exit is booked
+    w_last = res.weights.loc[last, tick]
+    assert w_last > 0 and ev["weight"] == pytest.approx(w_last)
+    assert ev["haircut_return"] == pytest.approx(cfg.cost.delisting_haircut)
+    assert ev["liquidation_usd"] == pytest.approx(w_last * (1 + cfg.cost.delisting_haircut) * res.nav.loc[last])
+    assert ev["cost_usd"] > 0                           # spread + fees charged on the forced exit
+    # the forced liquidation is a recorded trade (on top of the day's rebalance) and counts in turnover
+    prev = dates[13]
+    w_pre_last = res.weights.loc[prev, tick] * (1 + md2.close.loc[last, tick] / md2.close.loc[prev, tick] - 1) \
+        * res.nav.loc[prev] / res.nav.loc[last]
+    x_opt = w_last - w_pre_last
+    assert res.trades.loc[last, tick] == pytest.approx(x_opt - w_last * (1 + cfg.cost.delisting_haircut))
+    assert res.turnover.loc[last] == pytest.approx(res.trades.loc[last].abs().sum())
     assert (res.weights.loc[kill_from:, tick] == 0).all()
     assert (res.trades.loc[kill_from:, tick] == 0).all()
     assert res.nav.notna().all()
-    _check_identity(res, md2)
+    _check_identity(res, md2, cfg.cost.delisting_haircut)
+
+
+def test_cost_frame_raises_on_unrecognised_or_nan():
+    idx = pd.Index(["A", "B"])
+    with pytest.raises(ValueError, match="unrecognised|no recognised"):
+        DailyBarSimulator._cost_frame(pd.DataFrame({"foo": [1.0, 2.0]}, index=idx), idx)
+    with pytest.raises(ValueError, match="non-finite"):
+        DailyBarSimulator._cost_frame(pd.DataFrame({"spread": [1.0, np.nan], "impact": [0.0, 0.0],
+                                                    "fees": [0.0, 0.0]}, index=idx), idx)
+    with pytest.raises(ValueError, match="non-finite"):
+        DailyBarSimulator._cost_frame(pd.Series([1.0, np.nan], index=idx), idx)
+    ok = DailyBarSimulator._cost_frame(pd.DataFrame({"spread_usd": [1.0, 2.0], "impact_cost": [0.5, 0.5],
+                                                     "fees_usd": [0.1, 0.1]}, index=idx), idx)
+    assert ok["spread"].tolist() == [1.0, 2.0] and ok["impact"].tolist() == [0.5, 0.5]
+    tot = DailyBarSimulator._cost_frame(pd.DataFrame({"total": [3.0, 4.0]}, index=idx), idx)
+    assert tot["impact"].tolist() == [3.0, 4.0]
+    assert DailyBarSimulator._cost_frame(None, idx).values.sum() == 0.0
+
+
+def test_simulator_snapshot_keeps_venue_date_and_spreads(md):
+    from qts.tcost import TransactionCostModel
+    cfg = make_cfg()
+    tcm = TransactionCostModel(cfg.cost)
+    sim = DailyBarSimulator(cfg, tcm)
+    t = md.dates[-50]
+    snap = sim._snapshot(md, t)
+    for k in ("venue", "date", "half_spread_bps", "adv_shares", "adv_usd", "half_spread", "borrow_fee_source"):
+        assert k in snap, k
+    assert snap["date"] == t
+    assert (snap["venue"] == "auction").all()
+    raw = tcm.snapshot_from_market(md, t)
+    pd.testing.assert_series_equal(snap["half_spread_bps"], raw["half_spread_bps"], check_names=False)
+    pd.testing.assert_series_equal(snap["adv_shares"], raw["adv_shares"], check_names=False)
+    # estimate() through the simulator's snapshot prices the requested venue with real spreads
+    trades = pd.Series(0.0, index=md.tickers); trades.iloc[:3] = [1e4, -2e4, 3e4]
+    kw = sim._estimate_kwargs("continuous", t, None, md.tickers)
+    assert kw == {"venue": "continuous", "date": t}
+    est = tcm.estimate(trades, snap, **kw)
+    assert (est["venue"] == "continuous").all()
+    pd.testing.assert_series_equal(est["spread_bps"].iloc[:3], raw["half_spread_bps"].iloc[:3], check_names=False)
+    # SimpleCostModel only takes venue
+    cm = SimpleCostModel(cfg.cost)
+    assert DailyBarSimulator(cfg, cm)._estimate_kwargs("auction", t, np.ones(len(md.tickers)), md.tickers) == {"venue": "auction"}
+
+
+def test_run_with_tcost_model_venue_and_persistence(md, risk_model, alpha_model):
+    from qts.tcost import TransactionCostModel
+    cfg = make_cfg()
+    tcm = TransactionCostModel(cfg.cost)
+    opt = SinglePeriodOptimizer(cfg.portfolio, tcm)
+    dates = md.dates[-21:]
+    res_a = DailyBarSimulator(cfg, tcm).run(md, dates, alpha_model.as_of, risk_model.as_of, opt, nav0=1e6)
+    assert res_a.diagnostics["venue"] == "auction"
+    assert res_a.costs["spread"].sum() == 0.0                 # auction: no spread crossing
+    assert res_a.costs["fees"].sum() > 0
+    _check_identity(res_a, md)
+    res_c = DailyBarSimulator(cfg, tcm).run(md, dates, alpha_model.as_of, risk_model.as_of, opt, nav0=1e6,
+                                            venue="continuous")
+    assert res_c.costs["spread"].sum() > 0.0                  # continuous venue actually priced
+    _check_identity(res_c, md)
+    # persistence off -> impact no larger than with persistence on
+    cfg_off = make_cfg(); cfg_off.cost.impact_persistence = False
+    tcm_off = TransactionCostModel(cfg_off.cost)
+    res_off = DailyBarSimulator(cfg_off, tcm_off).run(md, dates, alpha_model.as_of, risk_model.as_of,
+                                                      SinglePeriodOptimizer(cfg_off.portfolio, tcm_off), nav0=1e6)
+    assert res_off.costs["impact"].iloc[0] == pytest.approx(res_a.costs["impact"].iloc[0], rel=1e-6)
+    assert res_off.costs["impact"].sum() <= res_a.costs["impact"].sum() + 1e-9
 
 
 # --------------------------------------------------------------- metrics

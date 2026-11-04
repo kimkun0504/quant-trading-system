@@ -6,14 +6,26 @@ whose forward window has not fully elapsed (the walk-forward trainer enforces
 the embargo; see ``trainer.py``).
 
 Primary target (BUILD_PLAN §2.3): ``horizon``-day forward return residualised
-cross-sectionally against risk exposures *known at t* — market beta, size,
-industry dummies, momentum and value — then z-scored per date.
+cross-sectionally against **risk-only** exposures *known at t* — market beta,
+size, idiosyncratic vol, liquidity, short-term reversal and industry dummies —
+then z-scored per date.  The alpha themes (momentum, value, quality,
+investment, short interest) are *never* residualised out: projecting them out
+of the label would define the alpha away (audit finding 2).
 
-Until the Barra-style risk model is wired in, :func:`residualize_forward_returns`
-uses a lightweight, dependency-free set of exposures computed from
-``MarketData`` (``default_exposures``).  Pass ``exposures_fn`` (e.g.
-``lambda d: risk_model.as_of(d).exposures``) to neutralise against a proper
-risk model instead.
+Without a risk model, :func:`residualize_forward_returns` uses a lightweight
+set of exposures computed from ``MarketData`` (``default_exposures``,
+``DEFAULT_STYLE_EXPOSURES``).  Pass ``exposures_fn`` (e.g.
+``lambda d: risk_model.exposures_as_of(d)``) to neutralise against a proper
+risk model; dates for which it returns ``None`` (risk-model warm-up) fall back
+to the same risk-only internal set, so the label definition is consistent.
+
+Eligibility: labels exist only for names in ``md.eligibility()`` at ``t``;
+cross-sectional winsorisation, regression and z-scoring use those names only.
+
+Delistings: a name whose last close falls inside ``(t, t+h]`` gets the return to
+its last close times ``(1 + delisting_return)`` (default -30 %, see
+``AlphaConfig.delisting_return``) instead of NaN, so delisting outcomes reach
+the training set and every IC/decile statistic.
 """
 from __future__ import annotations
 
@@ -29,37 +41,69 @@ from .features import _winsorize_rows, rolling_market_beta
 
 ExposuresFn = Callable[[pd.Timestamp], pd.DataFrame]
 
-DEFAULT_STYLE_EXPOSURES = ("beta_252", "log_mcap", "mom_12_1", "value_bp")
+#: Risk-only styles used by the built-in residualiser.  Must never contain an
+#: alpha theme (mom_12_1, value_bp, quality_gpa, investment_ag, short_interest).
+DEFAULT_STYLE_EXPOSURES = ("beta_252", "log_mcap", "idio_vol_252", "log_dollar_vol_63", "turnover_63", "strev_21")
+ALPHA_THEME_FEATURES = frozenset({"value_bp", "value_ep", "mom_12_1", "mom_6_1", "mom_change", "industry_momentum",
+                                  "quality_gpa", "investment_ag", "short_interest", "borrow_fee"})
+assert not (set(DEFAULT_STYLE_EXPOSURES) & ALPHA_THEME_FEATURES)
+
+DEFAULT_DELISTING_RETURN = -0.30
 
 
-def forward_returns(md: MarketData, horizon: int) -> Wide:
-    """``close_{t+h} / close_t - 1`` aligned at ``t``.  NaN for the last ``h`` rows."""
-    return md.close.shift(-horizon) / md.close - 1.0
+def forward_returns(md: MarketData, horizon: int, delisting_return: Optional[float] = DEFAULT_DELISTING_RETURN) -> Wide:
+    """``close_{t+h} / close_t - 1`` aligned at ``t``.
+
+    Delisting handling: if the name's *last ever* close is inside ``(t, t+h]``
+    the return is measured to that last close and multiplied by
+    ``(1 + delisting_return)`` (conservative CRSP-style haircut, default -30 %;
+    ``None``/0 disables).  A temporary gap in the price series is not a
+    delisting (there is a later close) and is simply forward-filled inside the
+    window.  NaN where ``close_t`` is NaN or the window extends past the panel.
+    ``close.ffill()`` is a *label-only* helper here — never reuse it for features.
+    """
+    c = md.close
+    last = c.ffill()
+    fwd = last.shift(-horizon) / c - 1.0
+    if delisting_return:
+        # dead at date d: no close at d, had one before, and none after (true delisting)
+        dead = c.isna() & last.notna() & c.bfill().isna()
+        dead_by_end = dead.shift(-horizon).fillna(False).astype(bool)   # dead at t+h  <=> delisted in (t, t+h]
+        fwd = fwd.where(~dead_by_end, (1.0 + fwd) * (1.0 + float(delisting_return)) - 1.0)
+    return fwd.where(c.notna())
 
 
 def default_exposures(md: MarketData, features: Optional[Dict[str, Wide]] = None) -> Dict[str, Wide]:
     """Style exposures (wide panels) used by the built-in residualiser.
 
-    If raw feature panels from ``FeatureBuilder.build`` are supplied they are
-    reused, otherwise the needed ones are recomputed here.  Each is
-    cross-sectionally z-scored per date; NaN -> 0 (= cross-sectional mean) so
-    that early dates (before a 252-day beta exists) still get a label.
+    Risk-only (``DEFAULT_STYLE_EXPOSURES``): beta, size, idio vol, dollar
+    volume, turnover, short-term reversal.  If raw feature panels from
+    ``FeatureBuilder.build`` are supplied they are reused, otherwise the needed
+    ones are recomputed here.  Each is cross-sectionally z-scored per date over
+    the eligible names; NaN -> 0 (= cross-sectional mean) so that early dates
+    (before a 252-day beta exists) still get a label.
     """
     f = dict(features or {})
     close = md.close
-    if "beta_252" not in f:
-        rets = md.returns
-        f["beta_252"], _ = rolling_market_beta(rets, rets.mean(axis=1), 252)
+    valid = md.eligibility()
+    rets = md.returns
+    if "beta_252" not in f or "idio_vol_252" not in f:
+        beta, idio = rolling_market_beta(rets, rets.where(valid).mean(axis=1), 252)
+        f.setdefault("beta_252", beta)
+        f.setdefault("idio_vol_252", idio)
     if "log_mcap" not in f:
         f["log_mcap"] = np.log(md.market_cap.clip(lower=1.0))
-    if "mom_12_1" not in f:
-        f["mom_12_1"] = close.shift(21) / close.shift(252) - 1.0
-    if "value_bp" not in f and md.book_to_price is not None:
-        f["value_bp"] = np.log(md.book_to_price.clip(lower=1e-6))
+    if "log_dollar_vol_63" not in f or "turnover_63" not in f:
+        dvol = md.dollar_volume
+        f.setdefault("log_dollar_vol_63", np.log(dvol.rolling(63, min_periods=40).mean().clip(lower=1.0)))
+        f.setdefault("turnover_63", (dvol / md.market_cap).rolling(63, min_periods=40).mean())
+    if "strev_21" not in f:
+        f["strev_21"] = -(close / close.shift(21) - 1.0)
     out = {}
     for k in DEFAULT_STYLE_EXPOSURES:
         if k in f:
-            out[k] = zscore(_winsorize_rows(f[k], 0.01)).fillna(0.0)
+            assert k not in ALPHA_THEME_FEATURES, k
+            out[k] = zscore(_winsorize_rows(f[k].where(valid), 0.01)).fillna(0.0)
     return out
 
 
@@ -76,16 +120,19 @@ def residualize_forward_returns(
     features: Optional[Dict[str, Wide]] = None,
     winsor_pct: float = 0.01,
     weights: Optional[Wide] = None,
+    delisting_return: Optional[float] = DEFAULT_DELISTING_RETURN,
 ) -> Wide:
     """Per date: neutralise the ``horizon``-day forward return on exposures known
-    at ``t`` (intercept + market beta + industry dummies + size + momentum +
-    value by default; or ``exposures_fn(date)`` -> ticker x factor frame), then
-    z-score cross-sectionally.
+    at ``t`` (intercept + industry dummies + the risk-only styles in
+    ``DEFAULT_STYLE_EXPOSURES`` by default; or ``exposures_fn(date)`` -> ticker x
+    factor frame), then z-score cross-sectionally.  Only names eligible at ``t``
+    (``md.eligibility()``) take part; everything else is NaN.
 
     ``weights`` (e.g. sqrt market cap) makes the neutralisation WLS.
     Rows (dates) whose forward window is not yet complete are NaN.
     """
-    fwd = _winsorize_rows(forward_returns(md, horizon), winsor_pct)
+    valid = md.eligibility()
+    fwd = _winsorize_rows(forward_returns(md, horizon, delisting_return).where(valid), winsor_pct)
     tickers = md.tickers
     dates = md.dates
     out = np.full(fwd.shape, np.nan)
@@ -110,7 +157,7 @@ def residualize_forward_returns(
         internal_rows = rows
     else:
         internal_rows = np.array([i for i in rows if i not in external], dtype=int)
-    if True:
+    if len(internal_rows):
         # Fast path: static industry dummies + per-date style arrays, pure numpy.
         for i in internal_rows:
             y = Y[i]

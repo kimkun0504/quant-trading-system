@@ -29,7 +29,7 @@ import functools
 import hashlib
 import inspect
 import textwrap
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -52,7 +52,9 @@ def pit_shift_test(build_fn: Callable[[MarketData], Wide], md: MarketData, cut_d
     ``build_fn(md.slice_until(cut_date))``.  NaN positions must agree and
     non-NaN values must be equal within ``atol``.
     """
-    cut = pd.Timestamp(cut_date)
+    cut = cast(pd.Timestamp, pd.Timestamp(cut_date))
+    if pd.isna(cut):
+        raise ValueError("cut_date is NaT")
     full = build_fn(md)
     part = build_fn(md.slice_until(cut))
     full_c = full.loc[:cut]
@@ -175,7 +177,8 @@ def _negative_shift_calls(tree: ast.AST):
         args += [kw.value for kw in node.keywords if kw.arg == "periods"]
         for a in args:
             val = None
-            if isinstance(a, ast.UnaryOp) and isinstance(a.op, ast.USub) and isinstance(a.operand, ast.Constant):
+            if (isinstance(a, ast.UnaryOp) and isinstance(a.op, ast.USub) and isinstance(a.operand, ast.Constant)
+                    and isinstance(a.operand.value, (int, float))):
                 val = -a.operand.value
             elif isinstance(a, ast.Constant) and isinstance(a.value, (int, float)):
                 val = a.value

@@ -1,4 +1,11 @@
-"""Portfolio-level volatility targeting."""
+"""Portfolio-level volatility targeting helpers.
+
+``portfolio_vol_scalar`` is the plain ``target / predicted`` multiplier used
+for *reporting* and for realised-vol overlays.  ``SinglePeriodOptimizer`` does
+**not** multiply the book by it: it re-solves a projection onto the full
+constraint set with a risk cap (see ``qts.portfolio.optimizer``), so bands
+hold after scaling.
+"""
 from __future__ import annotations
 
 from typing import Optional

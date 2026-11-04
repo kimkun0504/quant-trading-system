@@ -20,6 +20,7 @@ Protocol
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
@@ -30,6 +31,8 @@ from qts.core.config import AlphaConfig
 from qts.core.types import Long, Wide
 
 from .features import feature_signature
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -72,8 +75,16 @@ class WalkForwardTrainer:
 
     def run(self, X: Long, y: pd.Series, model_factory: Callable[[], object],
             dates: Optional[pd.DatetimeIndex] = None) -> Wide:
-        """Return a wide (date x ticker) panel of strictly out-of-sample predictions."""
+        """Return a wide (date x ticker) panel of strictly out-of-sample predictions.
+
+        Rows with any NaN feature are dropped up front (``FeatureBuilder.process``
+        emits eligible rows only, so this is a guard against hand-built frames);
+        rows with a NaN label are excluded from training but still predicted.
+        """
         y = y.reindex(X.index)
+        finite = X.notna().all(axis=1).to_numpy()
+        if not finite.all():
+            X, y = X.loc[finite], y.loc[finite]
         all_dates = X.index.get_level_values("date")
         uniq = pd.DatetimeIndex(all_dates.unique()).sort_values()
         if dates is not None:
@@ -115,10 +126,10 @@ class WalkForwardTrainer:
                 n_train_rows=int(fit_ok.sum() if valid_mask_arr.any() else train_rows.sum()),
                 n_valid_rows=int(valid_mask_arr.sum()),
                 extra={"feature_hash": feature_signature(X.columns)}))
-            if self.verbose:
-                f = self.folds_[-1]
-                print(f"fold {k}: train {f.train_start.date()}..{f.train_end.date()} "
-                      f"(valid from {f.valid_start}) -> predict {f.pred_start.date()}..{f.pred_end.date()}")
+            f = self.folds_[-1]
+            log.log(logging.INFO if self.verbose else logging.DEBUG,
+                    "fold %d: train %s..%s (valid from %s) -> predict %s..%s", k, f.train_start.date(),
+                    f.train_end.date(), f.valid_start, f.pred_start.date(), f.pred_end.date())
         if not preds:
             return pd.DataFrame(np.nan, index=uniq, columns=X.index.get_level_values("ticker").unique())
         long = pd.concat(preds).sort_index()
