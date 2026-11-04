@@ -164,9 +164,13 @@ class RidgeModel(_Base):
 
     def predict(self, X):
         self._check_features(X)
+        if self.model_ is None:
+            raise RuntimeError("RidgeModel.predict called before fit()")
         return pd.Series(self.model_.predict(X.values), index=X.index, name="pred")
 
     def feature_importance(self):
+        if self.model_ is None:
+            raise RuntimeError("RidgeModel.feature_importance called before fit()")
         return pd.Series(self.model_.coef_, index=self.feature_names_).abs().sort_values(ascending=False)
 
 

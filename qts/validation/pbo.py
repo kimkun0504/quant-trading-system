@@ -11,8 +11,11 @@ parameter sweep).  Procedure:
 3. Compute the performance metric per configuration IS and OOS, pick the
    best IS configuration ``n*``, and find its OOS relative rank
    ``w = rank(OOS_n*) / (N + 1)`` (rank 1 = worst).
-4. Logit ``lambda = log(w / (1 - w))``.  ``PBO = P[lambda <= 0]``, i.e. the
-   probability that the IS-optimal configuration is below-median OOS.
+4. Logit ``lambda = log(w / (1 - w))``.  ``PBO = P[lambda < 0]``, i.e. the
+   probability that the IS-optimal configuration is strictly below-median OOS.
+
+NaNs in the input raise (align the trials first); so do fewer than two
+distinct configurations (PBO is undefined when every column is identical).
 
 Also reported: the performance-degradation regression (OOS metric of the
 IS-best configuration on its IS metric across all combinations), and the
@@ -73,9 +76,13 @@ def probability_of_backtest_overfitting(perf_matrix: pd.DataFrame, n_groups: int
         M = np.asarray(perf_matrix, dtype=float)
     if M.ndim != 2 or M.shape[1] < 2:
         raise ValueError("perf_matrix must be T x N with N >= 2 configurations")
-    if np.isnan(M).any():
-        M = np.nan_to_num(M, nan=0.0)
+    if not np.isfinite(M).all():
+        raise ValueError("perf_matrix has NaN/inf entries; align the trials on common dates first")
     T, N = M.shape
+    # identical configurations carry no selection information: PBO is undefined
+    n_distinct = np.unique(np.round(M, 12), axis=1).shape[1]
+    if n_distinct < 2:
+        raise ValueError("perf_matrix needs at least 2 distinct configurations (all columns identical)")
     if n_groups % 2:
         raise ValueError("n_groups must be even")
     if T < n_groups * 2:
@@ -113,7 +120,9 @@ def probability_of_backtest_overfitting(perf_matrix: pd.DataFrame, n_groups: int
     rank = 1 + (oos_metric < oos_best[:, None]).sum(axis=1) + 0.5 * ((oos_metric == oos_best[:, None]).sum(axis=1) - 1)
     w = rank / (N + 1.0)
     logits = np.log(w / (1.0 - w))
-    pbo = float(np.mean(logits <= 0.0))
+    # strict: "IS-best is *below* the OOS median" (Bailey et al.); an exact
+    # median rank (logit == 0) is not counted as overfit
+    pbo = float(np.mean(logits < 0.0))
 
     # performance degradation: OOS metric of IS-best ~ a + b * IS metric
     if np.std(is_best) > 0:

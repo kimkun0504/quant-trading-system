@@ -10,8 +10,10 @@ Amendments adopted in code after the senior-quant review of `BUILD_PLAN.md`
    publication lag (`qts.data.loaders.parse_finra_short_interest`, `to_short_interest_ratio`);
    IBKR indicative rates are spliced in once ≥ 12 months accumulate.
 3. **Industry layer = Fama-French 48 from SIC** (`qts.data.loaders.sic_to_ff48`), not GICS history.
-4. **Label residualisation uses risk-only styles** (`ResearchPipeline.RISK_ONLY_STYLES`); exposures
-   are measured at *t*; targets are never features.
+4. **Label residualisation uses risk-only styles** everywhere (`ResearchPipeline.RISK_ONLY_STYLES`
+   for the risk model's exposures, `qts.alpha.targets.DEFAULT_STYLE_EXPOSURES` for the internal
+   fallback used only during the risk warm-up); exposures are measured at *t*; targets are never
+   features; the exposures hook raises instead of silently falling back.
 5. **Effective holding period is a monitored diagnostic** (`effective_holding_days`, target 50 d);
    the pipeline flags runs that fall below 60 % of target.
 6. **Factor-momentum tilt capped at ±25 %** (`AlphaConfig.factor_momentum_max_tilt`).

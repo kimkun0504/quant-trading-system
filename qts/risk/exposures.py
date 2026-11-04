@@ -97,10 +97,13 @@ def raw_style_panels(md: MarketData, styles: Iterable[str]) -> Dict[str, pd.Data
     out: Dict[str, pd.DataFrame] = {}
     returns = md.returns
     need_reg = {"beta", "residual_vol"} & set(styles)
+    beta_hat: Optional[pd.DataFrame] = None
+    resid_var: Optional[pd.DataFrame] = None
     if need_reg:
         beta_hat, resid_var = _rolling_market_regression(returns, BETA_WINDOW, BETA_WINDOW // 4)
     for s in styles:
         if s == "beta":
+            assert beta_hat is not None
             out[s] = 1.0 + (1.0 - BETA_SHRINK) * (beta_hat - 1.0)
         elif s == "size":
             out[s] = np.log(md.market_cap.where(md.market_cap > 0))
@@ -114,6 +117,7 @@ def raw_style_panels(md: MarketData, styles: Iterable[str]) -> Dict[str, pd.Data
             else:
                 out[s] = pd.DataFrame(np.nan, index=md.dates, columns=md.tickers)
         elif s == "residual_vol":
+            assert resid_var is not None
             out[s] = np.sqrt(resid_var)
         elif s == "liquidity":
             turnover = (md.dollar_volume / md.market_cap.replace(0.0, np.nan))

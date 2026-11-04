@@ -16,6 +16,7 @@ from qts.portfolio import (
     effective_holding_days,
     factor_exposure_report,
     garleanu_pedersen_shrink,
+    gp_sleeve_shrink_factors,
     gp_sleeve_weights,
     grinold_alpha,
     portfolio_vol_scalar,
@@ -211,10 +212,18 @@ def test_gp_weights():
     assert w2["fast"] < w["fast"]
     idx = pd.Index(["A", "B", "C"])
     al = {"fast": pd.Series([1.0, 0.0, -1.0], idx), "slow": pd.Series([0.0, 1.0, -1.0], idx)}
-    comb = garleanu_pedersen_shrink(al, {"fast": 2.0, "slow": 200.0}, 50.0)
-    assert comb.index.equals(idx)
+    comb_mix = garleanu_pedersen_shrink(al, {"fast": 2.0, "slow": 200.0}, 50.0, renormalize=True)
+    assert comb_mix.index.equals(idx)
     expected = w["fast"] * al["fast"] + w["slow"] * al["slow"]
-    pd.testing.assert_series_equal(comb, expected, check_names=False)
+    pd.testing.assert_series_equal(comb_mix, expected, check_names=False)
+    # default: the alpha *level* is shrunk (GP), not just the mix
+    g = gp_sleeve_shrink_factors({"fast": 2.0, "slow": 200.0}, 50.0)
+    comb = garleanu_pedersen_shrink(al, {"fast": 2.0, "slow": 200.0}, 50.0)
+    expected_lvl = 0.5 * g["fast"] * al["fast"] + 0.5 * g["slow"] * al["slow"]
+    pd.testing.assert_series_equal(comb, expected_lvl, check_names=False)
+    assert comb.abs().sum() < comb_mix.abs().sum()
+    one = garleanu_pedersen_shrink({"slow": al["slow"]}, {"slow": 200.0}, 200.0)
+    pd.testing.assert_series_equal(one, 0.5 * al["slow"], check_names=False)   # hl == H -> halved
 
 
 def test_combine_and_shrink_ic():
@@ -281,3 +290,244 @@ def test_brinson_attribution_sums(md, risk_model):
         assert att.loc[d_real, "total"] == pytest.approx(float(W.loc[d_dec] @ md.returns.loc[d_real]), rel=1e-9)
     fac_cols = [c for c in att.columns if c not in ("specific", "total")]
     assert np.allclose(att[fac_cols].sum(axis=1) + att["specific"], att["total"])
+
+
+# ------------------------------------------------------- real risk model regressions
+FF48_LIKE = ["Agric", "Banks", "Drugs", "Softw", "Oil", "Rtail", "Autos", "Chems", "Insur", "Telcm",
+             "Steel", "Other"]
+BARRA_TOL = 2e-4   # solver tolerance on linear bands (Clarabel default ~1e-8 rel; projection adds a little)
+
+
+def _rename_industries(md):
+    labels = sorted(md.industry.unique())
+    mapping = {old: FF48_LIKE[i % len(FF48_LIKE)] for i, old in enumerate(labels)}
+    return dataclasses.replace(md, industry=md.industry.map(mapping))
+
+
+@pytest.fixture(scope="module")
+def barra_ctx(md):
+    """Real ``BarraStyleRiskModel`` on the synthetic market with Fama-French-like
+    industry labels (no ``IND`` prefix) and an alpha tilted toward high beta."""
+    from qts.core.config import RiskConfig
+    from qts.risk import BarraStyleRiskModel
+    md2 = _rename_industries(md)
+    model = BarraStyleRiskModel(RiskConfig()).fit(md2)
+    date = md2.dates[-5]
+    r = model.as_of(date)
+    rng = np.random.default_rng(5)
+    B = r.exposures
+    alpha = 0.01 * (B["beta"] + 0.5 * pd.Series(rng.standard_normal(len(B)), index=B.index))
+    snap = snapshot_from_market(md2, date)
+    return dict(md=md2, model=model, risk=r, alpha=alpha, snap=snap, w0=pd.Series(0.0, index=md2.tickers),
+                date=date)
+
+
+def _exposures(w, risk):
+    return risk.exposures.reindex(w.index).fillna(0.0).T @ w
+
+
+def _assert_all_constraints(res, cfg, risk, snap, nav, w0, opt, neutral_styles=(), tol=BARRA_TOL):
+    w = res.w_target
+    groups = risk.factor_groups
+    assert w.abs().sum() <= cfg.gross_leverage_max + tol
+    assert abs(w.sum() - cfg.net_exposure_target) <= cfg.net_exposure_band + tol
+    assert w.abs().max() <= cfg.max_position_weight + tol
+    cap = cfg.max_adv_participation * snap["adv_usd"].reindex(w.index) / nav
+    assert ((w - w0.reindex(w.index).fillna(0.0)).abs() <= cap + tol).all()
+    expo = _exposures(w, risk)
+    if cfg.beta_neutral:
+        assert abs(expo["beta"]) <= opt.beta_band + tol, expo["beta"]
+    if cfg.industry_band:
+        assert expo[groups["industry"]].abs().max() <= cfg.industry_band + tol
+    for s in neutral_styles:
+        if not (cfg.beta_neutral and s == "beta"):
+            assert abs(expo[s]) <= cfg.style_band_sd + tol, (s, expo[s])
+
+
+def test_factor_groups_drive_beta_and_ff48_industry_bands(barra_ctx):
+    r, cfg = barra_ctx["risk"], ls_cfg(beta_neutral=True)
+    assert r.factor_groups["style"] and "beta" in r.factor_groups["style"]
+    assert set(r.factor_groups["industry"]) == set(FF48_LIKE)
+    opt = SinglePeriodOptimizer(cfg, SimpleCostModel(zero=True))
+    res = opt.solve(barra_ctx["alpha"], r, barra_ctx["w0"], 1e6, barra_ctx["snap"])
+    assert res.status == "optimal" and res.w_target.abs().sum() > 0.5
+    expo = _exposures(res.w_target, r)
+    # beta neutrality binds the *beta style*, not the unit-exposure market factor
+    assert abs(expo["beta"]) <= opt.beta_band + BARRA_TOL, expo["beta"]
+    assert "beta_neutral" in res.binding_constraints
+    # industry bands work on FF48-like labels (nothing starts with "IND")
+    assert expo[FF48_LIKE].abs().max() <= cfg.industry_band + BARRA_TOL
+    assert not any("prefix fallback" in n for n in res.notes)
+    # the test has teeth: without the constraint the high-beta tilt is large
+    free = SinglePeriodOptimizer(ls_cfg(beta_neutral=False, industry_band=0.0), SimpleCostModel(zero=True)) \
+        .solve(barra_ctx["alpha"], r, barra_ctx["w0"], 1e6, barra_ctx["snap"])
+    assert abs(_exposures(free.w_target, r)["beta"]) > 3 * opt.beta_band
+    assert _exposures(free.w_target, r)[FF48_LIKE].abs().max() > cfg.industry_band
+
+
+def test_beta_band_from_config_and_unknown_neutral_style_raises(barra_ctx):
+    cfg = ls_cfg(beta_band=0.01)
+    opt = SinglePeriodOptimizer(cfg, SimpleCostModel(zero=True))
+    assert opt.beta_band == 0.01
+    res = opt.solve(barra_ctx["alpha"], barra_ctx["risk"], barra_ctx["w0"], 1e6, barra_ctx["snap"],
+                    neutral_styles=["beta", "size", "liquidity"])
+    assert res.status == "optimal"
+    expo = _exposures(res.w_target, barra_ctx["risk"])
+    assert abs(expo["beta"]) <= 0.01 + BARRA_TOL
+    assert expo[["size", "liquidity"]].abs().max() <= cfg.style_band_sd + BARRA_TOL
+    with pytest.raises(ValueError, match="neutral_styles"):
+        opt.solve(barra_ctx["alpha"], barra_ctx["risk"], barra_ctx["w0"], 1e6, barra_ctx["snap"],
+                  neutral_styles=["not_a_style"])
+
+
+def test_prefix_fallback_only_without_factor_groups(ctx, caplog):
+    import logging
+    with caplog.at_level(logging.WARNING, logger="qts.portfolio.optimizer"):
+        res = SinglePeriodOptimizer(ls_cfg(), SimpleCostModel(zero=True)).solve(
+            ctx["alpha"] * 5, ctx["risk"], ctx["w0"], 1e6, ctx["snap"])
+    assert res.status == "optimal"
+    assert any("prefix fallback" in n for n in res.notes)
+    assert any("factor_groups" in rec.getMessage() for rec in caplog.records)
+
+
+def test_vol_target_scale_up_is_a_projection(barra_ctx):
+    r, snap, w0, a = barra_ctx["risk"], barra_ctx["snap"], barra_ctx["w0"], barra_ctx["alpha"]
+    nav = 1e6
+    styles = ["size", "liquidity"]
+    # a timid book (high risk aversion) well inside every cap
+    base_cfg = ls_cfg(risk_aversion=50.0, max_position_weight=0.05, style_band_sd=0.05)
+    base = SinglePeriodOptimizer(base_cfg, SimpleCostModel(zero=True)).solve(
+        a, r, w0, nav, snap, neutral_styles=styles)
+    assert base.status == "optimal" and base.w_target.abs().sum() < 1.0
+    target = min(2.0 * base.expected_risk, 0.5 * base.expected_risk * base_cfg.gross_leverage_max
+                 / base.w_target.abs().sum())   # reachable without hitting the gross cap
+    cfg = dataclasses.replace(base_cfg, target_vol_annual=target, vol_target_scale_up=True)
+    opt = SinglePeriodOptimizer(cfg, SimpleCostModel(zero=True))
+    up = opt.solve(a, r, w0, nav, snap, neutral_styles=styles)
+    assert up.status == "optimal" and up.vol_scalar > 1.2
+    assert any("projection" in n for n in up.notes)
+    # predicted vol lands on the target (caps not binding) and never above it
+    assert up.expected_risk <= target * (1 + 1e-3)
+    assert up.expected_risk >= 0.9 * target
+    _assert_all_constraints(up, cfg, r, snap, nav, w0, opt, neutral_styles=styles)
+
+    # with binding caps (tight ADV, pre-existing opposite-sign book, style band at
+    # the edge): scaling is still feasible and every band holds after it
+    rng = np.random.default_rng(2)
+    w_prev = -base.w_target * 0.5 + pd.Series(rng.standard_normal(len(w0)), index=w0.index) * 1e-3
+    cfg2 = dataclasses.replace(cfg, max_adv_participation=0.01, net_exposure_band=0.02, beta_band=0.02)
+    opt2 = SinglePeriodOptimizer(cfg2, SimpleCostModel(zero=True))
+    up2 = opt2.solve(a, r, w_prev, 5e7, snap, neutral_styles=styles)
+    assert up2.status == "optimal"
+    assert up2.expected_risk <= target * (1 + 1e-3)
+    _assert_all_constraints(up2, cfg2, r, snap, 5e7, w_prev, opt2, neutral_styles=styles)
+
+
+def test_vol_target_scale_down_respects_no_trade_and_participation(barra_ctx):
+    r, snap, a = barra_ctx["risk"], barra_ctx["snap"], barra_ctx["alpha"]
+    nav = 2e7
+    hi = SinglePeriodOptimizer(ls_cfg(max_position_weight=0.05), SimpleCostModel(zero=True)).solve(
+        a, r, barra_ctx["w0"], nav, snap)
+    nt = list(hi.w_target.abs().sort_values().index[-3:])
+    w_prev = hi.w_target.copy()
+    cfg = ls_cfg(max_position_weight=0.05, target_vol_annual=0.5 * hi.expected_risk, max_adv_participation=0.02)
+    opt = SinglePeriodOptimizer(cfg, SimpleCostModel(zero=True))
+    lo = opt.solve(a, r, w_prev, nav, snap, no_trade=nt)
+    assert lo.status == "optimal"
+    assert lo.expected_risk <= cfg.target_vol_annual * (1 + 1e-3)
+    assert (lo.w_target[nt] == w_prev[nt]).all()         # no-trade names untouched by the scaling
+    _assert_all_constraints(lo, cfg, r, snap, nav, w_prev, opt)
+
+
+def test_failed_solve_semantics_and_optin_participation_relax(barra_ctx, caplog):
+    import logging
+    r, snap, a = barra_ctx["risk"], barra_ctx["snap"], barra_ctx["alpha"]
+    # current book violates the per-name cap and the ADV cap is far too small to fix it in one day
+    w_prev = barra_ctx["w0"].copy()
+    w_prev.iloc[0] = 0.10
+    cfg = ls_cfg(max_position_weight=0.02)
+    nav = 1e10
+    with caplog.at_level(logging.WARNING, logger="qts.portfolio.optimizer"):
+        res = SinglePeriodOptimizer(cfg, SimpleCostModel()).solve(a, r, w_prev, nav, snap)
+    assert res.status not in ("optimal", "optimal_inaccurate")
+    assert not res.ok
+    assert np.isnan(res.expected_cost)
+    assert res.turnover == 0.0
+    pd.testing.assert_series_equal(res.w_target, w_prev.reindex(res.w_target.index), check_names=False)
+    assert any("optimizer failed" in rec.getMessage() for rec in caplog.records)
+    # opt-in relaxation: solves without the caps and says so
+    cfg2 = ls_cfg(max_position_weight=0.02, relax_participation_on_infeasible=True)
+    res2 = SinglePeriodOptimizer(cfg2, SimpleCostModel()).solve(a, r, w_prev, nav, snap)
+    assert res2.ok
+    assert any("relaxed" in n for n in res2.notes)
+    assert res2.w_target.iloc[0] <= 0.02 + BARRA_TOL
+
+
+def test_force_to_zero_and_out_of_model_names(barra_ctx):
+    r, snap, a = barra_ctx["risk"], barra_ctx["snap"], barra_ctx["alpha"].copy()
+    tk = a.abs().idxmax()
+    w_prev = barra_ctx["w0"].copy()
+    w_prev[tk] = 0.015
+    cfg = ls_cfg()
+    opt = SinglePeriodOptimizer(cfg, SimpleCostModel(zero=True))
+    free = opt.solve(a, r, w_prev, 1e6, snap)
+    assert abs(free.w_target[tk]) > 0.005                     # the alpha wants to hold it
+    half = opt.solve(a, r, w_prev, 1e6, snap, force_to_zero={tk: 0.0075})
+    assert half.status == "optimal" and abs(half.w_target[tk]) <= 0.0075 + BARRA_TOL
+    out = opt.solve(a, r, w_prev, 1e6, snap, force_to_zero={tk: 0.0})
+    assert out.status == "optimal" and abs(out.w_target[tk]) <= BARRA_TOL
+    # a name the risk model does not know: zero exposure, 90th-pct specific var, counted
+    a2 = pd.concat([a, pd.Series({"ZZZ_NOT_IN_MODEL": a.abs().max()})])
+    res = opt.solve(a2, r, w_prev, 1e6, snap)
+    assert res.status == "optimal"
+    assert res.n_out_of_model == 1
+    assert any("outside the risk model universe" in n for n in res.notes)
+    assert free.n_out_of_model == 0
+
+
+# ------------------------------------------------------- simulator eligibility hook
+def test_simulator_eligibility_hook_unwinds_and_blocks(md, risk_model, alpha_model):
+    from qts.backtest import DailyBarSimulator
+    from qts.core.config import SystemConfig
+    cfg = SystemConfig()
+    cfg.portfolio.risk_aversion = 3.0
+    cfg.portfolio.exit_ineligible_days = 4
+    cm = SimpleCostModel(zero=True)
+    opt = SinglePeriodOptimizer(cfg.portfolio, cm)
+    dates = md.dates[-26:]
+    # names the planted alpha wants long on the first day
+    a0 = alpha_model.as_of(dates[0]).expected_return
+    held_tk = a0.idxmax()
+    blocked_tk = a0.sort_values().index[-2]
+    cut = dates[8]
+
+    def eligible_fn(t):
+        if t < cut:
+            return md.tickers.drop(blocked_tk)
+        return md.tickers.drop([held_tk, blocked_tk])
+
+    res = DailyBarSimulator(cfg, cm).run(md, dates, alpha_model.as_of, risk_model.as_of, opt, nav0=1e6,
+                                         eligible_fn=eligible_fn)
+    W = res.weights
+    assert (W[blocked_tk].abs() < 1e-9).all()                         # never opened
+    assert W.loc[dates[7], held_tk] > 0.002                           # held while eligible
+    w_at_cut = W.loc[dates[7], held_tk]
+    post = W.loc[cut:, held_tk]
+    assert (post.abs() <= w_at_cut + 1e-9).all()
+    assert abs(W.loc[dates[8 + 3], held_tk]) < 1e-9                   # flat after exit_ineligible_days
+    assert (W.loc[dates[12]:, held_tk].abs() < 1e-9).all()            # never re-opened
+    # linear schedule: cap_k = w0 * (1 - k/4); each day stays within it
+    for k in range(1, 4):
+        assert abs(W.loc[dates[8 + k - 1], held_tk]) <= w_at_cut * (1 - k / 4) + 1e-6
+    fe = res.diagnostics["forced_exits"]
+    assert any(d["ticker"] == held_tk and d["date"] == cut for d in fe)
+    assert res.diagnostics["n_ineligible_name_days"] > 0
+    assert res.summary()["n_failed_solves"] == 0
+
+    # same thing through md.eligible (wide bool panel), which takes precedence
+    elig = pd.DataFrame(True, index=md.dates, columns=md.tickers)
+    elig[blocked_tk] = False
+    elig.loc[cut:, held_tk] = False
+    md_e = dataclasses.replace(md, eligible=elig)
+    res2 = DailyBarSimulator(cfg, cm).run(md_e, dates, alpha_model.as_of, risk_model.as_of, opt, nav0=1e6)
+    pd.testing.assert_frame_equal(res2.weights, W, atol=1e-6)

@@ -25,15 +25,28 @@ Calibration regresses, pooled across orders, ``y = s*(VWAP - P_arr)/P_arr -
 half_spread`` (return units) on ``x = sigma * sqrt(F / V)`` through the
 origin, and shrinks the OLS slope toward the prior ``b`` using
 ``prior_weight`` pseudo-observations.
+
+**Venue volume.**  ``V`` is the volume the cost model uses for the order's
+venue: full-day ADV for continuous-session orders and ``auction_share * ADV``
+for closing-auction orders (``b_auction`` is defined against auction volume;
+regressing auction fills on full ADV would recover ``b_auction/sqrt(share)``,
+3.3x too large at a 9% share).  The venue comes from ``record_order(venue=)``
+or ``meta['order_type'] in {MOC, LOC}``; the auction share from
+``close_order(auction_share=)``, else ``SquareRootImpact.auction_share_for_date``
+on the decision date; ``close_order(venue_volume=)`` overrides ``V`` outright
+(e.g. the realised auction print).  Use :meth:`TCALedger.calibrate_b_by_venue`
+to update ``impact_b_auction`` and ``impact_b_continuous`` separately.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
+
+from qts.tcost.impact import SquareRootImpact
 
 ADV_BUCKETS = [0.0, 0.01, 0.05, 0.10, np.inf]
 ADV_LABELS = ["<1%ADV", "1-5%ADV", "5-10%ADV", ">10%ADV"]
@@ -42,7 +55,10 @@ VOL_LABELS = ["low_vol", "mid_vol", "high_vol"]
 
 ORDER_COLUMNS = ["order_id", "ticker", "side", "qty", "decision_px", "decision_ts", "arrival_px",
                  "arrival_ts", "close_px", "next_open_px", "adv_shares", "sigma_daily", "fees",
-                 "half_spread_bps", "closed", "meta"]
+                 "half_spread_bps", "venue", "auction_share", "venue_volume", "closed", "meta"]
+VENUE_AUCTION = "auction"
+VENUE_CONTINUOUS = "continuous"
+AUCTION_ORDER_TYPES = ("MOC", "LOC")
 FILL_COLUMNS = ["order_id", "qty", "px", "ts", "venue"]
 
 
@@ -62,15 +78,22 @@ class TCALedger:
 
     # ---------------------------------------------------------------- record
     def record_order(self, order_id: str, ticker: str, side: str, qty: float, decision_px: float,
-                     decision_ts, arrival_px: float, arrival_ts, **meta) -> None:
+                     decision_ts, arrival_px: float, arrival_ts, venue: Optional[str] = None,
+                     **meta) -> None:
+        """``venue`` is "auction" or "continuous"; when omitted it is derived from
+        ``meta['order_type']`` (MOC/LOC -> auction) and defaults to continuous.
+        ``order_id`` must be unique across days (prefix it with the date)."""
         if order_id in self.orders:
             raise KeyError(f"order {order_id} already recorded")
+        if venue is None:
+            venue = VENUE_AUCTION if str(meta.get("order_type", "")).upper() in AUCTION_ORDER_TYPES else VENUE_CONTINUOUS
         self.orders[order_id] = dict(
             order_id=order_id, ticker=ticker, side=side, qty=abs(float(qty)),
             decision_px=float(decision_px), decision_ts=pd.Timestamp(decision_ts),
             arrival_px=float(arrival_px), arrival_ts=pd.Timestamp(arrival_ts),
             close_px=np.nan, next_open_px=np.nan, adv_shares=np.nan, sigma_daily=np.nan,
-            fees=0.0, half_spread_bps=0.0, closed=False, meta=dict(meta),
+            fees=0.0, half_spread_bps=0.0, venue=str(venue), auction_share=np.nan,
+            venue_volume=np.nan, closed=False, meta=dict(meta),
         )
 
     def record_fill(self, order_id: str, qty: float, px: float, ts, venue: str = "") -> None:
@@ -80,11 +103,17 @@ class TCALedger:
                                ts=pd.Timestamp(ts), venue=venue))
 
     def close_order(self, order_id: str, close_px: float, next_open_px: float, adv_shares: float,
-                    sigma_daily: float, fees: float = 0.0, half_spread_bps: float = 0.0) -> None:
+                    sigma_daily: float, fees: float = 0.0, half_spread_bps: float = 0.0,
+                    auction_share: Optional[float] = None, venue_volume: Optional[float] = None) -> None:
+        """``adv_shares`` is the 63-day ADV (participation denominator).
+        ``auction_share`` (auction orders) sets ``V = auction_share * adv_shares``;
+        ``venue_volume`` (shares) overrides ``V`` directly for either venue."""
         o = self.orders[order_id]
         o.update(close_px=float(close_px), next_open_px=float(next_open_px),
                  adv_shares=float(adv_shares), sigma_daily=float(sigma_daily),
-                 fees=float(fees), half_spread_bps=float(half_spread_bps), closed=True)
+                 fees=float(fees), half_spread_bps=float(half_spread_bps), closed=True,
+                 auction_share=np.nan if auction_share is None else float(auction_share),
+                 venue_volume=np.nan if venue_volume is None else float(venue_volume))
 
     # ----------------------------------------------------------------- views
     def orders_frame(self) -> pd.DataFrame:
@@ -114,14 +143,19 @@ class TCALedger:
         Columns: ticker, side, qty, filled_qty, fill_rate, decision_notional,
         delay_bps, impact_bps, opportunity_bps, fees_bps, total_is_bps,
         reversion_bps, arrival_slippage_bps (unweighted VWAP vs arrival),
-        participation (filled / ADV), sigma_daily, adv_bucket, vol_bucket,
-        impact_x (= sigma*sqrt(F/ADV), the calibration regressor).
+        participation (filled / ADV), sigma_daily, adv_bucket, vol_bucket, venue,
+        venue_volume (V: ADV for continuous, auction_share*ADV for auction),
+        venue_participation (F/V), impact_x (= sigma*sqrt(F/V), the calibration
+        regressor).
         """
         o = self.orders_frame()
         if closed_only:
             o = o[o["closed"].astype(bool)]
         if o.empty:
             return pd.DataFrame()
+        for col, default in (("venue", VENUE_CONTINUOUS), ("auction_share", np.nan), ("venue_volume", np.nan)):
+            if col not in o.columns:          # ledgers saved before venue tracking
+                o[col] = default
         fs = self._fill_stats().reindex(o.index)
         filled = fs["filled_qty"].fillna(0.0)
         vwap = fs["fill_vwap"]
@@ -139,9 +173,17 @@ class TCALedger:
         total = delay + impact + opportunity + fees
         reversion = (s * filled * (vwap - pnext) * k).fillna(0.0)
         arr_slip = (s * (vwap - parr) / parr * 1e4)
-        participation = filled / o["adv_shares"].astype(float)
+        adv = o["adv_shares"].astype(float)
+        participation = filled / adv
+        venue = o["venue"].fillna(VENUE_CONTINUOUS).astype(str)
+        is_auc = venue == VENUE_AUCTION
+        share = o["auction_share"].astype(float)
+        share_default = pd.Series([SquareRootImpact.auction_share_for_date(ts) for ts in o["decision_ts"]], index=o.index)
+        share = share.fillna(share_default)
+        venue_vol = adv.where(~is_auc, adv * share)
+        venue_vol = o["venue_volume"].astype(float).fillna(venue_vol)
         with np.errstate(invalid="ignore", divide="ignore"):
-            impact_x = o["sigma_daily"].astype(float) * np.sqrt(participation)
+            impact_x = o["sigma_daily"].astype(float) * np.sqrt(filled / venue_vol)
 
         out = pd.DataFrame({
             "ticker": o["ticker"], "side": o["side"], "qty": qty, "filled_qty": filled,
@@ -150,6 +192,7 @@ class TCALedger:
             "fees_bps": fees, "total_is_bps": total, "reversion_bps": reversion,
             "arrival_slippage_bps": arr_slip, "participation": participation,
             "sigma_daily": o["sigma_daily"].astype(float), "half_spread_bps": o["half_spread_bps"].astype(float),
+            "venue": venue, "venue_volume": venue_vol, "venue_participation": filled / venue_vol,
             "impact_x": impact_x, "decision_ts": o["decision_ts"],
         })
         out["adv_bucket"] = pd.cut(out["participation"].fillna(0.0), ADV_BUCKETS, labels=ADV_LABELS,
@@ -179,27 +222,37 @@ class TCALedger:
 
     # ------------------------------------------------------------ calibrate
     def calibrate_b(self, prior_b: float = 1.0, prior_weight: float = 20.0,
-                    min_fill_rate: float = 0.5) -> Tuple[float, Dict[str, float]]:
-        """Pooled through-the-origin regression of arrival slippage on ``sigma*sqrt(F/V)``.
+                    min_fill_rate: float = 0.5, venue: Optional[str] = None) -> Tuple[float, Dict[str, float]]:
+        """Through-the-origin regression of arrival slippage on ``sigma*sqrt(F/V)``.
 
         ``y_i = s_i*(VWAP_i - P_arr_i)/P_arr_i - half_spread_i`` (return units),
-        ``x_i = sigma_i * sqrt(F_i / ADV_i)``.  ``b_ols = sum(xy)/sum(x^2)``.
-        Shrinkage: ``b = (n*b_ols + prior_weight*prior_b) / (n + prior_weight)``.
+        ``x_i = sigma_i * sqrt(F_i / V_i)`` with ``V_i`` the **venue** volume
+        (ADV for continuous, auction_share*ADV for auction orders).
+        ``b_ols = sum(xy)/sum(x^2)``.  Shrinkage:
+        ``b = (n*b_ols + prior_weight*prior_b) / (n + prior_weight)``.
+
+        ``venue=None`` pools all orders (each on its own ``V``; only meaningful
+        if ``b`` is believed common across venues); ``venue="auction"`` /
+        ``"continuous"`` restricts to that venue -- that is what should feed
+        ``impact_b_auction`` / ``impact_b_continuous`` (see
+        :meth:`calibrate_b_by_venue`).
 
         Returns ``(b, diagnostics)`` where diagnostics has ``n, b_ols, r2, se,
-        prior_b, prior_weight``.  With no usable orders returns ``prior_b``.
+        prior_b, prior_weight, venue``.  With no usable orders returns ``prior_b``.
         """
+        empty = {"n": 0, "b_ols": np.nan, "r2": np.nan, "se": np.nan,
+                 "prior_b": float(prior_b), "prior_weight": float(prior_weight), "venue": venue}
         d = self.decompose()
         if d.empty:
-            return float(prior_b), {"n": 0, "b_ols": np.nan, "r2": np.nan, "se": np.nan,
-                                    "prior_b": prior_b, "prior_weight": prior_weight}
+            return float(prior_b), empty
         d = d[(d["filled_qty"] > 0) & (d["fill_rate"] >= min_fill_rate) & np.isfinite(d["impact_x"]) & (d["impact_x"] > 0)]
+        if venue is not None:
+            d = d[d["venue"] == venue]
         y = (d["arrival_slippage_bps"] - d["half_spread_bps"]).values / 1e4
         x = d["impact_x"].values
         n = len(x)
         if n == 0:
-            return float(prior_b), {"n": 0, "b_ols": np.nan, "r2": np.nan, "se": np.nan,
-                                    "prior_b": prior_b, "prior_weight": prior_weight}
+            return float(prior_b), empty
         sxx = float(x @ x)
         b_ols = float(x @ y) / sxx
         resid = y - b_ols * x
@@ -209,7 +262,21 @@ class TCALedger:
         r2 = float(1 - (resid @ resid) / ss_tot) if ss_tot > 0 else np.nan
         b = (n * b_ols + prior_weight * prior_b) / (n + prior_weight)
         return float(b), {"n": int(n), "b_ols": b_ols, "r2": r2, "se": se,
-                          "prior_b": float(prior_b), "prior_weight": float(prior_weight)}
+                          "prior_b": float(prior_b), "prior_weight": float(prior_weight), "venue": venue}
+
+    def calibrate_b_by_venue(self, prior_b: Optional[Dict[str, float]] = None, prior_weight: float = 20.0,
+                             min_fill_rate: float = 0.5) -> Dict[str, Tuple[float, Dict[str, float]]]:
+        """:meth:`calibrate_b` once per venue.  ``prior_b`` maps venue -> prior
+        (default ``CostConfig().impact_b_auction`` / ``impact_b_continuous``).
+        Returns ``{"auction": (b, diag), "continuous": (b, diag)}``; the two
+        numbers are the updates for ``impact_b_auction`` and ``impact_b_continuous``."""
+        if prior_b is None:
+            from qts.core.config import CostConfig
+            c = CostConfig()
+            prior_b = {VENUE_AUCTION: c.impact_b_auction, VENUE_CONTINUOUS: c.impact_b_continuous}
+        return {v: self.calibrate_b(prior_b=prior_b.get(v, 1.0), prior_weight=prior_weight,
+                                    min_fill_rate=min_fill_rate, venue=v)
+                for v in (VENUE_AUCTION, VENUE_CONTINUOUS)}
 
     # ------------------------------------------------------------ persist
     def save(self, path: Union[str, Path], fmt: str = "parquet") -> None:

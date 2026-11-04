@@ -24,7 +24,7 @@ contract between the alpha layer and the portfolio layer.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -49,8 +49,27 @@ class MarketData:
     gross_profitability: Optional[Wide] = None
     asset_growth: Optional[Wide] = None
     extra: Dict[str, Wide] = field(default_factory=dict)
+    #: Optional boolean panel (date x ticker): True where the name is in the
+    #: investable universe *as of that date* (set by ``qts.data.universe.apply_mask``).
+    #: ``None`` means "every name with a price is eligible".  Every cross-sectional
+    #: statistic in the alpha layer (ranks, z-scores, labels, IC, emitted scores)
+    #: is computed over ``eligibility()`` only, so future universe membership can
+    #: never leak into the cross-section at ``t``.
+    eligible: Optional[Wide] = None
 
     # ------------------------------------------------------------------ derived
+    def eligibility(self) -> Wide:
+        """Per-date boolean panel: in the universe at ``t`` *and* has a close at ``t``.
+
+        Falls back to ``close.notna()`` when no universe mask has been applied.
+        This is the only function the alpha layer should use to decide which
+        names enter a cross-section.
+        """
+        alive = self.close.notna()
+        if self.eligible is None:
+            return alive
+        e = self.eligible.reindex(index=alive.index, columns=alive.columns)
+        return e.fillna(False).astype(bool) & alive
     @property
     def returns(self) -> Wide:
         return self.close.pct_change(fill_method=None)
@@ -89,6 +108,7 @@ class MarketData:
             book_to_price=cut(self.book_to_price), earnings_yield=cut(self.earnings_yield),
             gross_profitability=cut(self.gross_profitability), asset_growth=cut(self.asset_growth),
             extra={k: cut(v) for k, v in self.extra.items()},
+            eligible=cut(self.eligible),
         )
 
 
@@ -103,6 +123,11 @@ class RiskModelOutput:
     ``alignment_var`` is the optional alpha-alignment term (Saxena-Stubbs):
     a unit-norm vector ``y`` and scalar ``nu`` such that the augmented
     covariance is ``B F B' + D + nu * y y'``.
+    ``factor_groups`` tells consumers which *role* each factor column plays
+    (keys ``"market"``, ``"industry"``, ``"style"``, ``"statistical"``,
+    ``"alignment"``; values are lists of column names of ``exposures``).  The
+    portfolio layer uses it to pick the beta style, the industry block and the
+    style block without string matching; an empty dict means "unknown".
     """
 
     date: pd.Timestamp
@@ -112,6 +137,7 @@ class RiskModelOutput:
     factor_returns: pd.DataFrame
     alignment_vector: Optional[pd.Series] = None
     alignment_var: float = 0.0
+    factor_groups: Dict[str, List[str]] = field(default_factory=dict)
 
     @property
     def tickers(self) -> pd.Index:

@@ -14,8 +14,10 @@ The *integrated* cost of a trade of ``x`` dollars, used by the optimizer, is
 
 where ``a`` is the proportional cost (half-spread + linear explicit fees).
 ``b`` is ``cfg.impact_b_continuous`` (1.0) for continuous-session execution and
-``cfg.impact_b_auction`` (1.5, review item 9) for closing-auction fills, where
-``V`` must be the *auction* volume, not full-day ADV.
+``cfg.impact_b_auction`` (0.5; a prior to be recalibrated from own fills via
+``TCALedger.calibrate_b_by_venue``) for closing-auction fills, where ``V`` must
+be the *auction* volume, not full-day ADV.  Because ``V`` is ~9% of ADV, the
+effective auction coefficient per ``sqrt(Q/ADV)`` is ``0.5/sqrt(0.09) = 1.67``.
 
 Units
 -----
@@ -52,6 +54,17 @@ ArrayLike = Union[float, np.ndarray, pd.Series]
 
 VENUE_CONTINUOUS = "continuous"
 VENUE_AUCTION = "auction"
+
+# FTSE Russell moved the Russell US indexes to a semi-annual reconstitution
+# from 2026 (June + a second review late in the year).  The June date follows
+# the last-Friday-of-June rule in ``auction_share_for_date``; the second one is
+# published each year and must be added here.  2026: effective after the close
+# on Friday 11 December 2026 (rank day 30 October; FTSE Russell press release,
+# 1 September 2026).  Share of ADV in the close on those days is a placeholder
+# equal to the June figure (~34%).
+RUSSELL_RECON_DATES = {
+    pd.Timestamp("2026-12-11"): 0.34,
+}
 
 
 class SquareRootImpact:
@@ -178,12 +191,16 @@ class SquareRootImpact:
 
         Defaults (BMLL): ~9% on a normal day, ~20% on quarterly index
         rebalance / expiration days (third Friday of Mar/Jun/Sep/Dec), ~34% on
-        Russell reconstitution day (last Friday of June).  Any other date ->
-        ``share_default``.  Replace with a forecast model later (plan sec. 6).
+        Russell reconstitution day (last Friday of June and, from 2026, the
+        second semi-annual reconstitution listed in :data:`RUSSELL_RECON_DATES`).
+        Any other date -> ``share_default``.  Replace with a forecast model
+        later (plan sec. 6).
         """
         if date is None:
             return share_default
         d = pd.Timestamp(date)
+        if d.normalize() in RUSSELL_RECON_DATES:
+            return max(share_default, RUSSELL_RECON_DATES[d.normalize()])
         if d.weekday() != 4:
             return share_default
         # Russell reconstitution: last Friday of June (approximation of the official calendar)
@@ -214,7 +231,7 @@ class SquareRootImpact:
 
         Continuous: ``half_spread + b_cont * sigma * sqrt(Q/ADV)``.
         Auction:    ``auction_spread + b_auction * sigma * sqrt(Q / (share*ADV))``
-        with ``b_auction = cfg.impact_b_auction`` (1.5) and the auction volume
+        with ``b_auction = cfg.impact_b_auction`` (0.5) and the auction volume
         as ``V``.  Auction fills clear at a single price so the spread term
         defaults to 0 (set ``auction_spread_bps`` to be conservative).
         Returns a dict with both estimates and ``venue`` = the cheaper one.

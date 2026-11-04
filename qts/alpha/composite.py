@@ -69,11 +69,14 @@ def theme_portfolio_returns(processed: Long, md: MarketData, n_deciles: int = 10
     """Realised daily long-short (top minus bottom decile, equal-weight) return of
     each theme.  Portfolios are formed on the score at ``t`` and earn the return
     of ``t+1``; the series is indexed at the *realisation* date ``t+1`` so that
-    ``.loc[:t]`` is point-in-time.  Fully vectorised."""
+    ``.loc[:t]`` is point-in-time.  Only names eligible at ``t`` are ranked
+    (``processed`` already holds eligible rows only; the mask is re-applied for
+    safety).  Fully vectorised."""
     rets = md.returns
+    elig = md.eligibility()
     out = {}
     for th, score in theme_scores_wide(processed, themes).items():
-        score = score.reindex(index=rets.index, columns=rets.columns)
+        score = score.reindex(index=rets.index, columns=rets.columns).where(elig)
         pct = score.rank(axis=1, pct=True)
         long = (pct > 1 - 1 / n_deciles).astype(float)
         short = (pct <= 1 / n_deciles).astype(float)
@@ -115,7 +118,7 @@ def momentum_crash_scalar_series(md: MarketData, lookback_days: int = 504,
     """Per-date scalar in [floor, 1]: 1 normally; in a bear + high-vol state
     (trailing ``lookback_days`` EW market return < 0 and trailing 21d market vol
     above its expanding 80th percentile) ``clip(0.5 * vol_p80 / vol_21, floor, 1)``."""
-    mkt = md.returns.mean(axis=1)
+    mkt = md.returns.where(md.eligibility()).mean(axis=1)     # EW market over eligible names
     cum = np.exp(np.log1p(mkt).rolling(lookback_days, min_periods=min(252, lookback_days)).sum()) - 1.0
     vol = mkt.rolling(vol_window, min_periods=vol_window).std()
     p80 = vol.expanding(min_periods=126).quantile(vol_pct)
@@ -178,8 +181,13 @@ class ThemeComposite:
 
         ``dynamic=True`` requires ``md`` (and optionally precomputed
         ``theme_returns``) and applies the time-varying theme weights.
+        When ``md`` is given, scores are emitted only for names eligible at
+        each date (``md.eligibility()``); ineligible names are NaN.
         """
         themes = theme_scores_wide(processed, self.themes)
+        if md is not None:
+            elig = md.eligibility()
+            themes = {th: s.where(elig.reindex_like(s).fillna(False).astype(bool)) for th, s in themes.items()}
         available = list(themes.keys())
         if dynamic:
             if md is None:

@@ -14,7 +14,9 @@
   Fast signals are down-weighted as costs (hence holding periods) rise.  We
   apply this in *alpha space* (one combined alpha vector into a single-period
   optimizer) which reproduces the GP trajectory to first order and never
-  mixes portfolios.
+  mixes portfolios.  The shrink factors are applied to the alpha *level* by
+  default (``garleanu_pedersen_shrink(renormalize=False)``); GP shrinks the
+  magnitude of each signal, not just the mix.
 """
 from __future__ import annotations
 
@@ -80,27 +82,47 @@ def combine_in_forecast_space(scores: Mapping[str, pd.Series], weights: Mapping[
     return out
 
 
+def gp_sleeve_shrink_factors(half_lives: Mapping[str, float], cost_implied_holding_days: float) -> pd.Series:
+    """Un-normalised GP shrink factors ``1 / (1 + H / hl_k)`` in ``(0, 1]``."""
+    hl = pd.Series(half_lives, dtype=float).clip(lower=1e-6)
+    H = max(float(cost_implied_holding_days), 0.0)
+    return 1.0 / (1.0 + H / hl)
+
+
 def garleanu_pedersen_shrink(
     alphas: Dict[str, pd.Series],
     half_lives: Dict[str, float],
     cost_implied_holding_days: float,
     sleeve_weights: Optional[Dict[str, float]] = None,
+    renormalize: bool = False,
 ) -> pd.Series:
     """Combine per-sleeve alphas with GP half-life shrinkage.
 
-    weight_k ∝ prior_k / (1 + holding_days / half_life_k), normalised to sum
-    to one so the combined alpha stays on the scale of a single sleeve.
-    ``prior_k`` (``sleeve_weights``) defaults to equal.
+    ``alpha = sum_k  prior_k * g_k * alpha_k`` with ``g_k = 1 / (1 + H / hl_k)``
+    the GP shrink factor and ``prior_k`` the sleeve prior (``sleeve_weights``,
+    default equal, normalised to sum to one).
+
+    With the default ``renormalize=False`` the shrink factors are applied
+    **as is**, so the *level* of the combined alpha falls as the cost-implied
+    holding period ``H`` rises (a single sleeve with ``hl = H`` is halved) --
+    this is the Garleanu-Pedersen aim-portfolio behaviour, and the level matters
+    because it sets the alpha / risk / cost trade-off in the optimizer.  The IC
+    used upstream in :func:`grinold_alpha` is then the per-sleeve IC.
+    ``renormalize=True`` restores the older behaviour (weights normalised to
+    sum to one, i.e. the combined alpha keeps the scale of one sleeve and only
+    the *mix* changes); use it only when the alpha level is calibrated
+    elsewhere.
     """
     keys = [k for k in alphas if k in half_lives]
     if not keys:
         raise ValueError("no sleeves with a half-life")
-    gp = gp_sleeve_weights({k: half_lives[k] for k in keys}, cost_implied_holding_days)
-    if sleeve_weights:
-        pri = pd.Series({k: float(sleeve_weights.get(k, 1.0)) for k in keys})
-        gp = gp * pri
-        gp = gp / gp.sum()
-    return combine_in_forecast_space({k: alphas[k] for k in keys}, gp.to_dict())
+    g = gp_sleeve_shrink_factors({k: half_lives[k] for k in keys}, cost_implied_holding_days)
+    pri = pd.Series({k: float((sleeve_weights or {}).get(k, 1.0)) for k in keys})
+    pri = pri / pri.sum()
+    w = g * pri
+    if renormalize:
+        w = w / w.sum()
+    return combine_in_forecast_space({k: alphas[k] for k in keys}, w.to_dict())
 
 
 def cost_implied_holding_days(expected_alpha_per_day: float, round_trip_cost: float,

@@ -19,6 +19,7 @@ indicative_close_px``.  Missing ``auction_volume_est`` is derived from
 """
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -77,19 +78,40 @@ class ExecutionRouter:
             off = max(off, self.loc_offset_impact_mult * exp_imp)
         return off
 
+    @staticmethod
+    def tick_size(px: float) -> float:
+        """Reg NMS minimum increment: $0.01 at/above $1, $0.0001 below."""
+        return 0.01 if px >= 1.0 else 0.0001
+
+    @classmethod
+    def round_to_tick(cls, px: float, direction: str) -> float:
+        """Round ``px`` to the tick, ``direction`` "up" (ceil) or "down" (floor)."""
+        tick = cls.tick_size(px)
+        n = px / tick
+        n = round(n, 6)                       # kill float noise (7.0021/0.01 = 700.21 exactly)
+        k = math.ceil(n) if direction == "up" else math.floor(n)
+        return round(k * tick, 4 if tick < 0.01 else 2)
+
     def loc_limit(self, side: str, indicative_px: float, offset_bps: Optional[float] = None) -> float:
         """Limit ``offset_bps`` *through* the indicative on the order's side: buys
         above, sells below, so the order is marketable in the auction but
-        capped against a dislocated print."""
+        capped against a dislocated print.  Rounded to the tick in the
+        favourable (through) direction -- ceil for buys, floor for sells -- so
+        a small offset on a low-priced stock never rounds back onto the
+        indicative (a 3 bp offset on a $7 stock is $0.0021, i.e. one tick)."""
         off = (self.cfg.loc_offset_bps if offset_bps is None else offset_bps) / 1e4
-        px = indicative_px * (1 + off) if side == "BUY" else indicative_px * (1 - off)
-        return round(px, 2)
+        if side == "BUY":
+            return self.round_to_tick(indicative_px * (1 + off), "up")
+        return self.round_to_tick(indicative_px * (1 - off), "down")
 
     def passive_limit(self, side: str, indicative_px: float, half_spread_bps: float) -> float:
-        """Passive limit for reversal trades: buy at/below the bid, sell at/above the ask."""
+        """Passive limit for reversal trades: buy at/below the bid, sell at/above
+        the ask.  Rounded away from the indicative (buys floor, sells ceil) so
+        the order stays passive after rounding."""
         hs = max(float(half_spread_bps), 0.0) / 1e4
-        px = indicative_px * (1 - hs) if side == "BUY" else indicative_px * (1 + hs)
-        return round(px, 2)
+        if side == "BUY":
+            return self.round_to_tick(indicative_px * (1 - hs), "down")
+        return self.round_to_tick(indicative_px * (1 + hs), "up")
 
     # --------------------------------------------------------------- route
     def route(self, orders: List[Order], snapshot: Dict, signal_half_life_days: Optional[float] = None,

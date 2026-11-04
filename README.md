@@ -24,18 +24,23 @@ review amendments applied in code.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"            # add ".[data]" for yfinance / requests / polars
-pytest                             # ~100 tests, ~4 min (LightGBM walk-forward is the slow part)
+pytest                             # ~140 tests, ~4 min (LightGBM walk-forward and pipeline smoke are the slow part)
 
 python scripts/run_demo.py         # phase 1: rank composite on a synthetic market
 python scripts/run_demo.py --ml    # phase 2: + walk-forward LightGBM / ridge sleeve
 python scripts/run_real.py --help  # same pipeline on a ParquetStore of real data
 ```
 
-`run_demo.py` prints the backtest summary, alpha IC report, calendar-year
-fold Sharpes, cost sensitivity and the plan's hurdle gates. On the synthetic
-market (planted rank-IC ≈ 0.03 after residualisation) the composite earns a
-small positive net Sharpe and **fails the phase-1 gate** — which is the
-intended behaviour of the gates, not a bug: the demo validates plumbing.
+`run_demo.py` prints the backtest summary, alpha IC report (ICIR annualised at
+the sampled frequency), the value-weighted decile long-short t-stat, DSR with its
+ledger-derived trial count, calendar-year fold Sharpes, cost sensitivity and the
+plan's hurdle gates. Each gate reports `PASS` / `FAIL` / `skipped`; a gate whose
+input is unavailable (e.g. PBO without a configuration grid, see
+`SystemConfig.pipeline_pbo_configs`) is *skipped* and only the required gates
+(`phase_sharpe`, `suspect`, `dsr`) fail `overall` when missing. On the synthetic
+market the composite earns a small net Sharpe and generally **fails the phase-1
+gate** on merit (t-stat / phase Sharpe), not by construction: the demo validates
+plumbing.
 
 ## Programmatic use
 
@@ -67,12 +72,22 @@ w  = SinglePeriodOptimizer(SystemConfig().portfolio, tc).solve(ao.expected_retur
 
 * Every feature is a function of data with timestamp ≤ *t*; `qts.validation.leakage.pit_shift_test`
   rebuilds features on `md.slice_until(t)` and asserts equality.
+* The investable universe is point-in-time: `apply_mask` stores the per-date membership on
+  `MarketData.eligible`, and every cross-sectional statistic in the alpha layer (winsorisation,
+  ranks, labels, IC, emitted scores) uses `md.eligibility()` at that date only — a name that enters
+  the universe in 2015 is not in the 2010 cross-section, and dead names are never scored.
 * Labels (forward returns) are residualised on **risk-only** styles (beta, size, residual vol,
   liquidity, short-term reversal) plus market and industries — never on the alpha themes, which
-  would define the alpha away.
+  would define the alpha away. This holds for the library default (`qts.alpha.targets.DEFAULT_STYLE_EXPOSURES`)
+  and for the pipeline; the pipeline's exposures hook raises on any failure other than the risk
+  model's warm-up, so the label definition cannot change silently mid-sample.
+* Labels of names that delist inside the forward window use the return to the last close times
+  `1 + AlphaConfig.delisting_return` (default −30 %, conservative CRSP-style) instead of NaN.
 * Walk-forward training purges any label whose forward window overlaps the prediction
   date and applies an embargo ≥ horizon; the trailing validation block is purged the same way.
-* The trial ledger is append-only; the deflated Sharpe ratio is computed from its trial count.
+* The trial ledger is append-only; the deflated Sharpe ratio is computed from its trial count,
+  the cross-trial Sharpe variance and Nyholt effective trials of the pipeline's family. Identical
+  re-runs (same config hash + data hash) update the record instead of adding a trial.
 
 ## Status and what is next
 

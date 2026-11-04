@@ -258,3 +258,47 @@ def test_alpha_model_as_of(md, cfg):
     assert "ml" not in early.components or early.components["ml"].isna().all()
     print(f"\n[alpha_model] trailing OOS IC used at {d.date()}: {am.trailing_ic(d):.4f}; "
           f"shrunk IC {out.ic_estimate:.4f}; half-life {out.half_life_days:.1f} d")
+
+
+# --------------------------------------------------------------------------- universe eligibility (audit finding 1)
+def test_cross_section_uses_only_eligible_names():
+    """With a time-varying universe, feature rows, labels and emitted scores must
+    contain only names eligible *at that date*, and ``as_of(t)`` must not depend
+    on future universe membership."""
+    from qts.core.config import UniverseConfig
+    from qts.core.types import to_long
+    from qts.data.universe import apply_mask, build_universe_mask
+
+    md_full = generate(SyntheticSpec(n_stocks=300, n_days=700, seed=11))
+    ucfg = UniverseConfig(top_n_by_mcap=120, min_adv_usd=0.0, exclude_bottom_size_quantile=0.0)
+    mask = build_universe_mask(md_full, ucfg)
+    md_u = apply_mask(md_full, mask)
+    assert md_u.eligible is not None
+    n_in = md_u.eligible.sum(axis=1)
+    assert n_in.iloc[50:].max() < md_u.tickers.size            # names ever in > names in at t (hysteresis allows >120)
+    acfg = AlphaConfig(train_min_days=300, refit_frequency_days=126, model_seeds=1)
+    am = AlphaModel(acfg, use_ml=False).fit(md_u)
+    elig_long = to_long(md_u.eligibility(), "e")
+    # every feature row is eligible at its own date
+    rows = elig_long.reindex(am.X_.index)
+    assert rows.notna().all() and rows.all()
+    # labels only for eligible names
+    assert not (am.target_.notna() & ~md_u.eligibility()).any().any()
+    # emitted scores only for eligible names at t
+    for t in (md_u.dates[400], md_u.dates[-30]):
+        out = am.as_of(t)
+        ok = md_u.eligibility().loc[t]
+        assert set(out.score.index) <= set(ok[ok].index)
+        assert len(out.score) == int(ok.sum())
+    # as_of(t) is invariant to altering the mask after t (no future-membership leakage)
+    t = md_u.dates[450]
+    ref = am.as_of(t)
+    mask2 = mask.copy()
+    fut = mask2.index > t
+    mask2.loc[fut] = ~mask2.loc[fut].to_numpy()            # flip all future membership
+    mask2.loc[fut] &= md_full.close.notna().loc[fut]
+    am2 = AlphaModel(acfg, use_ml=False).fit(apply_mask(md_full, mask2))
+    alt = am2.as_of(t)
+    pd.testing.assert_series_equal(ref.score, alt.score.reindex(ref.score.index), rtol=1e-9, atol=1e-10)
+    pd.testing.assert_series_equal(ref.expected_return, alt.expected_return.reindex(ref.score.index),
+                                   rtol=1e-9, atol=1e-10)

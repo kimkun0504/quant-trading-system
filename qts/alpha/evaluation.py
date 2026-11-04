@@ -48,12 +48,34 @@ def rank_ic_series(pred: Wide, target: Wide) -> pd.Series:
 
 
 # ----------------------------------------------------------------------------- IC report
-def ic_report(pred: Wide, target: Wide, periods_per_year: int = 252) -> Dict:
-    """Mean rank IC, sd, ICIR (annualised), t-stat, hit rate and by-year table."""
+def infer_periods_per_year(index: pd.Index, trading_days_per_year: int = 252) -> float:
+    """Observations per year implied by the index spacing: ``252 / median gap``
+    where the gap is measured in business days (so a series sampled every 20
+    trading days gives 12.6, a daily series 252)."""
+    idx = pd.DatetimeIndex(index).sort_values()
+    if len(idx) < 2:
+        return float(trading_days_per_year)
+    gaps = np.diff(idx.values).astype("timedelta64[D]").astype(float)
+    med_cal = float(np.median(gaps))
+    med_bdays = max(1.0, round(med_cal * 5.0 / 7.0)) if med_cal > 1.5 else 1.0
+    return trading_days_per_year / med_bdays
+
+
+def ic_report(pred: Wide, target: Wide, periods_per_year: Optional[float] = None,
+              trading_days_per_year: int = 252) -> Dict:
+    """Mean rank IC, sd, ICIR (annualised), t-stat, hit rate and by-year table.
+
+    ``periods_per_year`` (for the ICIR annualisation) defaults to the sampling
+    frequency *inferred from the IC series' index spacing* (median gap in
+    business days -> ``252 / gap``), so a score panel sampled every ``H`` days
+    is annualised with ``252 / H`` rather than 252 (audit finding 4).  The
+    t-stat uses ``n`` as is and is unaffected.
+    """
     ic = rank_ic_series(pred, target).dropna()
     if len(ic) == 0:
         return {"n": 0, "mean_ic": np.nan, "ic_sd": np.nan, "icir": np.nan, "t_stat": np.nan,
-                "hit_rate": np.nan, "by_year": pd.DataFrame(), "ic_series": ic}
+                "hit_rate": np.nan, "by_year": pd.DataFrame(), "ic_series": ic, "periods_per_year": np.nan}
+    ppy = float(periods_per_year) if periods_per_year is not None else infer_periods_per_year(ic.index, trading_days_per_year)
     mean, sd = float(ic.mean()), float(ic.std(ddof=1))
     by_year = ic.groupby(ic.index.year).agg(["mean", "std", "count"])
     by_year["t_stat"] = by_year["mean"] / by_year["std"] * np.sqrt(by_year["count"])
@@ -61,11 +83,12 @@ def ic_report(pred: Wide, target: Wide, periods_per_year: int = 252) -> Dict:
         "n": int(len(ic)),
         "mean_ic": mean,
         "ic_sd": sd,
-        "icir": mean / sd * np.sqrt(periods_per_year) if sd > 0 else np.nan,
+        "icir": mean / sd * np.sqrt(ppy) if sd > 0 else np.nan,
         "t_stat": mean / sd * np.sqrt(len(ic)) if sd > 0 else np.nan,
         "hit_rate": float((ic > 0).mean()),
         "by_year": by_year,
         "ic_series": ic,
+        "periods_per_year": ppy,
     }
 
 
