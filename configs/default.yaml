@@ -1,0 +1,7 @@
+# Mirror of qts.core.config defaults (documentation; the dataclasses are the source of truth).
+universe: {top_n_by_mcap: 1000, min_price: 5.0, min_adv_usd: 2000000, exclude_bottom_size_quantile: 0.20}
+alpha:    {horizon_days: 20, ic_shrink: 0.5, default_ic: 0.03, factor_momentum_max_tilt: 0.25, refit_frequency_days: 252}
+risk:     {vol_half_life: 84, corr_half_life: 504, vra_half_life: 42, newey_west_lags_vol: 5, newey_west_lags_corr: 2, specific_shrink_q: 0.1, alignment: true}
+cost:     {impact_b_continuous: 1.0, impact_b_auction: 0.5, auction_volume_share_default: 0.09, max_participation_adv: 0.05}
+portfolio:{book: long_short, gross_leverage_max: 2.0, max_position_weight: 0.02, risk_aversion: 10.0, target_vol_annual: 0.10, effective_holding_days_target: 50}
+validation:{phase1_min_net_sharpe: 0.3, phase2_min_net_sharpe: 0.5, dsr_threshold: 0.95, pbo_threshold: 0.5, hurdle_t_stat: 3.0}
