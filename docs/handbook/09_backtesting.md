@@ -217,25 +217,23 @@ where $w_0$ is the weight when the exit started, $k$ the number of days since, a
 With `rebalance_every = k > 1`, the optimiser runs only every $k$-th date. On other days the book drifts with no trade, but borrow is still charged daily. The forced-exit clock advances every day, but the caps only bind on rebalance days.
 
 ### In the code
-`DailyBarSimulator(cfg, cost_model, adv_window=63, vol_window=63).run(md, dates, alpha_fn, risk_fn, optimizer, ...)` is the whole engine. `cost_model` is a `qts.core.costs.CostModel` (production: `TransactionCostModel(cfg.cost, cfg.execution)`); a legacy model without `snapshot()` is wrapped once by `_LegacyCostModel`, and the window arguments only apply to that legacy path. The pipeline builds the arguments for you:
+`DailyBarSimulator(cfg, cost_model, adv_window=63, vol_window=63).run_spec(md, spec, alpha_fn, risk_fn, optimizer)` is the whole engine; `spec` is a frozen `qts/backtest/spec.py::BacktestSpec` (validated on construction). `run(md, dates, alpha_fn, risk_fn, optimizer, nav0=..., ...)` still accepts the dates plus keyword arguments and packs them into a spec. `cost_model` is a `qts.core.costs.CostModel` (production: `TransactionCostModel(cfg.cost, cfg.execution)`); a legacy model without `snapshot()` is wrapped once by `qts/backtest/cost_adapter.py::_LegacyCostModel`, and the window arguments only apply to that legacy path. The pipeline builds the spec for you:
 
 ```python
-bt = sim.run(
-    self.md_u,
+spec = BacktestSpec.create(
     dates,
-    alpha_fn,
-    risk_fn,
-    self.optimizer,
     nav0=self.nav0,
     rebalance_every=self.rebalance_every,
     venue=self.venue,
     neutral_styles=self.neutral_styles(),
     progress=progress,
-    **extra,
+    eligible_fn=lambda d: elig.columns[elig.loc[d].to_numpy()],
+    signal_lag_days=lag,
 )
+bt = sim.run_spec(self.md_u, spec, alpha_fn, risk_fn, self.optimizer)
 ```
 
-(`extra` carries `eligible_fn` and `signal_lag_days`, passed only if the simulator's signature accepts them.) The keyword arguments that matter:
+The day loop in `run_spec` is a fixed pipeline of small steps, one method each: `_day` (dates, signal date, execution-date snapshot) → `_universe_step` (eligibility, forced exits, no-trade list) → `_target_step` (alpha, risk, optimizer) → `_cost_step` (trade costs, impact streaks, borrow) → `_mark_to_market_step` (returns, halts, delistings and their liquidation) → `_accounting_step` (NAV identity, recording, drift). Day-to-day state lives in `_BookState`; events in `_EventLog`; the output arrays in `_Recorder`. `BacktestResult` lives in `qts/backtest/result.py`. The spec fields that matter:
 
 | Argument | Default | Effect |
 |---|---|---|
@@ -250,7 +248,7 @@ bt = sim.run(
 
 `dates` must be a subset of `md.dates` with at least two entries; consecutive trading days are assumed (see the borrow note below).
 
-**Diagnostics.** `BacktestResult.diagnostics` holds `solve_log`, `delistings`, `halts`, `n_halted_name_days`, `forced_exits`, `n_failed_solves`, `n_no_signal_days`, `n_ineligible_name_days`, `n_out_of_model_name_days` (names outside the risk model still held after a solve, i.e. forced exits in progress), `signal_lag_days`, `venue`, `rebalance_every` and `run_time_sec`. One `solve_log` entry per solve:
+**Diagnostics.** `BacktestResult.diagnostics` holds `solve_log`, `delistings`, `halts`, `n_halted_name_days`, `forced_exits`, `n_failed_solves`, `failed_solves` (one entry per failed solve: `date`, `status`, `solver_errors`), `n_rebalance_solves` (the denominator of `BacktestResult.failed_solve_fraction()` and of the `failed_solves` hurdle gate), `n_no_signal_days`, `n_ineligible_name_days`, `n_out_of_model_name_days` (names outside the risk model still held after a solve, i.e. forced exits in progress), `signal_lag_days`, `venue`, `rebalance_every` and `run_time_sec`. One `solve_log` entry per solve:
 
 | Field | Meaning |
 |---|---|
@@ -414,7 +412,7 @@ Before believing a result, answer these in order. Each question maps to a field 
 3. **How much do costs take, and how fragile is that?** Compare gross and net Sharpe, then read the slope of the cost-sensitivity table. If 2× costs kill the strategy, the cost model has to be right to within a factor of two, and it has never been calibrated on your own fills.
 4. **Is turnover consistent with the signal?** Effective holding days far below the signal half-life means you are paying to trade noise.
 5. **Is the risk real and sized as intended?** `realized_vs_exante_vol_ratio` near 1. Well above 1 means the book is riskier than it was sized to be. A high `vol_target_caps_share` means the book could not reach its vol target.
-6. **Did the machinery work every day?** `n_failed_solves`, `n_delistings`, `n_out_of_model_name_days`, `n_no_signal_days` and `forced_exits` should all be small and explainable.
+6. **Did the machinery work every day?** `n_failed_solves` (above 2% of rebalances the `failed_solves` gate fails the run), `n_delistings`, `n_out_of_model_name_days`, `n_no_signal_days` and `forced_exits` should all be small and explainable.
 7. **Is it consistent?** Fold Sharpes: one great block and three flat ones is a regime bet.
 8. **How many things did you try?** The DSR only knows about trials logged in the ledger. Running variants outside the pipeline and reporting the best is exactly the snooping the gates exist to catch.
 9. **Does it depend on timing?** Compare lag 0 (optimistic bound) and lag 1 (default) with a paired test. If lag 1 loses most of the edge, the strategy depends on information the live system will not have.

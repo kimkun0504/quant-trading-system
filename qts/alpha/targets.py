@@ -91,7 +91,6 @@ __all__ = [
     "ExposuresFn",
     "default_exposures",
     "forward_returns",
-    "industry_dummies",
     "label_realisation",
     "residualize_forward_returns",
 ]
@@ -268,12 +267,6 @@ def default_exposures(md: MarketData, features: dict[str, Wide] | None = None) -
     return out
 
 
-def industry_dummies(industry: pd.Series, tickers: pd.Index) -> pd.DataFrame:
-    """Ticker x (n_industries - 1) dummy matrix (first industry dropped: an
-    intercept is present) -- :func:`qts.core.stats.industry_dummies`."""
-    return stats.industry_dummies(industry, tickers, drop_first=True)
-
-
 def residualize_forward_returns(
     md: MarketData,
     horizon: int,
@@ -318,7 +311,7 @@ def residualize_forward_returns(
     # (md.industry_as_of); a single static matrix without industry_history.
     D_of_row: dict[int, np.ndarray] = {}
     for seg_dates, labels in industry_segments(md):
-        Dm = industry_dummies(labels, tickers).to_numpy(dtype=float)
+        Dm = stats.industry_dummies(labels, tickers, drop_first=True).to_numpy(dtype=float)
         for i in dates.get_indexer(seg_dates):
             D_of_row[int(i)] = Dm
     S = (

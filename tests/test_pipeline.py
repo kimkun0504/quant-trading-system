@@ -26,6 +26,7 @@ GATES = {
     "pbo",
     "phase_sharpe",
     "suspect",
+    "failed_solves",
 }
 CORE = (
     "sharpe_gross",
@@ -47,9 +48,8 @@ def md():
 
 @pytest.fixture(scope="module")
 def cfg():
-    c = SystemConfig()
-    c.universe.top_n_by_mcap = 100  # time-varying universe inside the 120 names
-    return c
+    # time-varying universe inside the 120 names
+    return SystemConfig().with_overrides({"universe.top_n_by_mcap": 100})
 
 
 @pytest.fixture(scope="module")
@@ -134,9 +134,9 @@ def test_pipeline_ledger_dedupes_reruns(md, cfg, tmp_path, monkeypatch):
         r1.dsr_inputs["n_trials_raw"] == 1 and r2.dsr_inputs["n_trials_raw"] == 1
     )  # identical re-run: 1 trial
     assert r1.dsr == pytest.approx(r2.dsr)
-    cfg2 = SystemConfig()
-    cfg2.universe.top_n_by_mcap = 100
-    cfg2.portfolio.risk_aversion = cfg.portfolio.risk_aversion * 2
+    cfg2 = SystemConfig().with_overrides(
+        {"universe.top_n_by_mcap": 100, "portfolio.risk_aversion": cfg.portfolio.risk_aversion * 2}
+    )
     r3 = ResearchPipeline(cfg2, use_ml=False, ledger_path=path).run(md, max_days=60)
     assert r3.dsr_inputs["n_trials_raw"] == 2 and r3.dsr_inputs["var_trials_sr_annual"] > 0
 
@@ -259,7 +259,7 @@ def test_signal_lag_is_forwarded_when_supported(md, cfg):
     c = cfg.with_overrides({"execution.signal_lag_days": 0})
     pipe = ResearchPipeline(c, use_ml=False)
     r0 = pipe.run(md, max_days=40)
-    pipe.cfg.execution.signal_lag_days = 1
+    pipe.cfg = pipe.cfg.with_overrides({"execution.signal_lag_days": 1})
     r1 = pipe.run(md, max_days=40)
     assert r0.signal_lag_days == 0 and r1.signal_lag_days == 1
     assert r0.config_hash != r1.config_hash
@@ -275,11 +275,11 @@ def test_backtest_dates_leave_room_for_the_signal_lag(result, md):
     from qts.backtest import DailyBarSimulator
 
     pipe, _ = result
-    old = pipe.cfg.execution.signal_lag_days
+    old = pipe.cfg
     try:
-        pipe.cfg.execution.signal_lag_days = 0
+        pipe.cfg = old.with_overrides({"execution.signal_lag_days": 0})
         d0 = pipe.backtest_dates()
-        pipe.cfg.execution.signal_lag_days = 2
+        pipe.cfg = old.with_overrides({"execution.signal_lag_days": 2})
         d2 = pipe.backtest_dates()
         assert d2[0] == d0[2] and d2[-1] == d0[-1]
         risk = pipe.risk
@@ -296,7 +296,7 @@ def test_backtest_dates_leave_room_for_the_signal_lag(result, md):
         assert bt.diagnostics["n_no_signal_days"] == 0
         assert [c["signal_date"] for c in bt.diagnostics["solve_log"]] == list(d0[:3])
     finally:
-        pipe.cfg.execution.signal_lag_days = old
+        pipe.cfg = old
 
 
 # --------------------------------------------------------------------------- planted oracle through the pipeline (#45)
@@ -309,8 +309,7 @@ def test_planted_oracle_through_pipeline_is_flagged_suspect():
     from qts.core.crosssection import zscore
 
     md_o = generate(SyntheticSpec(n_stocks=60, n_days=650, seed=9))
-    c = SystemConfig()
-    c.universe.top_n_by_mcap = 50
+    c = SystemConfig().with_overrides({"universe.top_n_by_mcap": 50})
     pipe = ResearchPipeline(c, use_ml=False).fit(md_o)
     am = pipe.alpha
     H = c.alpha.horizon_days
@@ -364,9 +363,12 @@ def test_pipeline_ledger_key_and_family(md, cfg, tmp_path, monkeypatch):
 
 @pytest.mark.slow
 def test_pbo_grid_configs_are_logged_as_trials(md, tmp_path):
-    c = SystemConfig()
-    c.universe.top_n_by_mcap = 100
-    c.pipeline_pbo_configs = [{"portfolio.risk_aversion": 5.0}, {"portfolio.risk_aversion": 40.0}]
+    c = SystemConfig().with_overrides(
+        {
+            "universe.top_n_by_mcap": 100,
+            "pipeline_pbo_configs": [{"portfolio.risk_aversion": 5.0}, {"portfolio.risk_aversion": 40.0}],
+        }
+    )
     path = str(tmp_path / "ledger.jsonl")
     pipe = ResearchPipeline(c, use_ml=False, ledger_path=path)
     res = pipe.run(md, max_days=60)
@@ -434,9 +436,7 @@ def test_estimate_warmup_days_matches_backtest_start():
 
     md = generate(SyntheticSpec(n_stocks=60, n_days=600, seed=0))
     for lag in (0, 2):
-        cfg = SystemConfig()
-        cfg.universe.top_n_by_mcap = 60
-        cfg.execution.signal_lag_days = lag
+        cfg = SystemConfig().with_overrides({"universe.top_n_by_mcap": 60, "execution.signal_lag_days": lag})
         est = estimate_warmup_days(cfg, use_ml=False)
         assert est.exact and est.ml_days is None and est.risk_days == 505
         assert est.days == 505 + lag
@@ -452,7 +452,7 @@ def test_estimate_warmup_days_ml_terms():
     est = estimate_warmup_days(cfg, use_ml=True)
     # universe lead max(5, 63 // 2) - 1 + 21 = 51; 51 + 756 + 20 + 1 = 828; + lag 1
     assert est.ml_days == 828 and est.days == 829 and not est.exact
-    cfg.alpha.train_min_days = 100  # risk term binds again
+    cfg = cfg.with_overrides({"alpha.train_min_days": 100})  # risk term binds again
     est = estimate_warmup_days(cfg, use_ml=True)
     assert est.days == 506 and est.exact
     assert estimate_warmup_days(SystemConfig(), use_ml=False, risk_warmup_days=100).risk_days == 353
@@ -467,8 +467,7 @@ def test_estimate_warmup_days_ml_is_an_upper_bound():
     from qts.pipeline import ResearchPipeline, estimate_warmup_days
 
     md = generate(SyntheticSpec(n_stocks=60, n_days=1000, seed=0))
-    cfg = SystemConfig()
-    cfg.universe.top_n_by_mcap = 60
+    cfg = SystemConfig().with_overrides({"universe.top_n_by_mcap": 60})
     est = estimate_warmup_days(cfg, use_ml=True)
     p = ResearchPipeline(cfg, use_ml=True, ledger_path=None, runs_root=None).fit(md)
     got = md.dates.get_loc(p.backtest_dates()[0])

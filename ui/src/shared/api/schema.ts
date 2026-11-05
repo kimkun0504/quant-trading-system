@@ -35,7 +35,8 @@ export type GateName =
   | 'dsr'
   | 'pbo'
   | 'phase_sharpe'
-  | 'suspect';
+  | 'suspect'
+  | 'failed_solves';
 
 /** Headline numbers shown in the runs list. `null` while running or after a failure. */
 export interface RunHeadline {
@@ -62,7 +63,7 @@ export interface RunSummary {
   headline: RunHeadline | null;
 }
 
-/** `BacktestResult.summary()` (qts/backtest/simulator.py). */
+/** `BacktestResult.summary()` (qts/backtest/result.py). */
 export interface BacktestSummary {
   start: IsoDate;
   end: IsoDate;

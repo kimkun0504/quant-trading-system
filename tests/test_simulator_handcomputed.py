@@ -68,8 +68,7 @@ NAV_RTOL = 1e-12  # NAV / USD (1e6 scale: 1e-12 rel = 1e-6 USD)
 
 
 def _lag0_config() -> SystemConfig:
-    cfg = SystemConfig()
-    cfg.execution.signal_lag_days = 0
+    cfg = SystemConfig().with_overrides({"execution.signal_lag_days": 0})
     return cfg
 
 
@@ -173,10 +172,11 @@ def alpha_fn(t) -> AlphaOutput:
 
 def run(cost, targets, md=None, gap_days: int | None = None):
     md = md or make_md()
-    cfg = SystemConfig()
-    cfg.execution.signal_lag_days = 0  # mechanics test: trade on the signal date's close
+    cfg = SystemConfig().with_overrides(
+        {"execution.signal_lag_days": 0}
+    )  # mechanics test: trade at the signal close
     if gap_days is not None:
-        cfg.alpha.delisting_gap_days = gap_days
+        cfg = cfg.with_overrides({"alpha.delisting_gap_days": gap_days})
     opt = PresetOptimizer(targets)
     res = DailyBarSimulator(cfg, cost).run(md, DATES, alpha_fn, risk_fn, opt, nav0=NAV0)
     return res, opt, cfg

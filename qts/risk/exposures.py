@@ -175,11 +175,6 @@ def standardized_style_panels(md: MarketData, styles: Iterable[str]) -> dict[str
 
 
 # --------------------------------------------------------------------------- assembly
-def industry_dummies(industry: pd.Series, tickers: pd.Index) -> pd.DataFrame:
-    """Ticker x industry 0/1 matrix (:func:`qts.core.stats.industry_dummies`, all industries)."""
-    return stats.industry_dummies(industry, tickers)
-
-
 def industry_panel(md: MarketData, dates: pd.DatetimeIndex | None = None) -> pd.DataFrame | None:
     """Dated industry labels (date x ticker) on ``dates`` (default ``md.dates``),
     or ``None`` when ``md.industry_history`` is absent (static classification).
@@ -407,7 +402,7 @@ def exposure_history(
     codes: np.ndarray | None = None
     static_codes = np.full(N, -1)
     if md.industry_history is None:  # static classification: fast path
-        dummies = industry_dummies(md.industry, md.tickers)
+        dummies = stats.industry_dummies(md.industry, md.tickers)
         inds = list(dummies.columns)
         static = np.column_stack([np.ones(N)] + [dummies[c].values for c in dummies.columns])
         static_codes = np.where(dummies.values.any(axis=1), dummies.values.argmax(axis=1), -1)

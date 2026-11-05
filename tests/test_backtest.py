@@ -40,11 +40,9 @@ SUMMARY_KEYS = [
 
 
 def make_cfg(**pkw) -> SystemConfig:
-    cfg = SystemConfig()
-    cfg.portfolio.risk_aversion = 3.0
-    for k, v in pkw.items():
-        setattr(cfg.portfolio, k, v)
-    return cfg
+    return SystemConfig().with_overrides(
+        {"portfolio.risk_aversion": 3.0, **{f"portfolio.{k}": v for k, v in pkw.items()}}
+    )
 
 
 @pytest.fixture(scope="module")
@@ -279,8 +277,7 @@ def test_run_with_tcost_model_venue_and_persistence(md, risk_model, alpha_model)
     # routed spread <= continuous spread on the same first-day trade (part goes to the auction)
     assert res_r.costs["spread"].iloc[0] <= res_c.costs["spread"].iloc[0] + 1e-9
     # persistence off -> impact no larger than with persistence on
-    cfg_off = make_cfg()
-    cfg_off.cost.impact_persistence = False
+    cfg_off = make_cfg().with_overrides({"cost.impact_persistence": False})
     tcm_off = TransactionCostModel(cfg_off.cost)
     res_off = DailyBarSimulator(cfg_off, tcm_off).run(
         md,
@@ -310,8 +307,9 @@ def test_signal_lag_shifts_decisions_by_one_day():
     )
 
     md = make_md()
-    cfg = SystemConfig()
-    cfg.execution.signal_lag_days = 0  # mechanics test: trade on the signal date's close
+    cfg = SystemConfig().with_overrides(
+        {"execution.signal_lag_days": 0}
+    )  # mechanics test: trade at the signal close
     seen = []
 
     def alpha_rec(t):
@@ -336,8 +334,7 @@ def test_signal_lag_shifts_decisions_by_one_day():
     assert list(res1.weights.index) == list(DATES[:4])
     # the production default is a one-day delay (decision D4); the kwarg overrides the config
     assert SystemConfig().execution.signal_lag_days == 1
-    cfg1 = SystemConfig()
-    cfg1.execution.signal_lag_days = 1
+    cfg1 = SystemConfig().with_overrides({"execution.signal_lag_days": 1})
     res_cfg = DailyBarSimulator(cfg1, ConstantBpsCost()).run(
         md, DATES, alpha_fn, risk_fn, PresetOptimizer(TARGETS), nav0=NAV0
     )

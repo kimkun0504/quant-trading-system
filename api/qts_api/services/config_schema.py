@@ -101,6 +101,7 @@ BOUNDS: dict[str, tuple[float | None, float | None]] = {
     "validation.dsr_threshold": (0, 1),
     "validation.pbo_threshold": (0, 1),
     "validation.min_fold_pass_fraction": (0, 1),
+    "validation.max_failed_solve_frac": (0, 1),
     "trading_days_per_year": (200, 366),
     # API-layer guards against absurd sizes (sections without semantic validation in
     # qts.core.config): a typo must not launch a job that runs for days.

@@ -194,7 +194,8 @@ The fix is the alpha alignment factor. Take the part of $\alpha$ orthogonal to t
 - **Factor risk, not sample covariance.** For $N = 1{,}000$ and a few years of daily data the sample covariance is singular or nearly so; see the error-maximisation discussion above.
 
 ### In the code
-- `qts/portfolio/optimizer.py::SinglePeriodOptimizer.solve` prepares the numbers (`_prepare` → `_ProblemData`), fetches or builds the parametrised cvxpy problem (`_compiled` → `_Compiled`), sets today's parameter values and solves. The objective inside `_Compiled.__init__`:
+- `qts/portfolio/optimizer/` is a package; `from qts.portfolio.optimizer import SinglePeriodOptimizer` (and every name of the former single module) still works. Layout: `constants.py` (tolerances, γ-search settings), `result.py` (`OptimizationResult`), `problem.py` (`prepare_problem` → `_ProblemData`, factor roles), `dpp.py` (`_Parametrizer`), `constraints.py` (`build_constraints`, binding counts), `compiled.py` (`_Compiled`, structure key), `sizing.py` (`closed_form_gamma`, `gamma_search`), `solvers.py` (solver chain), `spo.py` (`SinglePeriodOptimizer`).
+- `spo.py::SinglePeriodOptimizer.solve` prepares the numbers (`prepare_problem` → `_ProblemData`), fetches or builds the parametrised cvxpy problem (`_compiled` → `_Compiled`), sets today's parameter values and solves. The objective (`_Compiled._alpha_objective`):
 
 ```python
 risk = (
@@ -242,7 +243,7 @@ So reuse saves at most about a quarter of a solve and can lose on a busy machine
 
 ## Constraints and why each exists
 
-Hard constraints encode things the objective cannot express or that we refuse to leave to estimated parameters: legal and broker limits, liquidity, and exposures we have decided not to bet on. `_Compiled.__init__` builds them (with parameters for everything that changes daily), and the *same* constraint set is used by every $\gamma$-search solve and, in fixed-$\gamma$ mode, by the volatility projection.
+Hard constraints encode things the objective cannot express or that we refuse to leave to estimated parameters: legal and broker limits, liquidity, and exposures we have decided not to bet on. `qts/portfolio/optimizer/constraints.py::build_constraints` builds them (with parameters for everything that changes daily), and the *same* constraint set is used by every $\gamma$-search solve and, in fixed-$\gamma$ mode, by the volatility projection.
 
 ### Book types
 | `book` | Constraints | When to use |
@@ -400,7 +401,7 @@ Now check that $\sqrt{252}\sqrt q/H$ is the annual IR. Annual alpha is $\alpha_{
 Real constraints and convex costs shrink the optimum below the closed form, so the $\gamma$ that hits the target is usually *below* $\gamma_0$. That is why $\gamma_0$ is only the starting point.
 
 ### How it works: the $\gamma$ search (`risk_aversion_mode = "target_vol"`, default)
-`SinglePeriodOptimizer._gamma_search` solves the full problem (every constraint, the real cost model) for a sequence of $\gamma$ values until the optimum's ex-ante vol is on target. It relies on one fact: **$\sigma(w^\star(\gamma))$ is non-increasing in $\gamma$**. Compare the optima $w_1, w_2$ at $\gamma_1 < \gamma_2$: each is optimal for its own $\gamma$, and adding the two optimality inequalities gives $(\gamma_2-\gamma_1)(R(w_1)-R(w_2)) \ge 0$ with $R$ the risk. So more risk aversion never buys more risk, and a one-dimensional root search on $\log\gamma$ is safe (test: `test_vol_is_monotone_in_gamma`).
+`qts/portfolio/optimizer/sizing.py::gamma_search` solves the full problem (every constraint, the real cost model) for a sequence of $\gamma$ values until the optimum's ex-ante vol is on target. It relies on one fact: **$\sigma(w^\star(\gamma))$ is non-increasing in $\gamma$**. Compare the optima $w_1, w_2$ at $\gamma_1 < \gamma_2$: each is optimal for its own $\gamma$, and adding the two optimality inequalities gives $(\gamma_2-\gamma_1)(R(w_1)-R(w_2)) \ge 0$ with $R$ the risk. So more risk aversion never buys more risk, and a one-dimensional root search on $\log\gamma$ is safe (test: `test_vol_is_monotone_in_gamma`).
 
 1. **Start** at $\gamma_0$ clipped to `GAMMA_BRACKET` = [0.05, 200]. Solve.
 2. **Stop** if $\lvert\sigma/\sigma_{\text{target}} - 1\rvert <$ `GAMMA_SEARCH_VOL_TOL` = 2% (outcome `"target"`).
@@ -455,8 +456,8 @@ Why the projection was demoted. It was introduced to fix a real bug: the origina
 **`"constraint"`.** One solve: the SOC risk cap $\sqrt{w^\top\Sigma_{\text{aug}}w} \le \sigma_{\text{target}}$ is added to the alpha problem, so alpha, risk penalty, costs and the cap are traded off jointly. The target is a ceiling; there is no scale-up, so $\gamma$ alone decides whether the book reaches it (at $\gamma = 10$ it ran at 2.2%). Test: `test_vol_target_constraint_mode_one_solve`.
 
 ### In the code
-- `SinglePeriodOptimizer.solve` → `closed_form_gamma` → `_gamma_search` (default) or `_vol_target_projection` (fixed + projection).
-- Module constants in `qts/portfolio/optimizer.py`: `GAMMA_BRACKET`, `GAMMA_MAX_SOLVES`, `GAMMA_SEARCH_VOL_TOL`, `GAMMA_NUDGE`, `CAPS_ELASTICITY`, `POSITION_CAPS_SHARE`, `MAX_SCALE_UP`.
+- `SinglePeriodOptimizer.solve` → `sizing.closed_form_gamma` → `sizing.gamma_search` (default) or `SinglePeriodOptimizer._vol_target_projection` (fixed + projection).
+- Module constants in `qts/portfolio/optimizer/constants.py`: `GAMMA_BRACKET`, `GAMMA_MAX_SOLVES`, `GAMMA_SEARCH_VOL_TOL`, `GAMMA_NUDGE`, `CAPS_ELASTICITY`, `POSITION_CAPS_SHARE`, `MAX_SCALE_UP`.
 - `OptimizationResult.risk_aversion`, `.vol_target_binding`, `.n_solves`, `.vol_scalar` (projection anchor $s$; 1 otherwise), `.expected_risk` (annualised ex-ante vol of the returned book).
 - `qts/portfolio/vol_target.py::realized_vol_scalar` (trailing realised vol) is for overlays and reporting; `portfolio_vol_scalar` is the plain $\text{target}/\hat\sigma$ clip, reporting only. The optimiser uses the ex-ante risk model because it reacts the same day.
 
@@ -682,16 +683,16 @@ Defaults from `qts/core/config.py::PortfolioConfig`.
 - **Tune out of sample only.** Every change is a trial for the deflated Sharpe (→ see **Validation & statistics › The trial ledger**). Parameter grids for PBO go in `SystemConfig.pipeline_pbo_configs`, e.g. `[{"portfolio.trade_aversion": 2}, {"portfolio.trade_aversion": 5}]`.
 
 ### Solver failure semantics
-- Solvers are tried in order: `cfg.solver`, `CLARABEL`, `SCS`, `OSQP` (deduplicated, installed only). A solver exception moves on to the next one. A status of `infeasible` or `unbounded` is returned immediately, since genuine infeasibility will not be fixed by another solver. OSQP accepts only QPs, so it can solve the alpha problem only when no 3/2-power cost term is present.
+- Solvers are tried in order: `cfg.solver`, `CLARABEL`, `SCS`, `OSQP` (deduplicated, installed only; `qts/portfolio/optimizer/solvers.py::solve_with_chain`). Only a solver failure moves on to the next one: `cvxpy.error.SolverError` or a numerical error (`ArithmeticError`, `numpy.linalg.LinAlgError`). Each is recorded as `"<SOLVER>: <ExcType>: <message>"` in `OptimizationResult.solver_errors`. Any other exception is a programming error and propagates (before the November refactor every exception was caught, so a bug became a silent "hold the book"). A status of `infeasible` or `unbounded` is returned immediately, since genuine infeasibility will not be fixed by another solver. OSQP accepts only QPs, so it can solve the alpha problem only when no 3/2-power cost term is present.
 - In the $\gamma$ search each step first tries the primary solver only; on a numerical failure it nudges $\gamma$ by 2% and retries with the full chain. If a search step still fails, the search stops (`vol_target_binding = "solve_failed:<status>"`) and returns the best book found so far.
 - `optimal` and `optimal_inaccurate` count as success (`OptimizationResult.ok`).
-- **On failure:** `w_target = w_current` (hold the book), `x = 0`, `expected_cost = NaN`, `transfer_coefficient = NaN`, `status` = the solver's status, and a warning is logged. The simulator counts it in `n_failed_solves`, which `summary()` reports, and keeps going.
+- **On failure:** `w_target = w_current` (hold the book), `x = 0`, `expected_cost = NaN`, `transfer_coefficient = NaN`, `status` = the solver's status, and a warning is logged. The simulator counts it in `n_failed_solves`, which `summary()` reports, lists it in `diagnostics["failed_solves"]` (date, status, solver errors) and keeps going. The `failed_solves` hurdle gate FAILs a run whose failed share of rebalance solves exceeds `ValidationConfig.max_failed_solve_frac` (default 2%).
 - If `relax_participation_on_infeasible=True`, a second attempt without ADV caps runs first and a note records it.
 - After a successful solve, weights below $10^{-6}$ are zeroed and untouched names keep their exact current weight (`_clean`), so solver noise does not create micro-trades.
 - `expected_cost` is recomputed on the **final** (returned) trade as trade cost + $H\times$ holding cost.
 
 <callout icon="⚠️" color="yellow_bg">
-A failed solve means "hold yesterday's book", not "go flat". That is the right default for a daily rebalancer, because one missed day costs little. But a run of failures leaves forced exits unexecuted and risk unmanaged. Treat `n_failed_solves > 0` in a backtest as a defect to investigate, and alert on it in production.
+A failed solve means "hold yesterday's book", not "go flat". That is the right default for a daily rebalancer, because one missed day costs little. But a run of failures leaves forced exits unexecuted and risk unmanaged. Treat `n_failed_solves > 0` in a backtest as a defect to investigate, and alert on it in production. Above 2% of rebalances the `failed_solves` gate fails the run outright.
 </callout>
 
 ### Worked example: 2-asset mean–variance with a cap

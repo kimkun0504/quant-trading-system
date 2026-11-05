@@ -183,6 +183,7 @@ validation:
   phase2_min_net_sharpe: 0.5
   min_fold_pass_fraction: 0.6666666666666666
   hurdle_t_stat: 3.0
+  max_failed_solve_frac: 0.02
   required_gates:
   - phase_sharpe
   - suspect

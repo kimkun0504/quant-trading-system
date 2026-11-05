@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from typing import TypedDict
 
 import numpy as np
 import pandas as pd
@@ -125,7 +126,16 @@ def _align(pred_var, realized_sq):
     return p.loc[idx].clip(lower=1e-18).values, r.loc[idx].values
 
 
-def mincer_zarnowitz(pred_var, realized_sq) -> dict[str, float]:
+class MZResult(TypedDict):
+    """:func:`mincer_zarnowitz` regression ``r^2 = alpha + beta * pred + e``."""
+
+    alpha: float
+    beta: float
+    r2: float
+    n: int
+
+
+def mincer_zarnowitz(pred_var, realized_sq) -> MZResult:
     """OLS of realized squared returns on predicted variance.  Returns
     ``{"alpha", "beta", "r2", "n"}``; ideal alpha 0, beta 1."""
     p, r = _align(pred_var, realized_sq)

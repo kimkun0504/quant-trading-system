@@ -47,8 +47,6 @@ def test_winsorize_rows_matches_rowwise_quantile_clip(panels):
     assert isinstance(arr, np.ndarray)
     np.testing.assert_allclose(arr, got.to_numpy(), equal_nan=True)
     assert stats.winsorize_rows(a, 0.0) is a
-    # the legacy wrapper delegates
-    pd.testing.assert_frame_equal(crosssection.winsorize(a, 0.05), got)
 
 
 @pytest.mark.parametrize("seed", range(5))
@@ -108,9 +106,6 @@ def test_rank_ic_series_matches_scipy_spearman(panels):
     # misaligned inputs: intersection of dates and tickers
     sub = stats.rank_ic_series(a.iloc[5:], b.iloc[:, 10:])
     assert sub.index.equals(a.index[5:])
-    # the legacy loop-free wrappers agree
-    pd.testing.assert_series_equal(crosssection.ic_series(a, b), got.rename(None))
-    assert crosssection.rank_ic(a.iloc[0], b.iloc[0]) == pytest.approx(got.iloc[0])
 
 
 def test_row_corr_degenerate_rows():

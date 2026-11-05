@@ -11,7 +11,7 @@ import hashlib
 import json
 import math
 from collections.abc import Mapping
-from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
+from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any, TypeVar, cast
 
@@ -117,25 +117,31 @@ def _from_dict(cls: type[_C], d: Any, path: str) -> _C:
 
 
 def apply_overrides(cfg: _C, overrides: Mapping[str, Any]) -> _C:
-    """Deep copy of ``cfg`` with dotted-path overrides applied, e.g.
+    """Copy of ``cfg`` with dotted-path overrides applied, e.g.
     ``{"portfolio.risk_aversion": 5, "alpha.lgbm.num_leaves": 15, "seed": 1}``.
-    Unknown paths raise ``KeyError`` (same strictness as ``from_dict``)."""
+    Unknown paths raise ``KeyError`` (same strictness as ``from_dict``).  Configs
+    are frozen: each override rebuilds the sections on its path with
+    ``dataclasses.replace`` (so a section's ``__post_init__`` validation runs
+    on the new values); the input is never modified."""
     out = copy.deepcopy(cfg)
     for key, val in overrides.items():
-        parts = key.split(".")
-        target: Any = out
-        for p in parts[:-1]:
-            if not hasattr(target, p):
-                raise KeyError(f"unknown config section {p!r} in {key!r}")
-            target = getattr(target, p)
-        if not is_dataclass(target) or parts[-1] not in {f.name for f in fields(target)}:
-            raise KeyError(f"unknown config field {key!r}")
-        setattr(target, parts[-1], val)
+        out = _replace_path(out, key.split("."), val, key)
     return out
 
 
+def _replace_path(obj: Any, parts: list[str], val: Any, key: str) -> Any:
+    if len(parts) > 1:
+        if not hasattr(obj, parts[0]):
+            raise KeyError(f"unknown config section {parts[0]!r} in {key!r}")
+        child = _replace_path(getattr(obj, parts[0]), parts[1:], val, key)
+        return replace(obj, **{parts[0]: child})
+    if not isinstance(obj, _ConfigBase) or parts[0] not in {f.name for f in fields(cast(Any, obj))}:
+        raise KeyError(f"unknown config field {key!r}")
+    return replace(cast(Any, obj), **{parts[0]: val})
+
+
 # ============================================================================ sections
-@dataclass
+@dataclass(frozen=True)
 class UniverseConfig(_ConfigBase):
     top_n_by_mcap: int = 1000
     min_price: float = 5.0
@@ -154,7 +160,7 @@ class UniverseConfig(_ConfigBase):
     refresh_anchor: str = "month_start"
 
 
-@dataclass
+@dataclass(frozen=True)
 class LGBMParams(_ConfigBase):
     """LightGBM hyper-parameters of ``qts.alpha.models.LGBMModel`` (sklearn API
     names in parentheses).  Early stopping is on the per-date rank IC of the
@@ -179,7 +185,7 @@ class LGBMParams(_ConfigBase):
     n_jobs: int | None = 4
 
 
-@dataclass
+@dataclass(frozen=True)
 class MLPParams(_ConfigBase):
     """sklearn ``MLPRegressor`` settings of ``qts.alpha.models.MLPModel``.
 
@@ -201,7 +207,7 @@ class MLPParams(_ConfigBase):
     refit_on_full: bool = True
 
 
-@dataclass
+@dataclass(frozen=True)
 class AlphaConfig(_ConfigBase):
     horizon_days: int = 20
     # Extra label horizons for the IC-decay section of ``ic_report`` (reported
@@ -268,7 +274,7 @@ class AlphaConfig(_ConfigBase):
     # cfg.cost.delisting_haircut to AlphaModel).
 
 
-@dataclass
+@dataclass(frozen=True)
 class RiskConfig(_ConfigBase):
     vol_half_life: int = 84
     corr_half_life: int = 504
@@ -355,7 +361,7 @@ def check_bounds(obj: object, bounds: Mapping[str, FieldBound]) -> list[str]:
     return errs
 
 
-@dataclass
+@dataclass(frozen=True)
 class CostConfig(_ConfigBase):
     # explicit fees (IBKR Pro tiered, 2026)
     commission_per_share: float = 0.0035
@@ -465,7 +471,7 @@ COST_CONFIG_BOUNDS: dict[str, FieldBound] = {
 }
 
 
-@dataclass
+@dataclass(frozen=True)
 class PortfolioConfig(_ConfigBase):
     book: str = "long_short"  # or "long_only", "130_30"
     gross_leverage_max: float = 2.0  # dollar-neutral long/short ~100/100 at gross 2.0; review item 7
@@ -541,7 +547,7 @@ class PortfolioConfig(_ConfigBase):
     reuse_problem: bool = False
 
 
-@dataclass
+@dataclass(frozen=True)
 class ExecutionConfig(_ConfigBase):
     auction_max_pct_of_auction_volume: float = 0.02
     algo_max_pct_adv: float = 0.05
@@ -583,7 +589,7 @@ EXECUTION_CONFIG_BOUNDS: dict[str, FieldBound] = {
 }
 
 
-@dataclass
+@dataclass(frozen=True)
 class ValidationConfig(_ConfigBase):
     # Fold construction for the pipeline's fold-Sharpe gate (``net_sharpe_delta``):
     # ``PurgedWalkForward(n_splits, embargo_days, label_horizon=H)`` test blocks
@@ -600,13 +606,17 @@ class ValidationConfig(_ConfigBase):
     phase2_min_net_sharpe: float = 0.5
     min_fold_pass_fraction: float = 2 / 3
     hurdle_t_stat: float = 3.0
+    # ``failed_solves`` gate: FAIL when the share of rebalance solves that did not
+    # reach an optimal status (the simulator then holds the book) exceeds this.  A
+    # broken optimizer must not produce a passing "hold everything" backtest.
+    max_failed_solve_frac: float = 0.02
     # Gates that make ``overall`` FAIL when their input is missing.  Any other
     # gate with a missing input is reported as "skipped" (status, reason) and
     # does not count against ``overall``.
     required_gates: list[str] = field(default_factory=lambda: ["phase_sharpe", "suspect", "dsr"])
 
 
-@dataclass
+@dataclass(frozen=True)
 class SystemConfig(_ConfigBase):
     """Every behavioural knob of a run.  Serialise with ``to_dict``/``to_yaml``,
     rebuild with ``from_dict``/``from_yaml`` (strict), identify with ``hash()``.

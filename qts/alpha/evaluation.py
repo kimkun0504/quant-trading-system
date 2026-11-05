@@ -57,7 +57,7 @@ def newey_west_lags(n_obs: int, overlap: int = 1) -> int:
     return int(min(max(int(overlap), auto), T - 1))
 
 
-@dataclass
+@dataclass(frozen=True)
 class ICReport:
     """Typed result of :func:`ic_report` (handbook 1.5 "typed results").
 
@@ -115,7 +115,7 @@ class ICReport:
         return out
 
 
-@dataclass
+@dataclass(frozen=True)
 class IncrementalICReport(ICReport):
     """:func:`incremental_ic` result: the IC report of the residualised score plus
     the standalone and composite mean ICs."""

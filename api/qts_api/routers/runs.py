@@ -186,10 +186,9 @@ def launch_run(
         cfg = None
     if issues or cfg is None:
         raise Problem(422, summarize(issues), type_="validation-error", title="Invalid run request", errors=issues)
-    cfg.seed = body.seed
-    cfg.execution.signal_lag_days = body.signal_lag_days
+    cfg = cfg.with_overrides({"seed": body.seed, "execution.signal_lag_days": body.signal_lag_days})
     if body.kind == "synthetic":
-        cfg.universe.top_n_by_mcap = min(cfg.universe.top_n_by_mcap, body.stocks)
+        cfg = cfg.with_overrides({"universe.top_n_by_mcap": min(cfg.universe.top_n_by_mcap, body.stocks)})
         # P7: the floor is the run's own effective warm-up plus one year
         wu = warmup_info(cfg, body.ml)
         if body.days < wu["min_days"]:

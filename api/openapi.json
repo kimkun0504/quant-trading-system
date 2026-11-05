@@ -869,7 +869,7 @@
           "n_failed_solves"
         ],
         "title": "BacktestSummary",
-        "description": "``BacktestResult.summary()`` (qts/backtest/simulator.py)."
+        "description": "``BacktestResult.summary()`` (qts/backtest/result.py)."
       },
       "ColumnarSeries": {
         "properties": {
@@ -1173,7 +1173,8 @@
               "dsr",
               "pbo",
               "phase_sharpe",
-              "suspect"
+              "suspect",
+              "failed_solves"
             ],
             "title": "Name"
           },
@@ -1377,7 +1378,8 @@
                 "dsr",
                 "pbo",
                 "phase_sharpe",
-                "suspect"
+                "suspect",
+                "failed_solves"
               ]
             },
             "type": "array",

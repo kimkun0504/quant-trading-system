@@ -41,15 +41,14 @@ def _load_config(path: str | None):
     return SystemConfig.from_yaml(path) if path else SystemConfig()
 
 
-def _set_signal_lag(cfg, lag: int | None) -> str | None:
-    """Set ``cfg.execution.signal_lag_days`` if the field exists; returns a
-    warning text when it does not (older ExecutionConfig)."""
+def _set_signal_lag(cfg, lag: int | None):
+    """``(cfg with execution.signal_lag_days = lag, warning)``; the warning is a
+    text when the field does not exist (older ExecutionConfig), else ``None``."""
     if lag is None:
-        return None
+        return cfg, None
     if not hasattr(cfg.execution, "signal_lag_days"):
-        return "ExecutionConfig has no signal_lag_days field yet: --signal-lag ignored"
-    cfg.execution.signal_lag_days = int(lag)
-    return None
+        return cfg, "ExecutionConfig has no signal_lag_days field yet: --signal-lag ignored"
+    return cfg.with_overrides({"execution.signal_lag_days": int(lag)}), None
 
 
 def _add_pipeline_args(ap: argparse.ArgumentParser) -> None:
@@ -79,8 +78,8 @@ def _run_pipeline(md, cfg, a: argparse.Namespace, out=None) -> int:
     from qts.pipeline import ResearchPipeline, format_result
 
     out = out if out is not None else sys.stdout  # resolved at call time (capture-friendly)
-    cfg.universe.top_n_by_mcap = min(cfg.universe.top_n_by_mcap, md.close.shape[1])
-    warn = _set_signal_lag(cfg, a.signal_lag)
+    cfg = cfg.with_overrides({"universe.top_n_by_mcap": min(cfg.universe.top_n_by_mcap, md.close.shape[1])})
+    cfg, warn = _set_signal_lag(cfg, a.signal_lag)
     if warn:
         print(f"WARNING: {warn}", file=out)
     pipe = ResearchPipeline(
@@ -111,9 +110,9 @@ def _run_pipeline(md, cfg, a: argparse.Namespace, out=None) -> int:
     base = int(cfg.execution.signal_lag_days)
     results = {}
     for lag in sorted({0, 1, base}):
-        cfg.execution.signal_lag_days = lag
+        pipe.cfg = cfg.with_overrides({"execution.signal_lag_days": lag})
         results[lag] = pipe.run(md, progress=a.verbose, max_days=a.max_days)
-    cfg.execution.signal_lag_days = base
+    pipe.cfg = cfg
     print(format_result(results[base]), file=out)
     print("", file=out)
     print(compare_lag_report(results[0], results[1]), file=out)
@@ -147,8 +146,7 @@ def cmd_demo(a: argparse.Namespace) -> int:
     print(
         f"synthetic market: {md.close.shape[1]} stocks x {md.close.shape[0]} days  ({time.time() - t0:.1f}s)"
     )
-    cfg = _load_config(a.config)
-    cfg.seed = a.seed
+    cfg = _load_config(a.config).with_overrides({"seed": a.seed})
     return _run_pipeline(md, cfg, a)
 
 

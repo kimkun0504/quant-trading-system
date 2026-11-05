@@ -176,9 +176,8 @@ GOLDEN_MAX_DAYS = 60
 
 
 def golden_config() -> SystemConfig:
-    cfg = SystemConfig()
-    cfg.universe.top_n_by_mcap = GOLDEN_TOP_N  # time-varying universe inside the 100 names
-    return cfg
+    # time-varying universe inside the 100 names
+    return SystemConfig().with_overrides({"universe.top_n_by_mcap": GOLDEN_TOP_N})
 
 
 @pytest.fixture(scope="session")

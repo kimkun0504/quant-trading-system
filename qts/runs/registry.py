@@ -1,0 +1,189 @@
+"""Run registry: write and re-load run directories.
+
+:func:`save_run` writes ``<runs_root>/<run_id>/`` (layout: :mod:`qts.pipeline`
+docstring); :func:`load_run` re-loads one as a typed :class:`RunRecord`;
+:func:`list_runs` lists them newest first.  ``summary.json`` is
+:func:`run_summary_dict` passed through :func:`_json_safe` (non-finite floats
+as the strings ``"nan"`` / ``"inf"`` / ``"-inf"``, read back by
+:func:`_from_json_scalar`).
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import numpy as np
+import pandas as pd
+
+from qts.core.config import SystemConfig
+from qts.core.manifest import RunManifest
+from qts.validation import HurdleResult
+
+if TYPE_CHECKING:
+    from qts.pipeline import PipelineResult
+
+
+def _json_safe(v: Any) -> Any:
+    if isinstance(v, dict):
+        return {str(k): _json_safe(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_json_safe(x) for x in v]
+    if isinstance(v, (bool, np.bool_)):
+        return bool(v)
+    if isinstance(v, (int, np.integer)):
+        return int(v)
+    if isinstance(v, (float, np.floating)):
+        v = float(v)
+        return v if math.isfinite(v) else str(v)
+    if isinstance(v, (pd.Timestamp,)):
+        return v.isoformat()
+    return v
+
+
+def _from_json_scalar(v: Any) -> Any:
+    if isinstance(v, str) and v in ("nan", "inf", "-inf"):
+        return float(v)
+    if isinstance(v, dict):
+        return {k: _from_json_scalar(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_from_json_scalar(x) for x in v]
+    return v
+
+
+def run_summary_dict(res: PipelineResult) -> dict[str, Any]:
+    """The ``summary.json`` payload of a run directory."""
+    d = res.decile
+    return _json_safe(
+        {
+            "backtest": res.summary,
+            "ic": res.ic_report.scalars(),
+            "ic_decay": {str(k): v for k, v in res.ic_report.decay.items()},
+            "decile": None
+            if d is None
+            else {
+                "mean": d.mean,
+                "sharpe": d.sharpe,
+                "t_stat": d.t_stat,
+                "horizon": d.horizon,
+                "nw_lags": d.nw_lags,
+            },
+            "dsr": res.dsr,
+            "dsr_inputs": res.dsr_inputs,
+            "pbo": res.pbo,
+            "breakeven_cost_bps": res.breakeven_cost_bps,
+            "folds": [
+                {
+                    "start": str(pd.Timestamp(r.start).date()),
+                    "end": str(pd.Timestamp(r.end).date()),
+                    "n_days": int(r.n_days),
+                    "sharpe": r.sharpe,
+                }
+                for r in res.folds.itertuples()
+            ],
+            "cost_sensitivity": {
+                str(i): {str(c): res.cost_sensitivity.loc[i, c] for c in res.cost_sensitivity.columns}
+                for i in res.cost_sensitivity.index
+            },
+            "overall": bool(res.hurdles.overall),
+            "use_ml": res.use_ml,
+            "phase": res.phase,
+            "signal_lag_days": res.signal_lag_days,
+            "config_hash": res.config_hash,
+            "data_hash": res.data_hash,
+            "git_sha": res.git_sha,
+            "timings": res.timings,
+            "notes": res.notes,
+        }
+    )
+
+
+def _write_parquet(obj: pd.DataFrame | pd.Series, path: Path, name: str = "value") -> None:
+    df = obj.to_frame(name=obj.name or name) if isinstance(obj, pd.Series) else obj.copy()
+    df.columns = [str(c) for c in df.columns]
+    df.to_parquet(path)
+
+
+def save_run(res: PipelineResult, cfg: SystemConfig, runs_root: str | Path) -> Path:
+    """Write ``res`` to ``<runs_root>/<run_id>/`` (layout: module docstring)."""
+    if res.manifest is None:
+        res.manifest = RunManifest.create(
+            config_hash=res.config_hash, data_hash=res.data_hash, timings=res.timings
+        )
+    run_dir = Path(runs_root) / res.manifest.run_id
+    run_dir.mkdir(parents=True, exist_ok=False)
+    bt = res.backtest
+    res.manifest.save(run_dir)
+    (run_dir / "config.yaml").write_text(
+        cfg.to_yaml(header=f"config of run {res.manifest.run_id} (hash {res.config_hash})")
+    )
+    (run_dir / "summary.json").write_text(json.dumps(run_summary_dict(res), indent=2, sort_keys=True))
+    _write_parquet(bt.nav.rename("nav"), run_dir / "nav.parquet")
+    _write_parquet(bt.weights, run_dir / "weights.parquet")
+    _write_parquet(bt.trades, run_dir / "trades.parquet")
+    _write_parquet(bt.costs, run_dir / "costs.parquet")
+    _write_parquet(bt.returns, run_dir / "returns.parquet")
+    _write_parquet(res.ic_report.ic_series.rename("rank_ic"), run_dir / "ic.parquet")
+    (run_dir / "hurdles.json").write_text(json.dumps(res.hurdles.to_dict(), indent=2))
+    return run_dir
+
+
+@dataclass
+class RunRecord:
+    """A run directory re-loaded (typed)."""
+
+    run_dir: Path
+    manifest: RunManifest
+    config: SystemConfig
+    summary: dict[str, Any]
+    hurdles: HurdleResult
+    nav: pd.Series
+    returns: pd.DataFrame
+    weights: pd.DataFrame
+    trades: pd.DataFrame
+    costs: pd.DataFrame
+    ic: pd.Series
+
+    @property
+    def run_id(self) -> str:
+        return self.manifest.run_id
+
+
+def load_run(run_dir: str | Path) -> RunRecord:
+    """Load a run directory written by :func:`save_run`."""
+    p = Path(run_dir)
+    if not (p / "manifest.json").exists():
+        raise FileNotFoundError(f"{p} is not a run directory (no manifest.json)")
+
+    def _pq(name: str) -> pd.DataFrame:
+        f = p / name
+        return pd.read_parquet(f) if f.exists() else pd.DataFrame()
+
+    nav = _pq("nav.parquet")
+    ic = _pq("ic.parquet")
+    return RunRecord(
+        run_dir=p,
+        manifest=RunManifest.load(p),
+        config=SystemConfig.from_yaml(p / "config.yaml"),
+        summary=_from_json_scalar(json.loads((p / "summary.json").read_text())),
+        hurdles=HurdleResult.from_dict(json.loads((p / "hurdles.json").read_text())),
+        nav=nav["nav"] if "nav" in nav else pd.Series(dtype=float, name="nav"),
+        returns=_pq("returns.parquet"),
+        weights=_pq("weights.parquet"),
+        trades=_pq("trades.parquet"),
+        costs=_pq("costs.parquet"),
+        ic=ic["rank_ic"] if "rank_ic" in ic else pd.Series(dtype=float, name="rank_ic"),
+    )
+
+
+def list_runs(runs_root: str | Path) -> list[Path]:
+    """Run directories under ``runs_root`` (those with a manifest), newest first."""
+    root = Path(runs_root)
+    if not root.exists():
+        return []
+    return sorted(
+        (d for d in root.iterdir() if (d / "manifest.json").exists()), key=lambda d: d.name, reverse=True
+    )

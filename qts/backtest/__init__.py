@@ -15,10 +15,14 @@ from qts.backtest.metrics import (
     sortino,
     turnover_stats,
 )
-from qts.backtest.simulator import BacktestResult, DailyBarSimulator
+from qts.backtest.result import BacktestResult, BacktestSummary
+from qts.backtest.simulator import DailyBarSimulator
+from qts.backtest.spec import BacktestSpec
 
 __all__ = [
     "BacktestResult",
+    "BacktestSpec",
+    "BacktestSummary",
     "DailyBarSimulator",
     "annualized_return",
     "annualized_sharpe",

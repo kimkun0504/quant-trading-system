@@ -142,14 +142,10 @@ run directories newest first.
 from __future__ import annotations
 
 import dataclasses
-import inspect
-import json
 import logging
-import math
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
@@ -164,7 +160,7 @@ from qts.alpha.evaluation import (
     infer_periods_per_year,
 )
 from qts.alpha.targets import forward_returns, residualize_forward_returns
-from qts.backtest import BacktestResult, DailyBarSimulator
+from qts.backtest import BacktestResult, BacktestSpec, BacktestSummary, DailyBarSimulator
 from qts.backtest import metrics as M
 from qts.core.config import SystemConfig
 from qts.core.manifest import RunManifest, hash_market_data
@@ -173,6 +169,20 @@ from qts.core.types import AlphaOutput, MarketData, RiskModelOutput
 from qts.data.universe import apply_mask, build_universe_mask, masked_levels
 from qts.portfolio import SinglePeriodOptimizer
 from qts.risk import BarraStyleRiskModel, HybridRiskModel, build_risk_model
+
+# The run registry and the report card live in qts.runs; re-exported here because
+# ``from qts.pipeline import save_run, load_run, format_result, ...`` is public API.
+from qts.runs.registry import (
+    RunRecord,
+    _from_json_scalar,
+    _json_safe,
+    _write_parquet,
+    list_runs,
+    load_run,
+    run_summary_dict,
+    save_run,
+)
+from qts.runs.report import format_result
 from qts.tcost import TransactionCostModel
 from qts.validation import (
     HurdleReport,
@@ -201,7 +211,7 @@ class PipelineResult:
     """
 
     backtest: BacktestResult
-    summary: dict[str, Any]
+    summary: BacktestSummary
     ic_report: ICReport
     hurdles: HurdleResult
     cost_sensitivity: pd.DataFrame
@@ -560,50 +570,26 @@ class ResearchPipeline:
         def risk_fn(d: pd.Timestamp, alpha: pd.Series | None) -> RiskModelOutput:
             return risk.as_of(d, alpha=alpha if cfg.risk.alignment else None)
 
-        # Eligibility hook.  ``DailyBarSimulator.run`` reads ``md.eligible`` directly
-        # when present (it is: ``apply_mask`` sets it) and also accepts
-        # ``eligible_fn(t) -> Index`` of investable tickers; both are supplied so an
-        # older/other simulator without the panel logic still gets the hook.
-        # Without either, ineligible-but-alive names would reach the optimizer with
-        # expected return 0 (they are absent from AlphaOutput) and be unwound by
-        # the optimizer's trade-off rather than forced out; dead names are ``no_trade``.
+        # Eligibility: ``DailyBarSimulator`` reads ``md.eligible`` directly when
+        # present (it is: ``apply_mask`` sets it); ``eligible_fn`` is the same
+        # information as a hook and is used only when the panel is absent.  Dead
+        # names (no price) go on the optimizer's no-trade list.
         elig = self.md_u.eligibility()
-        extra: dict[str, Any] = {}
-        params = inspect.signature(sim.run).parameters
-        if "eligible_fn" in params:
-            extra["eligible_fn"] = lambda d: elig.columns[elig.loc[d].to_numpy()]
-        elif "eligibility" in params:
-            extra["eligibility"] = elig
-        # D4 execution delay: forwarded when the simulator supports it.
-        lag = self.signal_lag_days()
-        lag_note = None
-        if "signal_lag_days" in params:
-            extra["signal_lag_days"] = lag
-        elif lag:
-            lag_note = (
-                f"signal_lag_days={lag} requested but DailyBarSimulator.run has no signal_lag_days "
-                "argument: ran with lag 0"
-            )
-            log.warning(lag_note)
-            lag = 0
-        t0 = time.perf_counter()
-        bt = sim.run(
-            self.md_u,
+        lag = self.signal_lag_days()  # D4 execution delay
+        spec = BacktestSpec.create(
             dates,
-            alpha_fn,
-            risk_fn,
-            self.optimizer,
             nav0=self.nav0,
             rebalance_every=self.rebalance_every,
             venue=self.venue,
             neutral_styles=self.neutral_styles(),
             progress=progress,
-            **extra,
+            eligible_fn=lambda d: elig.columns[elig.loc[d].to_numpy()],
+            signal_lag_days=lag,
         )
+        t0 = time.perf_counter()
+        bt = sim.run_spec(self.md_u, spec, alpha_fn, risk_fn, self.optimizer)
         timings = dict(self.timings_, backtest=time.perf_counter() - t0)
         res = self.evaluate(bt, timings, dates=dates, signal_lag_days=lag)
-        if lag_note:
-            res.notes.append(lag_note)
         res.timings["total_run"] = time.perf_counter() - t_run
         res.manifest = RunManifest.create(
             config_hash=res.config_hash, data_hash=res.data_hash, timings=res.timings, seeds=self._seeds()
@@ -664,7 +650,7 @@ class ResearchPipeline:
         family: str,
         config_hash: str,
         net: pd.Series,
-        summ: dict[str, Any],
+        summ: Mapping[str, Any],
         mean_ic: float,
         decile_t: float,
         signal_lag_days: int,
@@ -798,121 +784,22 @@ class ResearchPipeline:
         dates: pd.DatetimeIndex | None = None,
         signal_lag_days: int = 0,
     ) -> PipelineResult:
+        """The report card of a backtest, in this order: IC and decile spread of
+        the traded score (:meth:`_signal_quality`), fold Sharpes on purged
+        walk-forward blocks (:meth:`_fold_sharpes`), breakeven / cost
+        sensitivity (:meth:`_cost_gates`), trial ledger + PBO + deflated Sharpe
+        (:meth:`_selection_stats`), hurdle gates and notes."""
         self._require_fitted()
-        assert self.md_u is not None and self.alpha is not None
         cfg = self.cfg
         summ = bt.summary()
         net = bt.returns["net"].dropna()
         gross = bt.returns["gross"].dropna()
-        elig = self.md_u.eligibility()
         t0 = time.perf_counter()
-
-        # IC / decile spread of the *traded* alpha score on non-overlapping formation
-        # dates (every H execution dates), eligible names only, vs the fitted
-        # (risk-only residualised) target and the raw forward return respectively.
-        # With signal lag L the book executed at t holds the score as_of(t - L);
-        # the label of that signal date (targets.py) is the return from close_t,
-        # so score, label and raw return all refer to the trade made at t.  Frames
-        # are indexed by the execution date t (L = 0: unchanged).
-        H = cfg.alpha.horizon_days
-        L = int(signal_lag_days)
-        target = self.alpha.target_
-        exec_dates = pd.DatetimeIndex(bt.weights.index[::H])
-        dpos = self.md_u.dates.get_indexer(exec_dates)
-        if (dpos < L).any():
-            raise ValueError("evaluate(): an execution date has no signal date L days earlier")
-        sig_dates = self.md_u.dates[dpos - L]
-
-        def at_signal(panel: pd.DataFrame) -> pd.DataFrame:
-            out = panel.reindex(index=sig_dates, columns=self.md_u.tickers)
-            out.index = exec_dates
-            out.index.name = "date"
-            return out
-
-        scores = pd.DataFrame(
-            {t: self.alpha.as_of(s).score for t, s in zip(exec_dates, sig_dates, strict=True)}
-        ).T
-        scores.index.name = "date"
-        scores = scores.reindex(columns=self.md_u.tickers).where(at_signal(elig).fillna(False).astype(bool))
-        # one sampling frequency for the ICIR and the decile Sharpe (audit 2 #15)
-        ppy = infer_periods_per_year(scores.index, cfg.trading_days_per_year)
-        decay_targets = {h: at_signal(t) for h, t in self._decay_targets(pd.DatetimeIndex(sig_dates)).items()}
-        icr = ic_report(
-            scores,
-            at_signal(target),
-            periods_per_year=ppy,
-            trading_days_per_year=cfg.trading_days_per_year,
-            overlap=1,
-            decay_targets=decay_targets,
-        )
-        fwd_raw = at_signal(
-            forward_returns(
-                self.md_u,
-                H,
-                cfg.cost.delisting_haircut,
-                label_lag_days=L,
-                delisting_gap_days=cfg.alpha.delisting_gap_days,
-            ).where(elig)
-        )
-        ds = decile_spread(
-            scores,
-            fwd_raw,
-            horizon=1,  # formation dates do not overlap
-            weights=at_signal(self.md_u.market_cap),
-            periods_per_year=ppy,
-        )
-
-        # fold-wise net Sharpe on PurgedWalkForward test blocks (#27); standalone baseline is zero
-        v = cfg.validation
-        blocks = purged_fold_blocks(
-            pd.DatetimeIndex(net.index), v.n_splits, v.embargo_days, H, getattr(v, "min_fold_days", 20)
-        )
-        rows = [
-            {
-                "start": b[0],
-                "end": b[-1],
-                "n_days": len(b),
-                "sharpe": M.annualized_sharpe(net.loc[b], cfg.trading_days_per_year),
-            }
-            for b in blocks
-        ]
-        folds = pd.DataFrame(rows, columns=["start", "end", "n_days", "sharpe"])
-        fold_sharpes = pd.Series(
-            folds["sharpe"].to_numpy(dtype=float),
-            index=pd.DatetimeIndex(folds["start"], name="fold_start"),
-            name="net_sharpe",
-        )
-
-        # breakeven / cost sensitivity on gross returns net of borrow (borrow is not a
-        # per-side cost; consistent with BacktestResult.summary())
-        gab = getattr(bt, "gross_after_borrow_returns", None)
-        gross_cs = gab.dropna() if isinstance(gab, pd.Series) and len(gab.dropna()) else gross
-        to = self._turnover_on_return_dates(bt, gross_cs.index)
-        cs = M.cost_sensitivity(gross_cs, to, cost_bps_per_side=summ.get("avg_cost_bps_per_side", 10.0))
-        breakeven = M.breakeven_cost_bps(gross_cs, to)
-
-        # trial ledger: log this run first, then the PBO grid's configurations (each
-        # a trial of the same search, audit 2 #11), then read the family statistics.
-        # Family = phase + data hash: trials on other data (seeds, real data) are a
-        # different search (audit 2 #17).
-        family = self.ledger_family()
+        icr, ds = self._signal_quality(bt, int(signal_lag_days))
+        blocks, folds, fold_sharpes = self._fold_sharpes(net)
+        cs, breakeven = self._cost_gates(bt, gross, summ)
         config_hash = cfg.hash()
-        skew, kurt = float(net.skew()), float(net.kurt() + 3)
-        if self.ledger is not None:
-            self._log_trial(
-                family, config_hash, net, summ, icr.mean_ic, ds.t_stat, signal_lag_days, dates, bt
-            )
-        pbo = self._pbo_from_grid(dates if dates is not None else bt.weights.index, net)
-        dsr_in = self._dsr_inputs(family, len(net))
-        dsr = deflated_sharpe_ratio_annual(
-            summ["sharpe_net"],
-            n_trials=max(float(dsr_in["n_trials"]), 1.0),  # effective count, not rounded (audit 2 #17)
-            var_trials_sr_annual=dsr_in["var_trials_sr_annual"],
-            n_obs=len(net),
-            skew=skew,
-            kurt=kurt,
-            periods_per_year=cfg.trading_days_per_year,
-        )
+        dsr, dsr_in, pbo = self._selection_stats(bt, net, summ, icr, ds, config_hash, signal_lag_days, dates)
 
         # ic_sign gate on the same purged walk-forward blocks as the Sharpe gate
         # (audit 2 #16): mean sampled IC of the execution dates inside each block
@@ -928,20 +815,9 @@ class ResearchPipeline:
             phase=self.phase,
             net_sharpe=summ["sharpe_net"],
             standalone=True,
+            failed_solve_frac=bt.failed_solve_fraction(),
         )
-
-        notes = []
-        if summ["sharpe_net"] > 2:
-            notes.append("net Sharpe > 2: treat as suspect until leakage/cost/selection ruled out (plan 2.4)")
-        ehd = summ.get("effective_holding_days", np.nan)
-        if np.isfinite(ehd) and ehd < 0.6 * cfg.portfolio.effective_holding_days_target:
-            notes.append(
-                f"effective holding {ehd:.0f}d < target {cfg.portfolio.effective_holding_days_target}d: raise trade_aversion"
-            )
-        if pbo is None:
-            notes.append("PBO skipped: set SystemConfig.pipeline_pbo_configs to run a CSCV grid")
-        if not blocks:
-            notes.append(f"fold-Sharpe gate skipped: {len(net)} return days < validation.min_fold_days")
+        notes = self._notes(summ, pbo, blocks, len(net))
         timings = dict(timings or {})
         timings["evaluate"] = time.perf_counter() - t0
         return PipelineResult(
@@ -966,228 +842,172 @@ class ResearchPipeline:
             signal_lag_days=int(signal_lag_days),
         )
 
+    def _signal_quality(self, bt: BacktestResult, L: int) -> tuple[ICReport, DecileSpreadResult]:
+        """IC / decile spread of the *traded* alpha score on non-overlapping formation
+        dates (every H execution dates), eligible names only, vs the fitted
+        (risk-only residualised) target and the raw forward return respectively.
+        With signal lag L the book executed at t holds the score as_of(t - L);
+        the label of that signal date (targets.py) is the return from close_t,
+        so score, label and raw return all refer to the trade made at t.  Frames
+        are indexed by the execution date t (L = 0: unchanged)."""
+        assert self.md_u is not None and self.alpha is not None
+        md_u, alpha, cfg = self.md_u, self.alpha, self.cfg
+        elig = md_u.eligibility()
+        H = cfg.alpha.horizon_days
+        target = alpha.target_
+        exec_dates = pd.DatetimeIndex(bt.weights.index[::H])
+        dpos = md_u.dates.get_indexer(exec_dates)
+        if (dpos < L).any():
+            raise ValueError("evaluate(): an execution date has no signal date L days earlier")
+        sig_dates = md_u.dates[dpos - L]
 
-# ============================================================================ run registry
-def _json_safe(v: Any) -> Any:
-    if isinstance(v, dict):
-        return {str(k): _json_safe(x) for k, x in v.items()}
-    if isinstance(v, (list, tuple)):
-        return [_json_safe(x) for x in v]
-    if isinstance(v, (bool, np.bool_)):
-        return bool(v)
-    if isinstance(v, (int, np.integer)):
-        return int(v)
-    if isinstance(v, (float, np.floating)):
-        v = float(v)
-        return v if math.isfinite(v) else str(v)
-    if isinstance(v, (pd.Timestamp,)):
-        return v.isoformat()
-    return v
+        def at_signal(panel: pd.DataFrame) -> pd.DataFrame:
+            out = panel.reindex(index=sig_dates, columns=md_u.tickers)
+            out.index = exec_dates
+            out.index.name = "date"
+            return out
 
-
-def _from_json_scalar(v: Any) -> Any:
-    if isinstance(v, str) and v in ("nan", "inf", "-inf"):
-        return float(v)
-    if isinstance(v, dict):
-        return {k: _from_json_scalar(x) for k, x in v.items()}
-    if isinstance(v, list):
-        return [_from_json_scalar(x) for x in v]
-    return v
-
-
-def run_summary_dict(res: PipelineResult) -> dict[str, Any]:
-    """The ``summary.json`` payload of a run directory."""
-    d = res.decile
-    return _json_safe(
-        {
-            "backtest": res.summary,
-            "ic": res.ic_report.scalars(),
-            "ic_decay": {str(k): v for k, v in res.ic_report.decay.items()},
-            "decile": None
-            if d is None
-            else {
-                "mean": d.mean,
-                "sharpe": d.sharpe,
-                "t_stat": d.t_stat,
-                "horizon": d.horizon,
-                "nw_lags": d.nw_lags,
-            },
-            "dsr": res.dsr,
-            "dsr_inputs": res.dsr_inputs,
-            "pbo": res.pbo,
-            "breakeven_cost_bps": res.breakeven_cost_bps,
-            "folds": [
-                {
-                    "start": str(pd.Timestamp(r.start).date()),
-                    "end": str(pd.Timestamp(r.end).date()),
-                    "n_days": int(r.n_days),
-                    "sharpe": r.sharpe,
-                }
-                for r in res.folds.itertuples()
-            ],
-            "cost_sensitivity": {
-                str(i): {str(c): res.cost_sensitivity.loc[i, c] for c in res.cost_sensitivity.columns}
-                for i in res.cost_sensitivity.index
-            },
-            "overall": bool(res.hurdles.overall),
-            "use_ml": res.use_ml,
-            "phase": res.phase,
-            "signal_lag_days": res.signal_lag_days,
-            "config_hash": res.config_hash,
-            "data_hash": res.data_hash,
-            "git_sha": res.git_sha,
-            "timings": res.timings,
-            "notes": res.notes,
-        }
-    )
-
-
-def _write_parquet(obj: pd.DataFrame | pd.Series, path: Path, name: str = "value") -> None:
-    df = obj.to_frame(name=obj.name or name) if isinstance(obj, pd.Series) else obj.copy()
-    df.columns = [str(c) for c in df.columns]
-    df.to_parquet(path)
-
-
-def save_run(res: PipelineResult, cfg: SystemConfig, runs_root: str | Path) -> Path:
-    """Write ``res`` to ``<runs_root>/<run_id>/`` (layout: module docstring)."""
-    if res.manifest is None:
-        res.manifest = RunManifest.create(
-            config_hash=res.config_hash, data_hash=res.data_hash, timings=res.timings
+        scores = pd.DataFrame({t: alpha.as_of(s).score for t, s in zip(exec_dates, sig_dates, strict=True)}).T
+        scores.index.name = "date"
+        scores = scores.reindex(columns=md_u.tickers).where(at_signal(elig).fillna(False).astype(bool))
+        # one sampling frequency for the ICIR and the decile Sharpe (audit 2 #15)
+        ppy = infer_periods_per_year(scores.index, cfg.trading_days_per_year)
+        decay_targets = {h: at_signal(t) for h, t in self._decay_targets(pd.DatetimeIndex(sig_dates)).items()}
+        icr = ic_report(
+            scores,
+            at_signal(target),
+            periods_per_year=ppy,
+            trading_days_per_year=cfg.trading_days_per_year,
+            overlap=1,
+            decay_targets=decay_targets,
         )
-    run_dir = Path(runs_root) / res.manifest.run_id
-    run_dir.mkdir(parents=True, exist_ok=False)
-    bt = res.backtest
-    res.manifest.save(run_dir)
-    (run_dir / "config.yaml").write_text(
-        cfg.to_yaml(header=f"config of run {res.manifest.run_id} (hash {res.config_hash})")
-    )
-    (run_dir / "summary.json").write_text(json.dumps(run_summary_dict(res), indent=2, sort_keys=True))
-    _write_parquet(bt.nav.rename("nav"), run_dir / "nav.parquet")
-    _write_parquet(bt.weights, run_dir / "weights.parquet")
-    _write_parquet(bt.trades, run_dir / "trades.parquet")
-    _write_parquet(bt.costs, run_dir / "costs.parquet")
-    _write_parquet(bt.returns, run_dir / "returns.parquet")
-    _write_parquet(res.ic_report.ic_series.rename("rank_ic"), run_dir / "ic.parquet")
-    (run_dir / "hurdles.json").write_text(json.dumps(res.hurdles.to_dict(), indent=2))
-    return run_dir
-
-
-@dataclass
-class RunRecord:
-    """A run directory re-loaded (typed)."""
-
-    run_dir: Path
-    manifest: RunManifest
-    config: SystemConfig
-    summary: dict[str, Any]
-    hurdles: HurdleResult
-    nav: pd.Series
-    returns: pd.DataFrame
-    weights: pd.DataFrame
-    trades: pd.DataFrame
-    costs: pd.DataFrame
-    ic: pd.Series
-
-    @property
-    def run_id(self) -> str:
-        return self.manifest.run_id
-
-
-def load_run(run_dir: str | Path) -> RunRecord:
-    """Load a run directory written by :func:`save_run`."""
-    p = Path(run_dir)
-    if not (p / "manifest.json").exists():
-        raise FileNotFoundError(f"{p} is not a run directory (no manifest.json)")
-
-    def _pq(name: str) -> pd.DataFrame:
-        f = p / name
-        return pd.read_parquet(f) if f.exists() else pd.DataFrame()
-
-    nav = _pq("nav.parquet")
-    ic = _pq("ic.parquet")
-    return RunRecord(
-        run_dir=p,
-        manifest=RunManifest.load(p),
-        config=SystemConfig.from_yaml(p / "config.yaml"),
-        summary=_from_json_scalar(json.loads((p / "summary.json").read_text())),
-        hurdles=HurdleResult.from_dict(json.loads((p / "hurdles.json").read_text())),
-        nav=nav["nav"] if "nav" in nav else pd.Series(dtype=float, name="nav"),
-        returns=_pq("returns.parquet"),
-        weights=_pq("weights.parquet"),
-        trades=_pq("trades.parquet"),
-        costs=_pq("costs.parquet"),
-        ic=ic["rank_ic"] if "rank_ic" in ic else pd.Series(dtype=float, name="rank_ic"),
-    )
-
-
-def list_runs(runs_root: str | Path) -> list[Path]:
-    """Run directories under ``runs_root`` (those with a manifest), newest first."""
-    root = Path(runs_root)
-    if not root.exists():
-        return []
-    return sorted(
-        (d for d in root.iterdir() if (d / "manifest.json").exists()), key=lambda d: d.name, reverse=True
-    )
-
-
-# ============================================================================ report
-def format_result(res: PipelineResult) -> str:
-    s = res.summary
-    icr = res.ic_report
-    lines = [
-        "=== Backtest summary ===",
-        f"period            {s['start']} -> {s['end']}  ({s['n_days']} days)"
-        + (f"   signal lag {res.signal_lag_days}d" if res.signal_lag_days else ""),
-        f"Sharpe gross/net  {s['sharpe_gross']:.2f} / {s['sharpe_net']:.2f}   (NW t = {s['newey_west_t_net']:.2f})",
-        f"CAGR gross/net    {100 * s['cagr_gross']:.2f}% / {100 * s['cagr_net']:.2f}%   vol {100 * s['ann_vol_net']:.1f}%",
-        f"max drawdown      {100 * s['max_drawdown_net']:.1f}%   calmar {s['calmar_net']:.2f}",
-        f"turnover/day      {100 * s['avg_daily_turnover']:.2f}%   effective holding {s['effective_holding_days']:.0f} d",
-        f"cost per side     {s['avg_cost_bps_per_side']:.1f} bp   gross exp {s['avg_gross_exposure']:.2f}  net exp {s['avg_net_exposure']:+.2f}",
-        f"transfer coeff    {s.get('transfer_coefficient_mean', float('nan')):.2f}   realized/ex-ante vol {s.get('realized_vs_exante_vol_ratio', float('nan')):.2f}",
-        f"sizing            mean gamma {s.get('mean_risk_aversion', float('nan')):.2f}   "
-        f"vol target capped on {100 * s.get('vol_target_caps_share', float('nan')):.0f}% of solves",
-        "",
-        "=== Alpha IC (score vs residualised target, sampled every horizon) ===",
-        f"mean rank IC {icr.mean_ic:.4f}  ICIR {icr.icir:.2f} "
-        f"(annualised at {icr.periods_per_year:.1f}/yr)  t {icr.t_stat:.2f}  NW t {icr.t_stat_nw:.2f} "
-        f"(L={icr.nw_lags})  n {icr.n}",
-    ]
-    if len(icr.decay):
-        lines.append(
-            "IC decay (horizon d: mean IC)  " + "  ".join(f"{int(h)}d: {v:.4f}" for h, v in icr.decay.items())
+        fwd_raw = at_signal(
+            forward_returns(
+                md_u,
+                H,
+                cfg.cost.delisting_haircut,
+                label_lag_days=L,
+                delisting_gap_days=cfg.alpha.delisting_gap_days,
+            ).where(elig)
         )
-    if res.decile is not None:
-        lines.append(
-            f"decile L/S (VW)  mean {100 * res.decile.mean:.2f}%/period  Sharpe {res.decile.sharpe:.2f}  "
-            f"NW t {res.decile.t_stat:.2f} (L={res.decile.nw_lags})"
+        ds = decile_spread(
+            scores,
+            fwd_raw,
+            horizon=1,  # formation dates do not overlap
+            weights=at_signal(md_u.market_cap),
+            periods_per_year=ppy,
         )
-    lines += [
-        f"DSR {res.dsr:.3f}  (n_trials {res.dsr_inputs.get('n_trials', 1):.1f}, var SR {res.dsr_inputs.get('var_trials_sr_annual', 0):.3f})"
-        + (f"  PBO {res.pbo:.3f}" if res.pbo is not None else "  PBO skipped"),
-        f"config {res.config_hash}  data {res.data_hash}  git {res.git_sha[:12]}"
-        + (f"  run {res.manifest.run_id}" if res.manifest is not None else ""),
-        "",
-        "=== Fold (purged walk-forward test block) net Sharpe ===",
-        (
-            res.folds.assign(
-                start=res.folds["start"].astype(str).str[:10], end=res.folds["end"].astype(str).str[:10]
+        return icr, ds
+
+    def _fold_sharpes(self, net: pd.Series) -> tuple[list[pd.DatetimeIndex], pd.DataFrame, pd.Series]:
+        """Fold-wise net Sharpe on PurgedWalkForward test blocks (#27); the
+        standalone baseline is zero.  Returns ``(blocks, folds, fold_sharpes)``."""
+        cfg = self.cfg
+        v = cfg.validation
+        blocks = purged_fold_blocks(
+            pd.DatetimeIndex(net.index),
+            v.n_splits,
+            v.embargo_days,
+            cfg.alpha.horizon_days,
+            getattr(v, "min_fold_days", 20),
+        )
+        rows = [
+            {
+                "start": b[0],
+                "end": b[-1],
+                "n_days": len(b),
+                "sharpe": M.annualized_sharpe(net.loc[b], cfg.trading_days_per_year),
+            }
+            for b in blocks
+        ]
+        folds = pd.DataFrame(rows, columns=["start", "end", "n_days", "sharpe"])
+        fold_sharpes = pd.Series(
+            folds["sharpe"].to_numpy(dtype=float),
+            index=pd.DatetimeIndex(folds["start"], name="fold_start"),
+            name="net_sharpe",
+        )
+        return blocks, folds, fold_sharpes
+
+    def _cost_gates(
+        self, bt: BacktestResult, gross: pd.Series, summ: BacktestSummary
+    ) -> tuple[pd.DataFrame, float]:
+        """Breakeven / cost sensitivity on gross returns net of borrow (borrow is not a
+        per-side cost; consistent with BacktestResult.summary())."""
+        gab = getattr(bt, "gross_after_borrow_returns", None)
+        gross_cs = gab.dropna() if isinstance(gab, pd.Series) and len(gab.dropna()) else gross
+        to = self._turnover_on_return_dates(bt, gross_cs.index)
+        cs = M.cost_sensitivity(gross_cs, to, cost_bps_per_side=summ.get("avg_cost_bps_per_side", 10.0))
+        return cs, M.breakeven_cost_bps(gross_cs, to)
+
+    def _selection_stats(
+        self,
+        bt: BacktestResult,
+        net: pd.Series,
+        summ: BacktestSummary,
+        icr: ICReport,
+        ds: DecileSpreadResult,
+        config_hash: str,
+        signal_lag_days: int,
+        dates: pd.DatetimeIndex | None,
+    ) -> tuple[float, dict[str, float], float | None]:
+        """Trial ledger: log this run first, then the PBO grid's configurations (each
+        a trial of the same search, audit 2 #11), then read the family statistics
+        for the deflated Sharpe.  Family = phase + data hash: trials on other data
+        (seeds, real data) are a different search (audit 2 #17).  Returns
+        ``(dsr, dsr_inputs, pbo)``."""
+        cfg = self.cfg
+        family = self.ledger_family()
+        skew, kurt = float(net.skew()), float(net.kurt() + 3)
+        if self.ledger is not None:
+            self._log_trial(
+                family, config_hash, net, summ, icr.mean_ic, ds.t_stat, signal_lag_days, dates, bt
             )
-            .round(2)
-            .to_string(index=False)
-            if len(res.folds)
-            else "(no folds)"
-        ),
-        "",
-        "=== Cost sensitivity (net Sharpe at cost multiples) ===",
-        res.cost_sensitivity.round(3).to_string(),
-        "",
-        "=== Plan hurdles ===",
-        HurdleReport.format(res.hurdles),
-    ]
-    if res.notes:
-        lines += ["", "NOTES: " + " | ".join(res.notes)]
-    if res.timings:
-        lines += ["", "timings (s): " + ", ".join(f"{k}={v:.1f}" for k, v in res.timings.items())]
-    if res.run_dir:
-        lines += [f"run directory: {res.run_dir}"]
-    return "\n".join(lines)
+        pbo = self._pbo_from_grid(dates if dates is not None else bt.weights.index, net)
+        dsr_in = self._dsr_inputs(family, len(net))
+        dsr = deflated_sharpe_ratio_annual(
+            summ["sharpe_net"],
+            n_trials=max(float(dsr_in["n_trials"]), 1.0),  # effective count, not rounded (audit 2 #17)
+            var_trials_sr_annual=dsr_in["var_trials_sr_annual"],
+            n_obs=len(net),
+            skew=skew,
+            kurt=kurt,
+            periods_per_year=cfg.trading_days_per_year,
+        )
+        return dsr, dsr_in, pbo
+
+    def _notes(
+        self, summ: BacktestSummary, pbo: float | None, blocks: list[pd.DatetimeIndex], n_days: int
+    ) -> list[str]:
+        cfg = self.cfg
+        notes = []
+        if summ["sharpe_net"] > 2:
+            notes.append("net Sharpe > 2: treat as suspect until leakage/cost/selection ruled out (plan 2.4)")
+        ehd = summ.get("effective_holding_days", np.nan)
+        if np.isfinite(ehd) and ehd < 0.6 * cfg.portfolio.effective_holding_days_target:
+            notes.append(
+                f"effective holding {ehd:.0f}d < target {cfg.portfolio.effective_holding_days_target}d: raise trade_aversion"
+            )
+        if pbo is None:
+            notes.append("PBO skipped: set SystemConfig.pipeline_pbo_configs to run a CSCV grid")
+        if not blocks:
+            notes.append(f"fold-Sharpe gate skipped: {n_days} return days < validation.min_fold_days")
+        return notes
+
+
+__all__ = [
+    "PipelineResult",
+    "ResearchPipeline",
+    "RunRecord",
+    "WarmupEstimate",
+    "_from_json_scalar",
+    "_json_safe",
+    "_write_parquet",
+    "data_hash_of",
+    "estimate_warmup_days",
+    "format_result",
+    "list_runs",
+    "load_run",
+    "purged_fold_blocks",
+    "run_summary_dict",
+    "save_run",
+]

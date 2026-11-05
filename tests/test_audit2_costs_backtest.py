@@ -8,6 +8,7 @@ simulator's own loop)."""
 
 from __future__ import annotations
 
+import dataclasses
 from types import SimpleNamespace
 
 import numpy as np
@@ -38,8 +39,7 @@ def test_gross_after_borrow_and_breakeven_net_of_borrow():
     on the realisation axis, and breakeven / cost sensitivity start from it."""
     w = {"A": 0.3, "B": -0.5, "C": -0.4}
     targets = dict.fromkeys(HC_DATES[:4], w)
-    cfg = SystemConfig()
-    cfg.execution.signal_lag_days = 0
+    cfg = SystemConfig().with_overrides({"execution.signal_lag_days": 0})
     cost = ConstantBpsCost(spread_bps=1.0, impact_bps=2.0, fees_bps=0.5, borrow_fee_annual=0.5)
     res = DailyBarSimulator(cfg, cost).run(
         make_md(), HC_DATES, alpha_fn, risk_fn, PresetOptimizer(targets), nav0=NAV0
@@ -65,8 +65,7 @@ def test_gross_after_borrow_and_breakeven_net_of_borrow():
 
 
 def test_gross_after_borrow_fallback_for_old_results():
-    cfg = SystemConfig()
-    cfg.execution.signal_lag_days = 0
+    cfg = SystemConfig().with_overrides({"execution.signal_lag_days": 0})
     targets = {d: {"A": 0.2, "B": -0.2, "C": 0.0} for d in HC_DATES[:4]}
     res = DailyBarSimulator(cfg, ConstantBpsCost(borrow_fee_annual=0.1)).run(
         make_md(), HC_DATES, alpha_fn, risk_fn, PresetOptimizer(targets), nav0=NAV0
@@ -124,9 +123,10 @@ def test_config_bounds_edges_and_round_trip():
     ExecutionConfig(signal_lag_days=0)
     ExecutionConfig(signal_lag_days=10)
     cfg = SystemConfig()
-    cfg.cost.clearing_per_share = -1.0  # in-place mutation bypasses __post_init__ ...
+    with pytest.raises(dataclasses.FrozenInstanceError):  # configs are frozen: no in-place bypass
+        cfg.cost.clearing_per_share = -1.0  # type: ignore[misc]
     with pytest.raises(ValueError, match="clearing_per_share"):
-        cfg.validate()  # ... but SystemConfig.validate() rebuilds through from_dict
+        cfg.with_overrides({"cost.clearing_per_share": -1.0})  # replace() re-runs __post_init__
     with pytest.raises(ValueError):
         SystemConfig.from_dict({"cost": {"impact_b_auction": -0.3}})
 
@@ -243,8 +243,7 @@ def test_simulator_books_exact_streak_increment(weights):
     md = _md_long(dates)
     run_dates = dates[-5:]
     targets = {d: {"A": w, "B": 0.0, "C": 0.0} for d, w in zip(run_dates[:4], weights, strict=True)}
-    cfg = SystemConfig()
-    cfg.execution.signal_lag_days = 0
+    cfg = SystemConfig().with_overrides({"execution.signal_lag_days": 0})
     tcm = TransactionCostModel(cfg.cost)
     res = DailyBarSimulator(cfg, tcm).run(
         md, run_dates, alpha_fn, risk_fn, PresetOptimizer(targets), nav0=NAV0, venue="continuous"

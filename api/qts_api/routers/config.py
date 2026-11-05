@@ -52,6 +52,5 @@ def get_warmup(
     launch with ``config_overrides`` is checked against its own config."""
     from qts.core.config import SystemConfig
 
-    cfg = SystemConfig()
-    cfg.execution.signal_lag_days = int(signal_lag_days)
+    cfg = SystemConfig().with_overrides({"execution.signal_lag_days": int(signal_lag_days)})
     return warmup_info(cfg, ml)

@@ -32,6 +32,7 @@ export const GATE_ORDER: readonly GateName[] = [
   'pbo',
   'phase_sharpe',
   'suspect',
+  'failed_solves',
 ];
 
 export const GATES: Readonly<Record<GateName, GateDef>> = {
@@ -115,6 +116,16 @@ export const GATES: Readonly<Record<GateName, GateDef>> = {
     threshold: 'net Sharpe ≤ 2',
     rationale:
       'A net Sharpe above 2 is a defect until leakage, survivorship, cost and selection are ruled out. DSR cannot detect leakage.',
+    handbook: GATE_SECTION,
+  },
+  failed_solves: {
+    name: 'failed_solves',
+    label: 'Solver health',
+    verdictNoun: 'solver-health',
+    test: 'Share of rebalance solves that failed, so the book was held instead of re-optimised.',
+    threshold: '≤ 2% of rebalances',
+    rationale:
+      'A broken optimizer holds the current book every day; the result looks like a strategy but is a stale portfolio.',
     handbook: GATE_SECTION,
   },
 };

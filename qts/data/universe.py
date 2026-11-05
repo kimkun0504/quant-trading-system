@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import replace
-from typing import Dict, Optional
+from typing import Dict, Optional, TypedDict
 
 import numpy as np
 import pandas as pd
@@ -175,7 +175,16 @@ def masked_levels(md: MarketData) -> MarketData:
                    shares_outstanding=cut(md.shares_outstanding))
 
 
-def survivorship_check(md: MarketData, warn: bool = True) -> Dict[str, object]:
+class SurvivorshipReport(TypedDict):
+    """:func:`survivorship_check`."""
+
+    n_tickers: int
+    n_delisted: int
+    n_late_listed: int
+    suspect: bool
+
+
+def survivorship_check(md: MarketData, warn: bool = True) -> SurvivorshipReport:
     """Flag a likely survivorship-biased source.
 
     Returns ``{"n_tickers", "n_delisted", "n_late_listed", "suspect"}``.  A

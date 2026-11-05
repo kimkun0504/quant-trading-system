@@ -80,6 +80,10 @@ SUMMARY_KEYS = (
     "mean_risk_aversion",
 )
 IC_KEYS = ("n", "mean_ic", "ic_sd", "icir", "t_stat", "hit_rate", "periods_per_year")
+# Gates added after the golden file was written.  They are *not* numerical drift, so
+# they are left out of the comparison and pinned by test_golden_run_is_not_degenerate
+# instead (regenerating the golden file for a new gate would re-bless every number).
+GATES_NOT_IN_GOLDEN = ("failed_solves",)
 
 
 def _enc(v):
@@ -110,7 +114,11 @@ def curated(pipe, res) -> dict:
         "dsr": _enc(res.dsr),
         "hurdles": {
             "overall": _enc(res.hurdles["overall"]),
-            "status": {k: res.hurdles["status"][k] for k in sorted(res.hurdles["status"])},
+            "status": {
+                k: res.hurdles["status"][k]
+                for k in sorted(res.hurdles["status"])
+                if k not in GATES_NOT_IN_GOLDEN
+            },
         },
         "backtest": {
             "n_nav": len(nav),
@@ -188,3 +196,6 @@ def test_golden_run_is_not_degenerate(golden_pipeline_run):
     assert s["avg_gross_exposure"] > 0.5 and s["avg_daily_turnover"] > 0.0
     assert s["total_costs_usd"] > 0.0
     assert res.ic_report["n"] >= 3
+    # optimizer health gate (not in the golden file, see GATES_NOT_IN_GOLDEN)
+    assert res.hurdles["status"]["failed_solves"] == "PASS"
+    assert res.backtest.failed_solve_fraction() == 0.0

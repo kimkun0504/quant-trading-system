@@ -57,10 +57,13 @@ def test_from_dict_is_strict_and_partial():
 
 
 def test_yaml_round_trip(tmp_path):
-    cfg = SystemConfig()
-    cfg.portfolio.risk_aversion = 7.5
-    cfg.alpha.secondary_horizons = [10]
-    cfg.pipeline_pbo_configs = [{"portfolio.risk_aversion": 5.0}]
+    cfg = SystemConfig().with_overrides(
+        {
+            "portfolio.risk_aversion": 7.5,
+            "alpha.secondary_horizons": [10],
+            "pipeline_pbo_configs": [{"portfolio.risk_aversion": 5.0}],
+        }
+    )
     p = tmp_path / "c.yaml"
     p.write_text(cfg.to_yaml(header="test"))
     back = SystemConfig.from_yaml(p)
@@ -71,7 +74,7 @@ def test_yaml_round_trip(tmp_path):
 def test_hash_sensitive_and_stable_across_processes():
     a, b = SystemConfig(), SystemConfig()
     assert a.hash() == b.hash() and len(a.hash()) == 16
-    b.alpha.ic_shrink = 0.4
+    b = b.with_overrides({"alpha.ic_shrink": 0.4})
     assert a.hash() != b.hash()
     code = "from qts.core.config import SystemConfig; print(SystemConfig().hash())"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True, cwd=ROOT)

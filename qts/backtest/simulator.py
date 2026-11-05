@@ -42,11 +42,30 @@ decision D4) and ``s`` = the trading day ``L`` days before ``t`` in ``md.dates``
    ``t``.  Pre-trade weights on ``t+1`` are the drifted post-trade weights
    re-based to ``nav_{t+1}`` (cash absorbs costs).
 
+Code layout: :meth:`DailyBarSimulator.run` is a short loop over days; each
+day is a fixed pipeline of small steps, one method each, in this order:
+
+==========================  ==============================================
+step                        method
+==========================  ==============================================
+day view, signal date       :meth:`DailyBarSimulator._day`
+eligibility, forced exits   :meth:`DailyBarSimulator._universe_step`
+signal -> target weights    :meth:`DailyBarSimulator._target_step`
+trade costs (fills)         :meth:`DailyBarSimulator._cost_step`
+mark-to-market, halts,      :meth:`DailyBarSimulator._mark_to_market_step`
+delistings
+accounting (NAV, drift)     :meth:`DailyBarSimulator._accounting_step`
+diagnostics                 :class:`_Recorder` / :class:`_EventLog`
+==========================  ==============================================
+
+Run inputs are a frozen :class:`~qts.backtest.spec.BacktestSpec`; the state
+carried from day to day is :class:`_BookState`.
+
 Cost model: any :class:`qts.core.costs.CostModel` (``snapshot`` /
 ``estimate`` / ``holding_cost_usd``).  A duck-typed legacy model without
-``snapshot`` (a test double with ``snapshot_from_market`` returning a dict and
-``estimate`` returning a DataFrame) is wrapped once, at construction, by
-:class:`_LegacyCostModel`; there is no silent fallback between paths.
+``snapshot`` is wrapped once, at construction, by
+:class:`~qts.backtest.cost_adapter._LegacyCostModel`; there is no silent
+fallback between paths.
 
 Halts vs delistings (same classification as the labels, ``qts.alpha.targets``):
 a held name with no close on ``t+1`` is either *halted* or *delisted*, decided
@@ -82,6 +101,13 @@ allowed ``|w|`` shrinking linearly to 0 over
 ``cfg.portfolio.exit_ineligible_days`` days (recorded in
 ``diagnostics["forced_exits"]``).
 
+Failed solves: a rebalance whose solve status is not ``optimal`` /
+``optimal_inaccurate`` holds the current book; it is counted in
+``diagnostics["n_failed_solves"]`` and listed in
+``diagnostics["failed_solves"]`` (date, status, solver errors).
+``diagnostics["n_rebalance_solves"]`` is the denominator of the
+``failed_solves`` hurdle gate (:mod:`qts.validation.hurdles`).
+
 Recorded panels are indexed by the decision date ``t``: ``weights`` (post-
 trade), ``trades``, ``costs``, ``exante_var``; ``returns`` and ``nav`` are
 indexed by the date the return is realised (``t+1``).  ``returns`` columns:
@@ -98,7 +124,7 @@ from __future__ import annotations
 import inspect
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from dataclasses import replace as dc_replace
 from typing import Any
@@ -106,284 +132,200 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from qts.backtest import metrics as M
+from qts.backtest.cost_adapter import _LegacyCostModel, cost_frame
+from qts.backtest.result import COST_COLUMNS, BacktestResult
+from qts.backtest.spec import BacktestSpec
 from qts.core.config import SystemConfig
-from qts.core.costs import VENUE_CONTINUOUS, VENUE_ROUTED, CostEstimate, LiquiditySnapshot
-from qts.core.types import AlphaOutput, MarketData, RiskModelOutput, Wide
-from qts.portfolio.costs import Snapshot, align_snapshot, snapshot_from_market
-from qts.portfolio.diagnostics import effective_holding_days, realized_vs_exante_risk
-from qts.portfolio.optimizer import SinglePeriodOptimizer
+from qts.core.costs import VENUE_CONTINUOUS, VENUE_ROUTED, LiquiditySnapshot
+from qts.core.types import AlphaOutput, MarketData, RiskModelOutput
+from qts.portfolio.costs import Snapshot
+from qts.portfolio.optimizer import OK_STATUSES, SinglePeriodOptimizer
 
 log = logging.getLogger(__name__)
 
-COST_COLUMNS = ["spread", "impact", "fees", "borrow", "total"]
+AlphaFn = Callable[[pd.Timestamp], AlphaOutput]
+RiskFn = Callable[[pd.Timestamp, "pd.Series | None"], RiskModelOutput]
+EligibleFn = Callable[[pd.Timestamp], pd.Index]
+
+_TRADE_EPS = 1e-10  # |trade weight| below this is solver noise: no trade
+_HELD_EPS = 1e-12  # |weight| above this counts as held for forced exits
+
+__all__ = [
+    "COST_COLUMNS",
+    "BacktestResult",
+    "BacktestSpec",
+    "DailyBarSimulator",
+    "cost_frame",
+]
+
+
+# --------------------------------------------------------------------------- run context
+class _SnapshotCache:
+    """Point-in-time cost snapshots by date; keeps only the ``lag + 3`` most
+    recent dates (the window the signal lag still needs)."""
+
+    def __init__(self, build: Callable[[pd.Timestamp], Snapshot], lag: int):
+        self._build = build
+        self._lag = lag
+        self._cache: dict[pd.Timestamp, Snapshot] = {}
+
+    def __call__(self, d: pd.Timestamp) -> Snapshot:
+        if d not in self._cache:
+            if len(self._cache) > self._lag + 2:  # keep only the window still needed
+                self._cache.pop(next(iter(self._cache)))
+            self._cache[d] = self._build(d)
+        return self._cache[d]
+
+
+@dataclass(frozen=True, eq=False)
+class _RunContext:
+    """Everything fixed for the whole run (built once by :meth:`DailyBarSimulator._context`)."""
+
+    md: MarketData
+    dates: pd.DatetimeIndex
+    tickers: pd.Index
+    lag: int
+    md_pos: np.ndarray  # positions of ``dates`` in ``md.dates``
+    R: pd.DataFrame  # return realised on the row date, from the last close before it
+    price_ok: pd.DataFrame  # has a close on the row date
+    last_close_md: np.ndarray  # (len(md.dates), N) position of the last close so far, nan before
+    vendor_pos: np.ndarray  # (N,) vendor delisting position in md.dates, nan = not covered
+    gap_days: int
+    elig_md: np.ndarray | None  # (len(md.dates), N) eligibility panel, rows = md.dates
+    eligible_fn: EligibleFn | None
+    exit_days: int
+    haircut: float
+    venue: str
+    rebalance_every: int
+    neutral_styles: list[str] | None
+    progress: bool
+    solve_accepts_hl: bool
+    snap_at: _SnapshotCache
+
+    @property
+    def n_names(self) -> int:
+        return len(self.tickers)
+
+
+@dataclass(frozen=True, eq=False)
+class _Day:
+    """One simulation date: decision date ``t``, realisation date ``t1``, signal date."""
+
+    i: int
+    t: pd.Timestamp
+    t1: pd.Timestamp
+    sig_date: pd.Timestamp | None  # None during the first ``lag`` days of md
+    alive: np.ndarray  # (N,) has a price on t (can trade)
+    snap_exec: Snapshot  # liquidity as of the execution date t
+
+    @property
+    def rebalance(self) -> bool:
+        return self.sig_date is not None
 
 
 @dataclass
-class BacktestResult:
-    nav: pd.Series  # indexed by date (first entry = nav0 on dates[0])
-    returns: pd.DataFrame  # columns: gross, net, gross_after_borrow (indexed by realisation date)
-    weights: Wide  # post-trade weights by decision date
-    trades: Wide  # weight changes by decision date
-    costs: pd.DataFrame  # USD by decision date: spread, impact, fees, borrow, total
-    diagnostics: dict[str, object] = field(default_factory=dict)
-    exante_var: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
-    turnover: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
-    transfer_coefficient: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
-    periods_per_year: int = 252
+class _BookState:
+    """State carried from one day to the next."""
 
-    # ----------------------------------------------------------------- views
+    nav: float
+    w_pre: np.ndarray  # pre-trade weights at the close of t
+    streak: np.ndarray  # consecutive same-direction trading days per name
+    streak_usd: np.ndarray  # |USD| traded in the current streak, through the last trade
+    last_sign: np.ndarray
+    last_risk: RiskModelOutput | None = None
+    last_alpha: AlphaOutput | None = None
+
+
+@dataclass
+class _Costs:
+    """USD costs booked on one decision date."""
+
+    spread: float
+    impact: float
+    fees: float
+    borrow: float
+
     @property
-    def gross_returns(self) -> pd.Series:
-        return self.returns["gross"]
+    def total(self) -> float:
+        return self.spread + self.impact + self.fees + self.borrow
+
+    def as_row(self) -> tuple[float, float, float, float, float]:
+        return (self.spread, self.impact, self.fees, self.borrow, self.total)
+
+
+@dataclass
+class _EventLog:
+    """Event diagnostics accumulated over the run."""
+
+    halts_open: dict[str, dict[str, Any]] = field(default_factory=dict)
+    halts: list[dict[str, object]] = field(default_factory=list)
+    n_halted: int = 0
+    forced: dict[str, dict[str, float]] = field(default_factory=dict)  # ticker -> {"w0", "k"}
+    forced_log: list[dict[str, object]] = field(default_factory=list)
+    n_out_of_model: int = 0
+    n_ineligible_days: int = 0
+    n_no_signal: int = 0
+    delistings: list[dict[str, object]] = field(default_factory=list)
+    solve_log: list[dict[str, object]] = field(default_factory=list)
+    failed_solves: list[dict[str, object]] = field(default_factory=list)
 
     @property
-    def net_returns(self) -> pd.Series:
-        return self.returns["net"]
+    def n_failed(self) -> int:
+        return len(self.failed_solves)
 
-    @property
-    def gross_after_borrow_returns(self) -> pd.Series:
-        """``gross - borrow/nav_pre`` (module docstring); computed from ``costs``
-        and ``nav`` for results built without the column."""
-        if "gross_after_borrow" in self.returns:
-            return self.returns["gross_after_borrow"]
-        n = min(len(self.costs), len(self.returns))
-        nav_pre = self.nav.reindex(self.costs.index).to_numpy(dtype=float)[:n]
-        borrow = self.costs["borrow"].to_numpy(dtype=float)[:n] if "borrow" in self.costs else np.zeros(n)
-        out = self.returns["gross"].astype(float).copy()
-        out.iloc[:n] = out.to_numpy(dtype=float)[:n] - borrow / nav_pre
-        return out.rename("gross_after_borrow")
+    def all_halts(self) -> list[dict[str, object]]:
+        return self.halts + [{**ep, "end": None, "outcome": "open"} for ep in self.halts_open.values()]
 
-    def cost_sensitivity(
+
+class _Recorder:
+    """Per-day output arrays; :meth:`truncate` when the run stops early."""
+
+    def __init__(self, T: int, N: int, nav0: float):
+        self.T = T
+        self.W = np.zeros((T, N))
+        self.X = np.zeros((T, N))
+        self.C = np.zeros((T, 5))
+        self.EXV = np.full(T, np.nan)
+        self.TO = np.zeros(T)
+        self.TC = np.full(T, np.nan)
+        self.navs = np.empty(T + 1)
+        self.navs[0] = nav0
+        self.gross = np.empty(T)
+        self.net = np.empty(T)
+        self.borrow_ret = np.empty(T)
+
+    def record(
         self,
-        cost_bps_per_side: float | None = None,
-        multipliers: tuple[float, ...] = (0.5, 1, 2, 3),
-    ) -> pd.DataFrame:
-        """:func:`qts.backtest.metrics.cost_sensitivity` on ``gross_after_borrow``
-        (borrow charged as realised, trading cost scaled); default cost = the
-        realised ``avg_cost_bps_per_side``."""
-        r = self.gross_after_borrow_returns.dropna()
-        c = self.summary()["avg_cost_bps_per_side"] if cost_bps_per_side is None else cost_bps_per_side
-        c = float(c) if np.isfinite(c) else 10.0
-        return M.cost_sensitivity(
-            r, self.turnover_on_return_dates().reindex(r.index), c, multipliers, self.periods_per_year
-        )
+        i: int,
+        w_post: np.ndarray,
+        x: np.ndarray,
+        costs: _Costs,
+        nav: float,
+        nav1: float,
+        g_ret: float,
+        n_ret: float,
+        exante_var: float | None,
+    ) -> None:
+        self.W[i] = w_post
+        self.X[i] = x
+        self.C[i] = costs.as_row()
+        self.TO[i] = float(np.abs(x).sum())
+        if exante_var is not None:
+            self.EXV[i] = exante_var
+        self.gross[i] = g_ret
+        self.net[i] = n_ret
+        self.borrow_ret[i] = costs.borrow / nav
+        self.navs[i + 1] = nav1
 
-    @property
-    def cost_bps_of_nav(self) -> pd.Series:
-        nav_pre = self.nav.reindex(self.costs.index)
-        return (self.costs["total"] / nav_pre * 1e4).rename("cost_bps_of_nav")
-
-    @property
-    def traded_usd(self) -> pd.Series:
-        nav_pre = self.nav.reindex(self.trades.index)
-        return (self.trades.abs().sum(axis=1) * nav_pre).rename("traded_usd")
-
-    def summary(self) -> dict[str, float]:
-        q = self.periods_per_year
-        g, n = self.gross_returns.dropna(), self.net_returns.dropna()
-        gb = self.gross_after_borrow_returns.dropna()
-        traded = float(self.traded_usd.sum())
-        trading_cost = float((self.costs["spread"] + self.costs["impact"] + self.costs["fees"]).sum())
-        rv = (
-            realized_vs_exante_risk(g, self.exante_var.shift(1).reindex(g.index), q)
-            if len(self.exante_var)
-            else {"ratio": float("nan")}
-        )
-        gross_w = self.weights.abs().sum(axis=1)
-        out = {
-            "start": str(self.nav.index[0].date()) if len(self.nav) else "",
-            "end": str(self.nav.index[-1].date()) if len(self.nav) else "",
-            "n_days": len(n),
-            "final_nav": float(self.nav.iloc[-1]) if len(self.nav) else float("nan"),
-            "cagr_gross": M.annualized_return(g, q),
-            "cagr_net": M.annualized_return(n, q),
-            "ann_vol_gross": M.annualized_vol(g, q),
-            "ann_vol_net": M.annualized_vol(n, q),
-            "sharpe_gross": M.annualized_sharpe(g, q),
-            "sharpe_net": M.annualized_sharpe(n, q),
-            "sharpe_net_lo": M.annualized_sharpe(n, q, lo_adjust=True),
-            "sharpe_t_stat_net": M.sharpe_t_stat(n),
-            "newey_west_t_net": M.newey_west_tstat(n),
-            "max_drawdown_net": M.max_drawdown(n),
-            "calmar_net": M.calmar(n, q),
-            "sortino_net": M.sortino(n, q),
-            "hit_rate_net": M.hit_rate(n),
-            "avg_gross_exposure": float(gross_w.mean()) if len(gross_w) else float("nan"),
-            "avg_net_exposure": float(self.weights.sum(axis=1).mean()) if len(self.weights) else float("nan"),
-            "avg_daily_turnover": float(self.turnover.mean()) if len(self.turnover) else float("nan"),
-            "effective_holding_days": effective_holding_days(self.turnover, gross_w),
-            "avg_cost_bps_per_side": trading_cost / traded * 1e4 if traded > 0 else float("nan"),
-            "avg_daily_cost_bps_of_nav": float(self.cost_bps_of_nav.mean())
-            if len(self.costs)
-            else float("nan"),
-            "total_costs_usd": float(self.costs["total"].sum()),
-            "transfer_coefficient_mean": float(self.transfer_coefficient.mean())
-            if len(self.transfer_coefficient.dropna())
-            else float("nan"),
-            "realized_vs_exante_vol_ratio": rv["ratio"],
-            # per-side breakeven net of borrow (borrow is not a per-side cost; audit 2 #1)
-            "breakeven_cost_bps": M.breakeven_cost_bps(gb, self.turnover_on_return_dates().reindex(gb.index)),
-            "n_delistings": len(self.diagnostics.get("delistings", [])),
-            "n_failed_solves": int(self.diagnostics.get("n_failed_solves", 0)),
-            **self.sizing_summary(),
-        }
-        return out
-
-    def sizing_summary(self) -> dict[str, float]:
-        """From ``diagnostics["solve_log"]``: ``vol_target_caps_share`` = share of the
-        target-vol solves (non-empty ``vol_target_binding``) whose book was capped below
-        the vol target by the gross / position / ADV limits (``"caps"``);
-        ``mean_risk_aversion`` = mean annual gamma of the returned books.  NaN when the
-        log has no such entries (fixed gamma without a search, or no solves)."""
-        log_ = self.diagnostics.get("solve_log") or []
-        entries = [e for e in log_ if isinstance(e, dict)] if isinstance(log_, list) else []
-        binding = [str(e.get("vol_target_binding") or "") for e in entries]
-        searched = [b for b in binding if b]
-        gam = np.array([float(e.get("risk_aversion", np.nan)) for e in entries], dtype=float)
-        gam = gam[np.isfinite(gam)]
-        return {
-            "vol_target_caps_share": float(np.mean([b == "caps" for b in searched]))
-            if searched
-            else float("nan"),
-            "mean_risk_aversion": float(gam.mean()) if len(gam) else float("nan"),
-        }
-
-    def turnover_on_return_dates(self) -> pd.Series:
-        """Turnover on decision date t re-indexed to the realisation date t+1
-        (positionally aligned with ``returns``)."""
-        n = min(len(self.turnover), len(self.returns))
-        return pd.Series(self.turnover.values[:n], index=self.returns.index[:n], name="turnover")
+    def truncate(self, T_eff: int) -> None:
+        self.W, self.X, self.C = self.W[:T_eff], self.X[:T_eff], self.C[:T_eff]
+        self.EXV, self.TO, self.TC = self.EXV[:T_eff], self.TO[:T_eff], self.TC[:T_eff]
+        self.navs, self.gross, self.net = self.navs[: T_eff + 1], self.gross[:T_eff], self.net[:T_eff]
+        self.borrow_ret = self.borrow_ret[:T_eff]
+        self.T = T_eff
 
 
-def cost_frame(est, tickers: pd.Index) -> pd.DataFrame:
-    """Normalise a cost estimate into ``spread``/``impact``/``fees`` USD per ticker.
-
-    Accepted: a :class:`CostEstimate`; ``None`` (zero cost); a Series (booked
-    as impact); a DataFrame / dict with columns ``spread``, ``impact``,
-    ``fees`` (aliases ``<k>_usd`` / ``<k>_cost``) or a single ``total`` column
-    (booked as impact).  Anything else raises ``ValueError`` naming the
-    columns, and so does any non-finite cost -- a renamed column or a NaN input
-    must never make the backtest silently free.
-    """
-    out = pd.DataFrame(0.0, index=tickers, columns=["spread", "impact", "fees"])
-    if est is None:
-        return out
-    if isinstance(est, CostEstimate):
-        f = est.frame
-        for k in ("spread", "impact", "fees"):
-            out[k] = f[k + "_usd"].reindex(tickers).fillna(0.0).astype(float)
-        return out
-    if isinstance(est, pd.Series):
-        v = est.reindex(tickers).astype(float)
-        missing = v.index[~np.isfinite(v.values)]
-        if len(missing):
-            raise ValueError(f"cost estimate has non-finite values for {list(missing[:5])}")
-        out["impact"] = v
-        return out
-    if isinstance(est, dict):
-        est = pd.DataFrame(est)
-    if isinstance(est, pd.DataFrame):
-        cols = {c.lower(): c for c in est.columns}
-        matched = []
-        for k in ("spread", "impact", "fees"):
-            for alias in (k, k + "_usd", k + "_cost"):
-                if alias in cols:
-                    out[k] = est[cols[alias]].reindex(tickers).astype(float)
-                    matched.append(cols[alias])
-                    break
-        if not matched:
-            if "total" in cols:
-                out["impact"] = est[cols["total"]].reindex(tickers).astype(float)
-                matched.append(cols["total"])
-            else:
-                raise ValueError(
-                    "estimate() returned no recognised cost column "
-                    f"(expected spread/impact/fees[_usd|_cost] or total); got {list(est.columns)}"
-                )
-        bad = {
-            c: list(out.index[~np.isfinite(out[c].values)][:5])
-            for c in out.columns
-            if not np.isfinite(out[c].values).all()
-        }
-        if bad:
-            raise ValueError(f"estimate() returned non-finite costs (source columns {matched}): {bad}")
-        return out
-    raise TypeError(f"unsupported cost estimate type {type(est)}")
-
-
-class _LegacyCostModel:
-    """Adapter giving a duck-typed pre-protocol cost model (no ``snapshot``
-    method) the :class:`~qts.core.costs.CostModel` interface the simulator uses.
-
-    * ``snapshot``: the model's ``snapshot_from_market(md, t)`` dict if it has
-      one, else the built-in builder; reindexed to ``md.tickers`` with
-      :func:`align_snapshot` (dict kept) and ``date`` set.
-    * ``estimate``: the model's ``estimate(trades, snap, [venue], [streak])``
-      (only the keyword arguments its signature accepts), normalised by
-      :func:`cost_frame` into a :class:`CostEstimate`.
-    * ``holding_cost_usd``: the model's method if present, else
-      ``max(-w, 0) * nav * snapshot["borrow_fee"] / trading_days``.
-    """
-
-    def __init__(self, model: Any, cfg: SystemConfig, adv_window: int, vol_window: int):
-        self.model = model
-        self.cfg = cfg
-        self.adv_window = adv_window
-        self.vol_window = vol_window
-        try:
-            self._params = set(inspect.signature(model.estimate).parameters)
-        except (TypeError, ValueError):
-            self._params = set()
-
-    def snapshot(self, md: MarketData, t: pd.Timestamp) -> Snapshot:
-        fn = getattr(self.model, "snapshot_from_market", None)
-        raw = (
-            fn(md, t)
-            if callable(fn)
-            else snapshot_from_market(md, t, self.adv_window, self.vol_window, self.cfg.cost).to_dict()
-        )
-        out = align_snapshot(dict(raw), md.tickers, self.cfg.cost)
-        out.setdefault("date", pd.Timestamp(t))
-        return out
-
-    def estimate(
-        self,
-        trades_usd: pd.Series,
-        snap: Snapshot,
-        venue: str | None = None,
-        streak: pd.Series | None = None,
-        prior_streak_usd: pd.Series | None = None,
-    ) -> CostEstimate:
-        kw: dict[str, object] = {}
-        if "venue" in self._params and venue is not None:
-            kw["venue"] = venue
-        if "streak" in self._params and streak is not None:
-            kw["streak"] = streak
-        if "prior_streak_usd" in self._params and prior_streak_usd is not None:
-            kw["prior_streak_usd"] = prior_streak_usd
-        cf = cost_frame(self.model.estimate(trades_usd, snap, **kw), trades_usd.index)
-        return CostEstimate.from_components(
-            trades_usd.index,
-            venue or VENUE_ROUTED,
-            trades_usd,
-            cf["spread"].to_numpy(),
-            cf["impact"].to_numpy(),
-            cf["fees"].to_numpy(),
-        )
-
-    def holding_cost_usd(self, w_post: pd.Series, nav: float, snap: Snapshot) -> pd.Series:
-        fn = getattr(self.model, "holding_cost_usd", None)
-        if callable(fn):
-            return pd.Series(fn(w_post, nav, snap), dtype=float).reindex(w_post.index).fillna(0.0)
-        fee = (
-            pd.Series(snap["borrow_fee"])
-            .reindex(w_post.index)
-            .fillna(self.cfg.cost.default_borrow_fee_annual)
-        )
-        return (-w_post).clip(lower=0.0) * nav * fee / self.cfg.trading_days_per_year
-
-
+# --------------------------------------------------------------------------- simulator
 class DailyBarSimulator:
     def __init__(self, cfg: SystemConfig, cost_model: Any, adv_window: int = 63, vol_window: int = 63):
         """``cost_model``: a :class:`qts.core.costs.CostModel` (has ``snapshot``),
@@ -432,25 +374,28 @@ class DailyBarSimulator:
         out["auction_share"] = share
         return out
 
-    # ----------------------------------------------------------------- run
+    # ----------------------------------------------------------------- public API
     def run(
         self,
         md: MarketData,
-        dates: pd.DatetimeIndex,
-        alpha_fn: Callable[[pd.Timestamp], AlphaOutput],
-        risk_fn: Callable[[pd.Timestamp, pd.Series | None], RiskModelOutput],
+        dates: pd.DatetimeIndex | BacktestSpec,
+        alpha_fn: AlphaFn,
+        risk_fn: RiskFn,
         optimizer: SinglePeriodOptimizer,
         nav0: float = 1e6,
         rebalance_every: int = 1,
         venue: str = VENUE_ROUTED,
-        neutral_styles: list[str] | None = None,
+        neutral_styles: Sequence[str] | None = None,
         warm_start_weights: pd.Series | None = None,
         progress: bool = False,
-        eligible_fn: Callable[[pd.Timestamp], pd.Index] | None = None,
+        eligible_fn: EligibleFn | None = None,
         exit_ineligible_days: int | None = None,
         signal_lag_days: int | None = None,
     ) -> BacktestResult:
-        """``eligible_fn(date)`` returns the tickers investable as of ``date``;
+        """Simulate ``dates`` (a :class:`BacktestSpec`, or the dates plus keyword
+        arguments, which are packed into one).
+
+        ``eligible_fn(date)`` returns the tickers investable as of ``date``;
         when ``md.eligible`` (wide bool panel) is present it takes precedence
         and ``eligible_fn`` is ignored.  ``exit_ineligible_days`` overrides
         ``cfg.portfolio.exit_ineligible_days`` (linear unwind horizon).
@@ -458,29 +403,73 @@ class DailyBarSimulator:
         trade (and is passed to the optimizer's cost terms).
         ``signal_lag_days`` overrides ``cfg.execution.signal_lag_days`` (module
         docstring, step 1)."""
+        if isinstance(dates, BacktestSpec):
+            spec = dates
+        else:
+            spec = BacktestSpec.create(
+                dates,
+                nav0=nav0,
+                rebalance_every=rebalance_every,
+                venue=venue,
+                neutral_styles=neutral_styles,
+                warm_start_weights=warm_start_weights,
+                progress=progress,
+                eligible_fn=eligible_fn,
+                exit_ineligible_days=exit_ineligible_days,
+                signal_lag_days=signal_lag_days,
+            )
+        return self.run_spec(md, spec, alpha_fn, risk_fn, optimizer)
+
+    def run_spec(
+        self,
+        md: MarketData,
+        spec: BacktestSpec,
+        alpha_fn: AlphaFn,
+        risk_fn: RiskFn,
+        optimizer: SinglePeriodOptimizer,
+    ) -> BacktestResult:
+        """The day loop: one fixed step pipeline per date (module docstring)."""
         t_start = time.perf_counter()
-        dates = pd.DatetimeIndex(dates)
+        ctx = self._context(md, spec, optimizer)
+        state = self._initial_state(ctx, spec)
+        events = _EventLog()
+        rec = _Recorder(len(ctx.dates) - 1, ctx.n_names, state.nav)
+        for i in range(rec.T):
+            day = self._day(ctx, i)
+            inel, no_trade, force_caps = self._universe_step(ctx, day, state, events)
+            w_post = self._target_step(
+                ctx, day, state, events, rec, alpha_fn, risk_fn, optimizer, inel, no_trade, force_caps
+            )
+            x = w_post - state.w_pre
+            x[np.abs(x) < _TRADE_EPS] = 0.0
+            w_post = state.w_pre + x
+            costs = self._cost_step(ctx, day, state, x, w_post)
+            r, liquidate, x = self._mark_to_market_step(ctx, day, state, events, w_post, x, costs)
+            if not self._accounting_step(ctx, day, state, rec, w_post, x, r, liquidate, costs):
+                break
+        return self._result(ctx, spec, events, rec, t_start)
+
+    # ----------------------------------------------------------------- set-up
+    def _context(self, md: MarketData, spec: BacktestSpec, optimizer: SinglePeriodOptimizer) -> _RunContext:
+        dates = pd.DatetimeIndex(spec.dates)
         if len(dates) < 2:
             raise ValueError("need at least two dates")
         if not dates.isin(md.dates).all():
             raise ValueError("dates must be a subset of md.dates")
         lag = int(
-            signal_lag_days
-            if signal_lag_days is not None
+            spec.signal_lag_days
+            if spec.signal_lag_days is not None
             else getattr(self.cfg.execution, "signal_lag_days", 0)
         )
         if lag < 0:
             raise ValueError("signal_lag_days must be >= 0")
         tickers = md.tickers
-        N = len(tickers)
-        md_pos = md.dates.get_indexer(dates)
         close = md.close.loc[dates]
         # return realised on the row date, measured from the last close before it:
         # equals pct_change on consecutive closes; after a halt it carries the whole
         # halt-period move (module docstring, "Halts vs delistings")
         R = close / close.ffill().shift(1) - 1.0
         R = R.where(close.notna())
-        price_ok = close.notna()
         # halt / delisting classification inputs (positions in md.dates)
         have_md = md.close.notna().to_numpy()
         last_close_md = (
@@ -488,313 +477,426 @@ class DailyBarSimulator:
             .ffill()
             .to_numpy()
         )
-        vendor_pos = md.delisting_positions()  # nan = not covered -> causal rule
-        gap_days = int(getattr(self.cfg.alpha, "delisting_gap_days", 63))
-        halts_open: dict[str, dict[str, Any]] = {}
-        halts_log: list[dict[str, object]] = []
-        n_halted = 0
         elig_panel = getattr(md, "eligible", None)
         elig_md: np.ndarray | None = None  # rows aligned with md.dates
+        eligible_fn = spec.eligible_fn
         if elig_panel is not None:
             elig_md = elig_panel.reindex(index=md.dates, columns=tickers).fillna(False).astype(bool).values
             eligible_fn = None
         exit_days = int(
-            exit_ineligible_days
-            if exit_ineligible_days is not None
+            spec.exit_ineligible_days
+            if spec.exit_ineligible_days is not None
             else getattr(self.cfg.portfolio, "exit_ineligible_days", 5)
         )
-        exit_days = max(exit_days, 1)
-        forced: dict[str, dict[str, float]] = {}  # ticker -> {"w0": |w| at entry, "k": days elapsed}
-        forced_log: list[dict[str, object]] = []
-        n_out_of_model = 0
-        n_ineligible_days = 0
-        n_no_signal = 0
-        haircut = float(self.cfg.cost.delisting_haircut)
-        snap_cache: dict[pd.Timestamp, Snapshot] = {}
+        return _RunContext(
+            md=md,
+            dates=dates,
+            tickers=tickers,
+            lag=lag,
+            md_pos=md.dates.get_indexer(dates),
+            R=R,
+            price_ok=close.notna(),
+            last_close_md=last_close_md,
+            vendor_pos=md.delisting_positions(),
+            gap_days=int(getattr(self.cfg.alpha, "delisting_gap_days", 63)),
+            elig_md=elig_md,
+            eligible_fn=eligible_fn,
+            exit_days=max(exit_days, 1),
+            haircut=float(self.cfg.cost.delisting_haircut),
+            venue=spec.venue,
+            rebalance_every=spec.rebalance_every,
+            neutral_styles=None if spec.neutral_styles is None else list(spec.neutral_styles),
+            progress=spec.progress,
+            # signal half-life (handbook fix #5): AlphaOutput.half_life_days drives the
+            # optimizer's Garleanu-Pedersen shrink; passed only when solve() accepts it
+            solve_accepts_hl="alpha_half_life_days" in inspect.signature(optimizer.solve).parameters,
+            snap_at=_SnapshotCache(lambda d: self._snapshot(md, d), lag),
+        )
 
-        def snap_at(d: pd.Timestamp) -> Snapshot:
-            if d not in snap_cache:
-                if len(snap_cache) > lag + 2:  # keep only the window still needed
-                    snap_cache.pop(next(iter(snap_cache)))
-                snap_cache[d] = self._snapshot(md, d)
-            return snap_cache[d]
-
-        nav = float(nav0)
+    @staticmethod
+    def _initial_state(ctx: _RunContext, spec: BacktestSpec) -> _BookState:
+        N = ctx.n_names
         w_pre = np.zeros(N)
-        if warm_start_weights is not None:
-            w_pre = pd.Series(warm_start_weights, dtype=float).reindex(tickers).fillna(0.0).values
+        if spec.warm_start_weights is not None:
+            w_pre = (
+                pd.Series(spec.warm_start_weights, dtype=float).reindex(ctx.tickers).fillna(0.0).to_numpy()
+            )
+        return _BookState(
+            nav=float(spec.nav0),
+            w_pre=w_pre,
+            streak=np.zeros(N),
+            streak_usd=np.zeros(N),
+            last_sign=np.zeros(N),
+        )
 
-        T = len(dates) - 1
-        W = np.zeros((T, N))
-        X = np.zeros((T, N))
-        C = np.zeros((T, 5))
-        EXV = np.full(T, np.nan)
-        TO = np.zeros(T)
-        TC = np.full(T, np.nan)
-        navs = np.empty(T + 1)
-        navs[0] = nav
-        gross = np.empty(T)
-        net = np.empty(T)
-        streak = np.zeros(N)  # consecutive same-direction trading days per name
-        streak_usd = np.zeros(N)  # |USD| traded in the current streak, through the last trade
-        last_sign = np.zeros(N)
-        borrow_ret = np.empty(T)
-        delistings: list[dict[str, object]] = []
-        solve_log: list[dict[str, object]] = []
-        n_failed = 0
-        last_risk: RiskModelOutput | None = None
-        last_alpha: AlphaOutput | None = None
-        # Signal half-life (handbook fix #5): AlphaOutput.half_life_days drives the
-        # optimizer's Garleanu-Pedersen shrink; passed only when solve() accepts it.
-        solve_accepts_hl = "alpha_half_life_days" in inspect.signature(optimizer.solve).parameters
+    @staticmethod
+    def _day(ctx: _RunContext, i: int) -> _Day:
+        t = ctx.dates[i]
+        snap_exec = ctx.snap_at(t)
+        p_sig = int(ctx.md_pos[i]) - ctx.lag
+        return _Day(
+            i=i,
+            t=t,
+            t1=ctx.dates[i + 1],
+            sig_date=ctx.md.dates[p_sig] if p_sig >= 0 else None,
+            alive=ctx.price_ok.iloc[i].to_numpy(),
+            snap_exec=snap_exec,
+        )
 
-        for i in range(T):
-            t = dates[i]
-            t1 = dates[i + 1]
-            snap_exec = snap_at(t)
-            p_sig = int(md_pos[i]) - lag
-            sig_date: pd.Timestamp | None = md.dates[p_sig] if p_sig >= 0 else None
-            elig_date = sig_date if sig_date is not None else t
-            alive = price_ok.iloc[i].values
-            # ---- eligibility as of the signal date
-            if elig_md is not None:
-                eligible = elig_md[md.dates.get_loc(elig_date)] & alive
-            elif eligible_fn is not None:
-                eligible = tickers.isin(pd.Index(eligible_fn(elig_date))) & alive
-            else:
-                eligible = alive.copy()
-            inel = alive & ~eligible
-            n_ineligible_days += int(inel.sum())
-            held = np.abs(w_pre) > 1e-12
-            for j in np.where(inel & held)[0]:
-                tk = tickers[j]
-                if tk not in forced:
-                    forced[tk] = {"w0": float(abs(w_pre[j])), "k": 0.0}
-                    forced_log.append({"date": t, "ticker": tk, "weight": float(w_pre[j])})
-            for tk in list(forced):
-                j = tickers.get_loc(tk)
-                if eligible[j] or not held[j]:
-                    forced.pop(tk)  # back in the universe, or already flat
-            force_caps: dict[str, float] = {}
-            for tk, st in forced.items():
-                st["k"] += 1.0
-                force_caps[tk] = max(st["w0"] * (1.0 - st["k"] / exit_days), 0.0)
-            dead = list(tickers[~alive]) + list(tickers[inel & ~held])
-            w_post = w_pre.copy()
-            if i % rebalance_every == 0 and sig_date is None:
-                n_no_signal += 1
-            elif i % rebalance_every == 0:
-                last_alpha = alpha_fn(sig_date)
-                exp_ret = pd.Series(last_alpha.expected_return, dtype=float).reindex(tickers)
-                exp_ret[~alive] = 0.0
-                exp_ret[inel] = 0.0
-                exp_ret = exp_ret.fillna(0.0)
-                last_risk = risk_fn(sig_date, exp_ret)
-                solve_kw: dict[str, Any] = {}
-                hl = getattr(last_alpha, "half_life_days", None)
-                if solve_accepts_hl and hl is not None:
-                    solve_kw["alpha_half_life_days"] = float(hl)
-                res = optimizer.solve(
-                    alpha=exp_ret,
-                    risk=last_risk,
-                    w_current=pd.Series(w_pre, index=tickers),
-                    nav=nav,
-                    snapshot=self._optimizer_snapshot(snap_at(sig_date), snap_exec),
-                    venue=venue,
-                    neutral_styles=neutral_styles,
-                    no_trade=dead,
-                    horizon_days=getattr(last_alpha, "horizon_days", None) or optimizer.horizon_days,
-                    force_to_zero=force_caps or None,
-                    **solve_kw,
-                )
-                if res.status not in ("optimal", "optimal_inaccurate"):
-                    n_failed += 1
-                    log.warning(
-                        "optimizer solve failed on %s: status=%s (holding current book)", t.date(), res.status
-                    )
-                n_out_of_model += int(getattr(res, "n_out_of_model", 0) or 0)
-                w_post = np.array(res.w_target.reindex(tickers).fillna(0.0).values, dtype=float, copy=True)
-                w_post[~alive] = w_pre[~alive]  # cannot trade names without a price
-                TC[i] = res.transfer_coefficient
-                solve_log.append(
-                    {
-                        "date": t,
-                        "signal_date": sig_date,
-                        "status": res.status,
-                        "solve_time": res.solve_time,
-                        "binding": res.binding_constraints,
-                        "vol_scalar": res.vol_scalar,
-                        "expected_alpha": res.expected_alpha,
-                        "expected_risk": res.expected_risk,
-                        "expected_cost": res.expected_cost,
-                        "notes": res.notes,
-                        "n_out_of_model": getattr(res, "n_out_of_model", 0),
-                        # sizing (risk_aversion_mode); absent on optimizers without them
-                        "risk_aversion": float(getattr(res, "risk_aversion", float("nan"))),
-                        "vol_target_binding": str(getattr(res, "vol_target_binding", "") or ""),
-                        "n_solves": int(getattr(res, "n_solves", 0) or 0),
-                        "n_excluded_alpha": int(getattr(res, "n_excluded_alpha", 0) or 0),
-                    }
-                )
-            x = w_post - w_pre
-            x[np.abs(x) < 1e-10] = 0.0
-            w_post = w_pre + x
+    # ----------------------------------------------------------------- step 1: universe
+    @staticmethod
+    def _universe_step(
+        ctx: _RunContext, day: _Day, state: _BookState, events: _EventLog
+    ) -> tuple[np.ndarray, list[str], dict[str, float]]:
+        """Eligibility as of the signal date and the forced-exit schedule.
 
-            # ---- costs in USD on the execution date's liquidity, at the requested venue;
-            # same-direction streak per name drives multi-day impact persistence
-            sgn = np.sign(x)
-            same = (sgn != 0) & (sgn == last_sign)
-            streak = np.where(sgn != 0, np.where(same, streak + 1.0, 1.0), 0.0)
-            prior_usd = np.where(same, streak_usd, 0.0)  # Q_{k-1}: earlier days of this streak
-            streak_usd = np.where(sgn != 0, prior_usd + np.abs(x) * nav, 0.0)
-            last_sign = sgn
-            est_kw: dict[str, Any] = {"venue": venue, "streak": pd.Series(streak, index=tickers)}
-            if self._pass_prior_streak:
-                est_kw["prior_streak_usd"] = pd.Series(prior_usd, index=tickers)
-            est = self._cm.estimate(pd.Series(x * nav, index=tickers), snap_exec, **est_kw)
-            cf = cost_frame(est, tickers)
-            borrow = self._cm.holding_cost_usd(pd.Series(w_post, index=tickers), nav, snap_exec)
-            c_spread = float(cf["spread"].sum())
-            c_impact = float(cf["impact"].sum())
-            c_fees = float(cf["fees"].sum())
-            c_borrow = float(np.nansum(np.asarray(borrow, dtype=float)))
-            c_total = c_spread + c_impact + c_fees + c_borrow
+        Returns ``(inel, no_trade, force_caps)``: alive-but-ineligible mask, the
+        optimizer's no-trade list (no price, or ineligible and not held) and the
+        per-name ``|w|`` caps of names being unwound."""
+        tickers, alive = ctx.tickers, day.alive
+        elig_date = day.sig_date if day.sig_date is not None else day.t
+        if ctx.elig_md is not None:
+            eligible = ctx.elig_md[ctx.md.dates.get_loc(elig_date)] & alive
+        elif ctx.eligible_fn is not None:
+            eligible = tickers.isin(pd.Index(ctx.eligible_fn(elig_date))) & alive
+        else:
+            eligible = alive.copy()
+        inel = alive & ~eligible
+        events.n_ineligible_days += int(inel.sum())
+        held = np.abs(state.w_pre) > _HELD_EPS
+        forced = events.forced
+        for j in np.where(inel & held)[0]:
+            tk = tickers[int(j)]
+            if tk not in forced:
+                forced[tk] = {"w0": float(abs(state.w_pre[j])), "k": 0.0}
+                events.forced_log.append({"date": day.t, "ticker": tk, "weight": float(state.w_pre[j])})
+        for tk in list(forced):
+            j = tickers.get_loc(tk)
+            if eligible[j] or not held[j]:
+                forced.pop(tk)  # back in the universe, or already flat
+        force_caps: dict[str, float] = {}
+        for tk, st in forced.items():
+            st["k"] += 1.0
+            force_caps[tk] = max(st["w0"] * (1.0 - st["k"] / ctx.exit_days), 0.0)
+        no_trade = list(tickers[~alive]) + list(tickers[inel & ~held])
+        return inel, no_trade, force_caps
 
-            # ---- returns t -> t+1
-            r = R.iloc[i + 1].values.copy()
-            held = w_post != 0
-            nan_r = ~np.isfinite(r)
-            r[nan_r] = 0.0  # unheld names: irrelevant; halted (frozen) names: 0
-            missing = held & nan_r
-            liquidate = np.zeros(N, dtype=bool)
-            if missing.any():
-                # halt or delisting? (module docstring): vendor date if covered,
-                # else the causal G-day gap rule -- never a later price
-                p1 = int(md_pos[i + 1])
-                lp = last_close_md[p1]
-                covered = ~np.isnan(vendor_pos)
-                by_vendor = covered & (vendor_pos < p1)
-                by_gap = ~covered & np.isfinite(lp) & (p1 - lp >= gap_days)
-                liquidate = missing & (by_vendor | by_gap)
-                frozen = missing & ~liquidate
-                n_halted += int(frozen.sum())
-                for j in np.where(frozen)[0]:
-                    tk = tickers[j]
-                    ep = halts_open.get(tk)
-                    if ep is None:
-                        ep = {"ticker": tk, "start": t1, "weight": float(w_post[j]), "days": 0}
-                        halts_open[tk] = ep
-                    ep["days"] += 1
-            for tk in list(halts_open):
-                j = tickers.get_loc(tk)
-                if liquidate[j]:
-                    halts_log.append({**halts_open.pop(tk), "end": t1, "outcome": "delisted"})
-                elif not nan_r[j] or not held[j]:
-                    halts_log.append({**halts_open.pop(tk), "end": t1, "outcome": "resumed"})
-            if liquidate.any():
-                # Delisting: apply cfg.cost.delisting_haircut against the
-                # position's sign (a loss for longs and shorts alike --
-                # conservative), force-liquidate the remaining value at spread +
-                # explicit fees (continuous venue, no impact), book the exit as a
-                # trade on this decision row (with its cost) and record it in
-                # diagnostics["delistings"].
-                r[liquidate] = haircut * np.sign(w_post[liquidate])
-                x_liq = np.zeros(N)
-                x_liq[liquidate] = -w_post[liquidate] * (1.0 + r[liquidate])
-                liq_cf = cost_frame(
-                    self._cm.estimate(
-                        pd.Series(x_liq * nav, index=tickers), snap_exec, venue=VENUE_CONTINUOUS, streak=None
-                    ),
-                    tickers,
-                )
-                liq_cf["impact"] = 0.0
-                for j in np.where(liquidate)[0]:
-                    delistings.append(
-                        {
-                            "date": t1,
-                            "ticker": tickers[j],
-                            "weight": float(w_post[j]),
-                            "haircut_return": float(r[j]),
-                            "liquidation_usd": float(abs(x_liq[j]) * nav),
-                            "cost_usd": float(liq_cf.iloc[j].sum()),
-                        }
-                    )
-                c_spread += float(liq_cf["spread"].sum())
-                c_fees += float(liq_cf["fees"].sum())
-                c_total = c_spread + c_impact + c_fees + c_borrow
-                x = x + x_liq  # recorded in trades / turnover below
-            g_ret = float(w_post @ r)
-            nav1 = nav * (1.0 + g_ret) - c_total
-            n_ret = nav1 / nav - 1.0
+    # ----------------------------------------------------------------- step 2: signal -> target
+    def _target_step(
+        self,
+        ctx: _RunContext,
+        day: _Day,
+        state: _BookState,
+        events: _EventLog,
+        rec: _Recorder,
+        alpha_fn: AlphaFn,
+        risk_fn: RiskFn,
+        optimizer: SinglePeriodOptimizer,
+        inel: np.ndarray,
+        no_trade: list[str],
+        force_caps: dict[str, float],
+    ) -> np.ndarray:
+        """Post-trade target weights: the current book on non-rebalance days and
+        before the first signal date, else the optimizer's solution (names
+        without a price keep their weight)."""
+        w_post = state.w_pre.copy()
+        if day.i % ctx.rebalance_every != 0:
+            return w_post
+        if not day.rebalance:
+            events.n_no_signal += 1
+            return w_post
+        sig_date = day.sig_date
+        assert sig_date is not None
+        tickers, alive = ctx.tickers, day.alive
+        state.last_alpha = alpha_fn(sig_date)
+        exp_ret = pd.Series(state.last_alpha.expected_return, dtype=float).reindex(tickers)
+        exp_ret[~alive] = 0.0
+        exp_ret[inel] = 0.0
+        exp_ret = exp_ret.fillna(0.0)
+        state.last_risk = risk_fn(sig_date, exp_ret)
+        solve_kw: dict[str, Any] = {}
+        hl = getattr(state.last_alpha, "half_life_days", None)
+        if ctx.solve_accepts_hl and hl is not None:
+            solve_kw["alpha_half_life_days"] = float(hl)
+        res = optimizer.solve(
+            alpha=exp_ret,
+            risk=state.last_risk,
+            w_current=pd.Series(state.w_pre, index=tickers),
+            nav=state.nav,
+            snapshot=self._optimizer_snapshot(ctx.snap_at(sig_date), day.snap_exec),
+            venue=ctx.venue,
+            neutral_styles=ctx.neutral_styles,
+            no_trade=no_trade,
+            horizon_days=getattr(state.last_alpha, "horizon_days", None) or optimizer.horizon_days,
+            force_to_zero=force_caps or None,
+            **solve_kw,
+        )
+        if res.status not in OK_STATUSES:
+            events.failed_solves.append(
+                {
+                    "date": day.t,
+                    "status": res.status,
+                    "solver_errors": list(getattr(res, "solver_errors", []) or []),
+                }
+            )
+            log.warning(
+                "optimizer solve failed on %s: status=%s (holding current book)", day.t.date(), res.status
+            )
+        events.n_out_of_model += int(getattr(res, "n_out_of_model", 0) or 0)
+        w_post = np.array(res.w_target.reindex(tickers).fillna(0.0).values, dtype=float, copy=True)
+        w_post[~alive] = state.w_pre[~alive]  # cannot trade names without a price
+        rec.TC[day.i] = res.transfer_coefficient
+        events.solve_log.append(_solve_log_entry(day, res))
+        return w_post
 
-            # ---- record
-            W[i] = w_post
-            X[i] = x
-            C[i] = (c_spread, c_impact, c_fees, c_borrow, c_total)
-            TO[i] = float(np.abs(x).sum())
-            if last_risk is not None:
-                EXV[i] = float(last_risk.portfolio_variance(pd.Series(w_post, index=tickers)))
-            gross[i] = g_ret
-            net[i] = n_ret
-            borrow_ret[i] = c_borrow / nav
-            navs[i + 1] = nav1
+    # ----------------------------------------------------------------- step 3: costs (fills)
+    def _cost_step(
+        self, ctx: _RunContext, day: _Day, state: _BookState, x: np.ndarray, w_post: np.ndarray
+    ) -> _Costs:
+        """USD trading costs on the execution date's liquidity at the run's venue,
+        plus one day of borrow.  Updates the per-name same-direction streak that
+        drives multi-day impact persistence."""
+        tickers, nav = ctx.tickers, state.nav
+        sgn = np.sign(x)
+        same = (sgn != 0) & (sgn == state.last_sign)
+        state.streak = np.where(sgn != 0, np.where(same, state.streak + 1.0, 1.0), 0.0)
+        prior_usd = np.where(same, state.streak_usd, 0.0)  # Q_{k-1}: earlier days of this streak
+        state.streak_usd = np.where(sgn != 0, prior_usd + np.abs(x) * nav, 0.0)
+        state.last_sign = sgn
+        est_kw: dict[str, Any] = {"venue": ctx.venue, "streak": pd.Series(state.streak, index=tickers)}
+        if self._pass_prior_streak:
+            est_kw["prior_streak_usd"] = pd.Series(prior_usd, index=tickers)
+        est = self._cm.estimate(pd.Series(x * nav, index=tickers), day.snap_exec, **est_kw)
+        cf = cost_frame(est, tickers)
+        borrow = self._cm.holding_cost_usd(pd.Series(w_post, index=tickers), nav, day.snap_exec)
+        return _Costs(
+            spread=float(cf["spread"].sum()),
+            impact=float(cf["impact"].sum()),
+            fees=float(cf["fees"].sum()),
+            borrow=float(np.nansum(np.asarray(borrow, dtype=float))),
+        )
 
-            # ---- drift to pre-trade weights of t+1 (cash absorbs costs)
-            w_next = w_post * (1.0 + r) * nav / nav1 if nav1 > 0 else np.zeros(N)
-            w_next[liquidate] = 0.0
-            w_pre = w_next
-            nav = nav1
-            if nav <= 0:
-                log.error("NAV <= 0 on %s; stopping", t1)
-                T_eff = i + 1
-                W, X, C, EXV, TO, TC = W[:T_eff], X[:T_eff], C[:T_eff], EXV[:T_eff], TO[:T_eff], TC[:T_eff]
-                navs, gross, net = navs[: T_eff + 1], gross[:T_eff], net[:T_eff]
-                borrow_ret = borrow_ret[:T_eff]
-                dates = dates[: T_eff + 1]
-                T = T_eff
-                break
-            if progress and i % 50 == 0:
-                log.info("%s nav=%.0f gross=%.4f to=%.3f", t.date(), nav, g_ret, TO[i])
+    # ----------------------------------------------------------------- step 4: mark to market
+    def _mark_to_market_step(
+        self,
+        ctx: _RunContext,
+        day: _Day,
+        state: _BookState,
+        events: _EventLog,
+        w_post: np.ndarray,
+        x: np.ndarray,
+        costs: _Costs,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Returns ``t -> t+1`` per name with halts frozen at 0 and delistings at
+        the haircut; delisted names are force-liquidated (cost added to
+        ``costs``, liquidation added to the trade vector).  Returns
+        ``(r, liquidate, x)``."""
+        N = ctx.n_names
+        r = ctx.R.iloc[day.i + 1].to_numpy(copy=True)
+        held = w_post != 0
+        nan_r = ~np.isfinite(r)
+        r[nan_r] = 0.0  # unheld names: irrelevant; halted (frozen) names: 0
+        missing = held & nan_r
+        liquidate = np.zeros(N, dtype=bool)
+        if missing.any():
+            liquidate = self._classify_missing(ctx, day, events, w_post, missing)
+        self._close_halt_episodes(ctx, day, events, liquidate, nan_r, held)
+        if liquidate.any():
+            x = x + self._liquidate_delisted(ctx, day, state, events, w_post, r, liquidate, costs)
+        return r, liquidate, x
 
+    @staticmethod
+    def _classify_missing(
+        ctx: _RunContext, day: _Day, events: _EventLog, w_post: np.ndarray, missing: np.ndarray
+    ) -> np.ndarray:
+        """Halt or delisting for held names with no close on ``t+1`` (module
+        docstring): the vendor date if covered, else the causal G-day gap rule --
+        never a later price.  Opens / extends halt episodes; returns the
+        delisted mask."""
+        p1 = int(ctx.md_pos[day.i + 1])
+        lp = ctx.last_close_md[p1]
+        covered = ~np.isnan(ctx.vendor_pos)
+        by_vendor = covered & (ctx.vendor_pos < p1)
+        by_gap = ~covered & np.isfinite(lp) & (p1 - lp >= ctx.gap_days)
+        liquidate = missing & (by_vendor | by_gap)
+        frozen = missing & ~liquidate
+        events.n_halted += int(frozen.sum())
+        for j in np.where(frozen)[0]:
+            tk = ctx.tickers[int(j)]
+            ep = events.halts_open.get(tk)
+            if ep is None:
+                ep = {"ticker": tk, "start": day.t1, "weight": float(w_post[j]), "days": 0}
+                events.halts_open[tk] = ep
+            ep["days"] += 1
+        return liquidate
+
+    @staticmethod
+    def _close_halt_episodes(
+        ctx: _RunContext,
+        day: _Day,
+        events: _EventLog,
+        liquidate: np.ndarray,
+        nan_r: np.ndarray,
+        held: np.ndarray,
+    ) -> None:
+        for tk in list(events.halts_open):
+            j = ctx.tickers.get_loc(tk)
+            if liquidate[j]:
+                events.halts.append({**events.halts_open.pop(tk), "end": day.t1, "outcome": "delisted"})
+            elif not nan_r[j] or not held[j]:
+                events.halts.append({**events.halts_open.pop(tk), "end": day.t1, "outcome": "resumed"})
+
+    def _liquidate_delisted(
+        self,
+        ctx: _RunContext,
+        day: _Day,
+        state: _BookState,
+        events: _EventLog,
+        w_post: np.ndarray,
+        r: np.ndarray,
+        liquidate: np.ndarray,
+        costs: _Costs,
+    ) -> np.ndarray:
+        """Delisting: apply ``cfg.cost.delisting_haircut`` against the position's
+        sign (a loss for longs and shorts alike -- conservative; written into
+        ``r``), force-liquidate the remaining value at spread + explicit fees
+        (continuous venue, no impact), add the cost to ``costs`` and record the
+        event.  Returns the liquidation trade vector (booked on this decision row)."""
+        tickers, nav = ctx.tickers, state.nav
+        r[liquidate] = ctx.haircut * np.sign(w_post[liquidate])
+        x_liq = np.zeros(ctx.n_names)
+        x_liq[liquidate] = -w_post[liquidate] * (1.0 + r[liquidate])
+        liq_cf = cost_frame(
+            self._cm.estimate(
+                pd.Series(x_liq * nav, index=tickers), day.snap_exec, venue=VENUE_CONTINUOUS, streak=None
+            ),
+            tickers,
+        )
+        liq_cf["impact"] = 0.0
+        for j in np.where(liquidate)[0]:
+            events.delistings.append(
+                {
+                    "date": day.t1,
+                    "ticker": tickers[int(j)],
+                    "weight": float(w_post[j]),
+                    "haircut_return": float(r[j]),
+                    "liquidation_usd": float(abs(x_liq[j]) * nav),
+                    "cost_usd": float(liq_cf.iloc[j].sum()),
+                }
+            )
+        costs.spread += float(liq_cf["spread"].sum())
+        costs.fees += float(liq_cf["fees"].sum())
+        return x_liq
+
+    # ----------------------------------------------------------------- step 5: accounting
+    @staticmethod
+    def _accounting_step(
+        ctx: _RunContext,
+        day: _Day,
+        state: _BookState,
+        rec: _Recorder,
+        w_post: np.ndarray,
+        x: np.ndarray,
+        r: np.ndarray,
+        liquidate: np.ndarray,
+        costs: _Costs,
+    ) -> bool:
+        """NAV identity, recording, and drift to the pre-trade weights of
+        ``t+1`` (cash absorbs costs).  Returns False when NAV hits zero (the
+        run stops and the recorder is truncated)."""
+        nav = state.nav
+        g_ret = float(w_post @ r)
+        nav1 = nav * (1.0 + g_ret) - costs.total
+        n_ret = nav1 / nav - 1.0
+        exv = (
+            float(state.last_risk.portfolio_variance(pd.Series(w_post, index=ctx.tickers)))
+            if state.last_risk is not None
+            else None
+        )
+        rec.record(day.i, w_post, x, costs, nav, nav1, g_ret, n_ret, exv)
+        w_next = w_post * (1.0 + r) * nav / nav1 if nav1 > 0 else np.zeros(ctx.n_names)
+        w_next[liquidate] = 0.0
+        state.w_pre = w_next
+        state.nav = nav1
+        if nav1 <= 0:
+            log.error("NAV <= 0 on %s; stopping", day.t1)
+            rec.truncate(day.i + 1)
+            return False
+        if ctx.progress and day.i % 50 == 0:
+            log.info("%s nav=%.0f gross=%.4f to=%.3f", day.t.date(), nav1, g_ret, rec.TO[day.i])
+        return True
+
+    # ----------------------------------------------------------------- step 6: diagnostics
+    def _result(
+        self, ctx: _RunContext, spec: BacktestSpec, events: _EventLog, rec: _Recorder, t_start: float
+    ) -> BacktestResult:
+        T = rec.T
+        dates = ctx.dates[: T + 1]
         dec = dates[:T]
         real = dates[1 : T + 1]
+        tickers = ctx.tickers
         res_obj = BacktestResult(
-            nav=pd.Series(navs, index=dates[: T + 1], name="nav"),
+            nav=pd.Series(rec.navs, index=dates, name="nav"),
             returns=pd.DataFrame(
-                {"gross": gross, "net": net, "gross_after_borrow": gross - borrow_ret}, index=real
+                {"gross": rec.gross, "net": rec.net, "gross_after_borrow": rec.gross - rec.borrow_ret},
+                index=real,
             ),
-            weights=pd.DataFrame(W, index=dec, columns=tickers),
-            trades=pd.DataFrame(X, index=dec, columns=tickers),
-            costs=pd.DataFrame(C, index=dec, columns=COST_COLUMNS),
-            exante_var=pd.Series(EXV, index=dec, name="exante_var_daily"),
-            turnover=pd.Series(TO, index=dec, name="turnover"),
-            transfer_coefficient=pd.Series(TC, index=dec, name="transfer_coefficient"),
+            weights=pd.DataFrame(rec.W, index=dec, columns=tickers),
+            trades=pd.DataFrame(rec.X, index=dec, columns=tickers),
+            costs=pd.DataFrame(rec.C, index=dec, columns=COST_COLUMNS),
+            exante_var=pd.Series(rec.EXV, index=dec, name="exante_var_daily"),
+            turnover=pd.Series(rec.TO, index=dec, name="turnover"),
+            transfer_coefficient=pd.Series(rec.TC, index=dec, name="transfer_coefficient"),
             periods_per_year=self.cfg.trading_days_per_year,
             diagnostics={
-                "delistings": delistings,
-                "halts": halts_log + [{**ep, "end": None, "outcome": "open"} for ep in halts_open.values()],
-                "n_halted_name_days": n_halted,
-                "solve_log": solve_log,
-                "n_failed_solves": n_failed,
+                "delistings": events.delistings,
+                "halts": events.all_halts(),
+                "n_halted_name_days": events.n_halted,
+                "solve_log": events.solve_log,
+                "n_failed_solves": events.n_failed,
+                "failed_solves": events.failed_solves,
+                "n_rebalance_solves": len(events.solve_log),
                 "run_time_sec": time.perf_counter() - t_start,
-                "rebalance_every": rebalance_every,
-                "venue": venue,
-                "signal_lag_days": lag,
-                "n_no_signal_days": n_no_signal,
-                "forced_exits": forced_log,
-                "n_ineligible_name_days": n_ineligible_days,
+                "rebalance_every": spec.rebalance_every,
+                "venue": spec.venue,
+                "signal_lag_days": ctx.lag,
+                "n_no_signal_days": events.n_no_signal,
+                "forced_exits": events.forced_log,
+                "n_ineligible_name_days": events.n_ineligible_days,
                 # sum over solves of OptimizationResult.n_out_of_model: names outside the
                 # risk model still held *after* the solve (forced exits in progress); names
                 # with alpha but no position are excluded, not counted (n_excluded_alpha)
-                "n_out_of_model_name_days": n_out_of_model,
+                "n_out_of_model_name_days": events.n_out_of_model,
             },
         )
-        if n_failed:
-            log.warning("backtest: %d failed solves (see diagnostics['solve_log'])", n_failed)
-        if n_out_of_model:
+        if events.n_failed:
+            log.warning("backtest: %d failed solves (see diagnostics['failed_solves'])", events.n_failed)
+        if events.n_out_of_model:
             log.warning(
                 "backtest: %d name-days with alpha/position outside the risk-model universe "
                 "(priced at 90th-pct specific variance, zero factor exposure)",
-                n_out_of_model,
+                events.n_out_of_model,
             )
         return res_obj
+
+
+def _solve_log_entry(day: _Day, res: Any) -> dict[str, object]:
+    """One ``diagnostics["solve_log"]`` row from an :class:`OptimizationResult`."""
+    return {
+        "date": day.t,
+        "signal_date": day.sig_date,
+        "status": res.status,
+        "solve_time": res.solve_time,
+        "binding": res.binding_constraints,
+        "vol_scalar": res.vol_scalar,
+        "expected_alpha": res.expected_alpha,
+        "expected_risk": res.expected_risk,
+        "expected_cost": res.expected_cost,
+        "notes": res.notes,
+        "n_out_of_model": getattr(res, "n_out_of_model", 0),
+        # sizing (risk_aversion_mode); absent on optimizers without them
+        "risk_aversion": float(getattr(res, "risk_aversion", float("nan"))),
+        "vol_target_binding": str(getattr(res, "vol_target_binding", "") or ""),
+        "n_solves": int(getattr(res, "n_solves", 0) or 0),
+        "n_excluded_alpha": int(getattr(res, "n_excluded_alpha", 0) or 0),
+    }

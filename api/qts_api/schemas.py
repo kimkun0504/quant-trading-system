@@ -38,6 +38,7 @@ GateName = Literal[
     "pbo",
     "phase_sharpe",
     "suspect",
+    "failed_solves",
 ]
 RunSeriesName = Literal["nav", "gross", "net", "drawdown", "turnover", "exante_vol"]
 CostComponent = Literal["spread", "impact", "fees", "borrow"]
@@ -82,7 +83,7 @@ class RunSummary(_Model):
 
 # ----------------------------------------------------------------------------- run detail
 class BacktestSummary(_Model):
-    """``BacktestResult.summary()`` (qts/backtest/simulator.py)."""
+    """``BacktestResult.summary()`` (qts/backtest/result.py)."""
 
     start: str
     end: str

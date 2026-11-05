@@ -31,10 +31,8 @@ SPEC = {"n_stocks": 60, "n_days": 420, "ic_true": 0.08}
 
 
 def small_risk_cfg(**kw) -> RiskConfig:
-    cfg = RiskConfig(min_history_days=60, n_eigen_sims=50, statistical_window=120, statistical_n_factors=2)
-    for k, v in kw.items():
-        setattr(cfg, k, v)
-    return cfg
+    base = {"min_history_days": 60, "n_eigen_sims": 50, "statistical_window": 120, "statistical_n_factors": 2}
+    return RiskConfig(**{**base, **kw})
 
 
 def assert_frames_identical(a: pd.DataFrame | pd.Series, b: pd.DataFrame | pd.Series) -> None:

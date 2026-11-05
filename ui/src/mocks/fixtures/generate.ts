@@ -186,8 +186,21 @@ export function evaluateHurdles(args: {
   dsr: number;
   pbo: number | null;
   sharpeNet: number;
+  /** failed rebalance solves / rebalance solves (`BacktestResult.failed_solve_fraction()`) */
+  failedSolveFrac: number;
 }): Hurdles {
-  const { phase, decileT, icByFold, foldSharpes, breakeven, costBps, dsr, pbo, sharpeNet } = args;
+  const {
+    phase,
+    decileT,
+    icByFold,
+    foldSharpes,
+    breakeven,
+    costBps,
+    dsr,
+    pbo,
+    sharpeNet,
+    failedSolveFrac,
+  } = args;
   const posIcFolds = icByFold.filter((x) => x > 0).length;
   const posFolds = foldSharpes.filter((f) => f.sharpe_net >= 0.05).length;
   const bar = phase === 2 ? 0.5 : 0.3;
@@ -261,6 +274,13 @@ export function evaluateHurdles(args: {
         ? `net Sharpe ${f2(sharpeNet)} > 2: suspect until leakage/cost/selection ruled out`
         : 'net Sharpe within plausible range',
       true,
+    ),
+    gate(
+      'failed_solves',
+      failedSolveFrac <= 0.02 ? 'PASS' : 'FAIL',
+      failedSolveFrac,
+      0.02,
+      `failed solves ${(failedSolveFrac * 100).toFixed(1)}% of rebalances ${failedSolveFrac <= 0.02 ? '<=' : '>'} 2.0%`,
     ),
   ];
   const overall = gates.every((g) => g.status !== 'FAIL') ? 'PASS' : 'FAIL';
@@ -465,6 +485,7 @@ export function generateRun(spec: RunSpec): GeneratedRun {
     dsr,
     pbo: spec.pbo,
     sharpeNet,
+    failedSolveFrac: summary.n_failed_solves / Math.max(summary.n_days, 1),
   });
 
   const configHash = hex(mulberry32(hashString(`${spec.id}cfg`)), 16);

@@ -59,7 +59,7 @@ def calibrate_seed(
     t0 = time.time()
     md = md if md is not None else generate(SyntheticSpec(n_stocks=n_stocks, n_days=n_days, seed=seed))
     cfg = SystemConfig()
-    cfg.universe.top_n_by_mcap = min(cfg.universe.top_n_by_mcap, md.close.shape[1])
+    cfg = cfg.with_overrides({"universe.top_n_by_mcap": min(cfg.universe.top_n_by_mcap, md.close.shape[1])})
     pipe = ResearchPipeline(cfg, use_ml=False, nav0=nav).fit(md)
     md_u, risk, opt = pipe.md_u, pipe.risk, pipe.optimizer
     assert md_u is not None and risk is not None and opt is not None

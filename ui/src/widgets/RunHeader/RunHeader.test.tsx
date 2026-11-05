@@ -44,10 +44,11 @@ describe('GateStrip', () => {
     renderWithProviders(<GateStrip gates={[...run.hurdles.gates].reverse()} />);
     const list = await screen.findByRole('list', { name: 'Hurdle gates' });
     const items = within(list).getAllByRole('listitem');
-    expect(items).toHaveLength(9);
+    expect(items).toHaveLength(10);
     expect(items[0]).toHaveTextContent('Decile t-statfailed');
     expect(items[5]).toHaveTextContent('Deflated Sharpefailed (required)');
     expect(items[6]).toHaveTextContent('PBOskipped');
     expect(items[8]).toHaveTextContent('Plausibilitypassed (required)');
+    expect(items[9]).toHaveTextContent('Solver healthpassed');
   });
 });

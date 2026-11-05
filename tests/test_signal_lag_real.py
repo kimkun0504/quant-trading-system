@@ -92,12 +92,15 @@ class Recorder:
 
 
 def test_real_stack_lag1_weights_equal_lag0_weights_one_day_earlier(md):
-    cfg = SystemConfig()
     # costs are still booked by the real TransactionCostModel, but the optimizer
     # ignores them, so its optimum does not depend on the current book
-    cfg.portfolio.trade_aversion = 0.0
-    cfg.portfolio.hold_aversion = 0.0
-    cfg.portfolio.vol_target_projection_cost_weight = 0.0
+    cfg = SystemConfig().with_overrides(
+        {
+            "portfolio.trade_aversion": 0.0,
+            "portfolio.hold_aversion": 0.0,
+            "portfolio.vol_target_projection_cost_weight": 0.0,
+        }
+    )
     tc = TransactionCostModel(cfg.cost, cfg.execution)
     md0 = md
     dates = md.dates[-(N_DAYS_RUN + 1) :]

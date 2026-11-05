@@ -161,7 +161,7 @@ The Sharpe ratio ignores higher moments and path (drawdowns), so the repo report
 - `qts/backtest/metrics.py::annualized_sharpe(returns, periods_per_year=252, rf=0.0, lo_adjust=False, lags=None)`
 - `qts/backtest/metrics.py::sharpe_t_stat` (Lo iid)
 - `qts/validation/deflated_sharpe.py::sharpe_ratio_se(sr, n, skew=0, kurt=3)` (Mertens, raw kurtosis), `annualize_sharpe`, `deannualize_sharpe`, `sharpe_from_returns`, `moments_from_returns`
-- Backtest summary keys (`qts/backtest/simulator.py::BacktestResult.summary`): `sharpe_gross`, `sharpe_net`, `sharpe_net_lo`, `sharpe_t_stat_net`, `newey_west_t_net`.
+- Backtest summary keys (`qts/backtest/result.py::BacktestResult.summary`, typed as the `BacktestSummary` TypedDict): `sharpe_gross`, `sharpe_net`, `sharpe_net_lo`, `sharpe_t_stat_net`, `newey_west_t_net`.
 
 ### Pitfalls & checks
 - **Per-period vs annual.** The core DSR functions take per-observation Sharpe ratios; passing an annual Sharpe where a daily one is expected inflates the z-score by $\sqrt{252}\approx 15.9$. Functions that take annual inputs say `annual` in their name.
@@ -325,7 +325,7 @@ Rank IC over Pearson because return distributions are fat-tailed. IC against the
 - `rank_ic_series` is `qts/core/stats.py::rank_ic_series` (vectorised across dates, at least `IC_MIN_OBS = 20` valid pairs per date).
 - `infer_periods_per_year`, `ic_decay_curve`, `rank_autocorrelation`, `signal_half_life`
 - `incremental_ic(new_score, existing_composite, target, overlap=1)` returns an `IncrementalICReport` (an `ICReport` of the residualised score plus `standalone_mean_ic` and `composite_mean_ic`): it residualises the new score on the composite per date (`residualize_on`, OLS with intercept) and reports the IC of what is left — Gate 2's "adds something orthogonal" test.
-- `qts/core/crosssection.py::ic_series` (loop version used by the Nagel audit).
+- `qts/core/stats.py::rank_ic_series` is also what the Nagel audit uses (the old `qts/core/crosssection.py::ic_series` wrapper was removed).
 - `qts/portfolio/diagnostics.py::transfer_coefficient` (exact $\Sigma$-correlation when $N \le 500$, else an approximation).
 
 ### Pitfalls & checks
@@ -819,7 +819,7 @@ above the floor $252/1005 = 0.251$, so $V = 0.332$ (the demo prints "n_trials 5.
 A fixed checklist, defined before any result is seen, that a candidate must pass to be admitted. Pre-registration is the point: gates written after the backtest are just another fork in the garden.
 
 ### How they work
-`qts/validation/hurdles.py::HurdleReport(cfg: ValidationConfig).evaluate_signal(...)` evaluates nine gates. Each `GateResult` has a status:
+`qts/validation/hurdles.py::HurdleReport(cfg: ValidationConfig).evaluate_signal(...)` evaluates ten gates. Each `GateResult` has a status:
 - **PASS** / **FAIL** — the input was supplied and compared with the threshold;
 - **skipped** — the input was not supplied or the gate does not apply. A skipped gate does not affect `overall` **unless it is required**: gates in `ValidationConfig.required_gates` (default `["phase_sharpe", "suspect", "dsr"]`) are converted to FAIL with reason "REQUIRED gate skipped: …".
 
@@ -836,6 +836,7 @@ A fixed checklist, defined before any result is seen, that a candidate must pass
 | `pbo` | Probability of backtest overfitting (CSCV) | PBO $< 0.5$ (`pbo_threshold`) | Selection procedure must beat a coin flip | no configuration grid |
 | `phase_sharpe` | Net annual Sharpe of the full pipeline | phase 1: ≥ 0.3; phase 2+: ≥ 0.5 | Realistic net targets (see below) | missing (**required** → FAIL) |
 | `suspect` | Net annual Sharpe | must **not** exceed 2.0 | "Any net backtest Sharpe > 2 is a defect until leakage, survivorship, cost and selection are ruled out"; DSR cannot detect leakage | missing (**required** → FAIL) |
+| `failed_solves` | Share of rebalance solves that did not reach an optimal status (`BacktestResult.failed_solve_fraction()`; the simulator held the book on those days) | share ≤ 0.02 (`max_failed_solve_frac`) | A broken optimizer holds yesterday's book every day; the backtest then looks like a strategy but is a stale portfolio | no solve was attempted (`failed_solve_frac=None`) |
 
 The comparison operators in this table are exactly those in `qts/validation/hurdles.py` and in the module docstring. The handbook review found the text and code disagreeing (fix #26: reason strings said ">" where the code used ">="). The code was changed to match the plan: an IC of exactly 0 no longer counts as a positive fold, and an incremental IC of exactly 0.005 no longer passes.
 
@@ -859,7 +860,7 @@ Borrow is a holding cost, not a per-side trading cost, so it does not scale with
 **Not gates (yet).** The plan's "expected live Sharpe 0.25–0.5× backtest" is an expectation, not a code check; drawdown and robustness splits (size tercile, VIX regime) are Roadmap items.
 
 ### In the code
-`HurdleReport.evaluate_signal(...)` returns a typed **`HurdleResult`** (`overall`, `phase`, `required`, and an ordered list of `GateResult(name, passed, value, threshold, reason, applied, required)` with a `status` property). Views `status`, `passed`, `details`, `reasons`, `failed`, `skipped` are derived; `to_dict()` / `from_dict()` round-trip it through `hurdles.json` in the run directory; legacy dict access (`res["overall"]`) still works.
+`HurdleReport.evaluate_signal(...)` returns a typed **`HurdleResult`** (`overall`, `phase`, `required`, and an ordered list of `GateResult(name, passed, value, threshold, reason, applied, required)` with a `status` property). Both are frozen dataclasses. Views `status`, `passed`, `details`, `reasons`, `failed`, `skipped` are derived; `to_dict()` / `from_dict()` round-trip it through `hurdles.json` in the run directory; legacy dict access (`res["overall"]`) still works.
 
 ```python
 ic_by_fold = self._ic_by_fold(icr.ic_series, blocks)   # same purged blocks as fold_sharpes

@@ -697,10 +697,13 @@ def test_simulator_eligibility_hook_unwinds_and_blocks(md, risk_model, alpha_mod
     from qts.backtest import DailyBarSimulator
     from qts.core.config import SystemConfig
 
-    cfg = SystemConfig()
-    cfg.execution.signal_lag_days = 0  # mechanics test: trade on the signal date's close
-    cfg.portfolio.risk_aversion = 3.0
-    cfg.portfolio.exit_ineligible_days = 4
+    cfg = SystemConfig().with_overrides(
+        {
+            "execution.signal_lag_days": 0,  # mechanics test: trade on the signal date's close
+            "portfolio.risk_aversion": 3.0,
+            "portfolio.exit_ineligible_days": 4,
+        }
+    )
     cm = SimpleCostModel(zero=True)
     opt = SinglePeriodOptimizer(cfg.portfolio, cm)
     dates = md.dates[-26:]

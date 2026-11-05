@@ -24,6 +24,7 @@ contract between the alpha layer and the portfolio layer.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, fields, replace
 from typing import Any, ClassVar, cast
 
@@ -228,7 +229,7 @@ class MarketData:
         return replace(self, **changes)
 
 
-@dataclass
+@dataclass(frozen=True)
 class RiskModelOutput:
     """Risk model as of one date.
 
@@ -254,6 +255,26 @@ class RiskModelOutput:
     alignment_vector: pd.Series | None = None
     alignment_var: float = 0.0
     factor_groups: dict[str, list[str]] = field(default_factory=dict[str, list[str]])
+
+    def __post_init__(self) -> None:
+        """Cheap structural checks (frozen contract): every exposure column has a
+        row and a column in ``factor_cov``, the alignment variance is a finite
+        non-negative number and ``factor_groups`` only names exposure columns."""
+        cols = set(self.exposures.columns)
+        missing = cols - set(self.factor_cov.index) | cols - set(self.factor_cov.columns)
+        if missing:
+            raise ValueError(
+                f"RiskModelOutput: factor_cov lacks exposure columns {sorted(map(str, missing))[:5]}"
+            )
+        if not (math.isfinite(self.alignment_var) and self.alignment_var >= 0):
+            raise ValueError(
+                f"RiskModelOutput: alignment_var must be finite and >= 0, got {self.alignment_var}"
+            )
+        unknown = {c for names in self.factor_groups.values() for c in names} - cols
+        if unknown:
+            raise ValueError(
+                f"RiskModelOutput: factor_groups name non-exposure columns {sorted(unknown)[:5]}"
+            )
 
     @property
     def tickers(self) -> pd.Index:
@@ -291,7 +312,7 @@ class RiskModelOutput:
         return v
 
 
-@dataclass
+@dataclass(frozen=True)
 class AlphaOutput:
     """Alpha layer output as of one date.
 
@@ -312,6 +333,10 @@ class AlphaOutput:
     components: dict[str, pd.Series] = field(default_factory=dict[str, pd.Series])
     ic_estimate: float = float("nan")
     components_half_life: dict[str, float] = field(default_factory=dict[str, float])
+
+    def __post_init__(self) -> None:
+        if int(self.horizon_days) < 1:
+            raise ValueError(f"AlphaOutput: horizon_days must be >= 1, got {self.horizon_days}")
 
 
 def to_long(wide: Wide, name: str) -> pd.Series:

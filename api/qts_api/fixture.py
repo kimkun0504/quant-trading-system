@@ -32,10 +32,13 @@ def build_fixture_run(runs_root: str | Path, spec: FixtureSpec | None = None) ->
     root = Path(runs_root)
     root.mkdir(parents=True, exist_ok=True)
     md = generate(SyntheticSpec(n_stocks=spec.n_stocks, n_days=spec.n_days, seed=spec.seed, ic_true=spec.ic_true))
-    cfg = SystemConfig()
-    cfg.seed = spec.seed
-    cfg.universe.top_n_by_mcap = min(cfg.universe.top_n_by_mcap, spec.n_stocks)
-    cfg.execution.signal_lag_days = spec.signal_lag_days
+    cfg = SystemConfig().with_overrides(
+        {
+            "seed": spec.seed,
+            "universe.top_n_by_mcap": min(SystemConfig().universe.top_n_by_mcap, spec.n_stocks),
+            "execution.signal_lag_days": spec.signal_lag_days,
+        }
+    )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         pipe = ResearchPipeline(

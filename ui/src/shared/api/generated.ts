@@ -221,7 +221,7 @@ export interface components {
   schemas: {
     /**
      * BacktestSummary
-     * @description ``BacktestResult.summary()`` (qts/backtest/simulator.py).
+     * @description ``BacktestResult.summary()`` (qts/backtest/result.py).
      */
     BacktestSummary: {
       /** Start */
@@ -391,7 +391,8 @@ export interface components {
         | 'dsr'
         | 'pbo'
         | 'phase_sharpe'
-        | 'suspect';
+        | 'suspect'
+        | 'failed_solves';
       /**
        * Status
        * @enum {string}
@@ -466,6 +467,7 @@ export interface components {
         | 'pbo'
         | 'phase_sharpe'
         | 'suspect'
+        | 'failed_solves'
       )[];
       /** Gates */
       gates: components['schemas']['GateResult'][];

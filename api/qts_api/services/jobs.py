@@ -158,7 +158,7 @@ def run_job(job_path: str, payload: dict[str, Any]) -> None:
         md = _load_market(payload)
 
         cfg = SystemConfig.from_dict(payload["config"])
-        cfg.universe.top_n_by_mcap = min(cfg.universe.top_n_by_mcap, md.close.shape[1])
+        cfg = cfg.with_overrides({"universe.top_n_by_mcap": min(cfg.universe.top_n_by_mcap, md.close.shape[1])})
 
         # stage hooks (worker process only)
         orig_u, orig_r, orig_a = P.build_universe_mask, P.build_risk_model, P.AlphaModel

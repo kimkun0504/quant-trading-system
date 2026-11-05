@@ -54,6 +54,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple, TypedDict
 
 import numpy as np
 import pandas as pd
@@ -103,6 +104,25 @@ def _sign(side: str) -> int:
     if s in ("sell", "s", "short", "sell_short", "ss"):
         return -1
     raise ValueError(f"unknown side {side!r}")
+
+
+class CalibrationDiagnostics(TypedDict):
+    """Diagnostics of :meth:`TCALedger.calibrate_b`."""
+
+    n: int
+    b_ols: float
+    r2: float
+    se: float
+    prior_b: float
+    prior_weight: float
+    venue: str | None
+
+
+class ImpactCalibration(NamedTuple):
+    """:meth:`TCALedger.calibrate_b` result; unpacks as ``(b, diagnostics)``."""
+
+    b: float
+    diagnostics: CalibrationDiagnostics
 
 
 @dataclass
@@ -358,7 +378,7 @@ class TCALedger:
         prior_weight: float = 20.0,
         min_fill_rate: float = 0.5,
         venue: str | None = None,
-    ) -> tuple[float, dict[str, float]]:
+    ) -> ImpactCalibration:
         """Through-the-origin regression of arrival slippage on ``sigma*(F/V)^(e-1)``.
 
         ``y_i = s_i*(VWAP_i - P_arr_i)/P_arr_i - half_spread_i`` (return units),
@@ -375,10 +395,12 @@ class TCALedger:
         ``impact_b_auction`` / ``impact_b_continuous`` (see
         :meth:`calibrate_b_by_venue`).
 
-        Returns ``(b, diagnostics)`` where diagnostics has ``n, b_ols, r2, se,
-        prior_b, prior_weight, venue``.  With no usable orders returns ``prior_b``.
+        Returns an :class:`ImpactCalibration` ``(b, diagnostics)`` (a named
+        tuple: ``b, diag = ...`` still works) where diagnostics has ``n, b_ols,
+        r2, se, prior_b, prior_weight, venue``.  With no usable orders ``b =
+        prior_b``.
         """
-        empty = {
+        empty: CalibrationDiagnostics = {
             "n": 0,
             "b_ols": np.nan,
             "r2": np.nan,
@@ -389,7 +411,7 @@ class TCALedger:
         }
         d = self.decompose()
         if d.empty:
-            return float(prior_b), empty
+            return ImpactCalibration(float(prior_b), empty)
         d = d[
             (d["filled_qty"] > 0)
             & (d["fill_rate"] >= min_fill_rate)
@@ -402,7 +424,7 @@ class TCALedger:
         x = d["impact_x"].values
         n = len(x)
         if n == 0:
-            return float(prior_b), empty
+            return ImpactCalibration(float(prior_b), empty)
         sxx = float(x @ x)
         b_ols = float(x @ y) / sxx
         resid = y - b_ols * x
@@ -411,19 +433,22 @@ class TCALedger:
         ss_tot = float(((y - y.mean()) ** 2).sum())
         r2 = float(1 - (resid @ resid) / ss_tot) if ss_tot > 0 else np.nan
         b = (n * b_ols + prior_weight * prior_b) / (n + prior_weight)
-        return float(b), {
-            "n": int(n),
-            "b_ols": b_ols,
-            "r2": r2,
-            "se": se,
-            "prior_b": float(prior_b),
-            "prior_weight": float(prior_weight),
-            "venue": venue,
-        }
+        return ImpactCalibration(
+            float(b),
+            {
+                "n": int(n),
+                "b_ols": b_ols,
+                "r2": r2,
+                "se": se,
+                "prior_b": float(prior_b),
+                "prior_weight": float(prior_weight),
+                "venue": venue,
+            },
+        )
 
     def calibrate_b_by_venue(
         self, prior_b: dict[str, float] | None = None, prior_weight: float = 20.0, min_fill_rate: float = 0.5
-    ) -> dict[str, tuple[float, dict[str, float]]]:
+    ) -> dict[str, ImpactCalibration]:
         """:meth:`calibrate_b` once per venue.  ``prior_b`` maps venue -> prior
         (default ``self.cost_cfg.impact_b_auction`` / ``impact_b_continuous``).
         Returns ``{"auction": (b, diag), "continuous": (b, diag)}``; the two
