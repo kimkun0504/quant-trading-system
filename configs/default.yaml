@@ -143,6 +143,7 @@ portfolio:
   net_exposure_band: 0.05
   max_position_weight: 0.02
   max_adv_participation: 0.05
+  participation_from_urgency: false
   beta_neutral: true
   industry_band: 0.03
   style_band_sd: 0.1

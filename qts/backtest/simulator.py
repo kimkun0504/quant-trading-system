@@ -48,12 +48,30 @@ Cost model: any :class:`qts.core.costs.CostModel` (``snapshot`` /
 ``estimate`` returning a DataFrame) is wrapped once, at construction, by
 :class:`_LegacyCostModel`; there is no silent fallback between paths.
 
-Delistings: a held name whose return on ``t+1`` is NaN earns
-``cfg.cost.delisting_haircut`` (default -30%, against the position's sign) on
-its final day, is force-liquidated at spread + explicit fees (continuous venue,
-booked as a trade on decision row ``t`` and counted in turnover) and the event
-is recorded in ``BacktestResult.diagnostics["delistings"]``.  Names with no
-price on ``t`` are placed on the optimizer's no-trade list.
+Halts vs delistings (same classification as the labels, ``qts.alpha.targets``):
+a held name with no close on ``t+1`` is either *halted* or *delisted*, decided
+without looking at later prices:
+
+* ``md.delisting_dates`` covers the name -> delisted iff the vendor's last
+  trading date is before ``t+1``; otherwise (``NaT`` or a later date) halted;
+* otherwise the causal gap rule (``cfg.alpha.delisting_gap_days = G``) ->
+  delisted on the first date ``t+1`` with no close that is ``G`` trading days
+  (``md.dates``) after the name's last close; before that, halted.
+
+A *halted* name is frozen at its last price: return 0 on each missing day, no
+trading (it is on the optimizer's no-trade list), weight carried (drifting only
+with NAV); borrow on a frozen short is still charged.  When a close reappears
+the return is measured from the last close before the halt, so the whole
+halt-period move is realised on the resumption day.  Frozen name-days are
+counted in ``diagnostics["n_halted_name_days"]`` and episodes recorded in
+``diagnostics["halts"]`` (``outcome`` resumed / delisted / open).
+
+A *delisted* name earns ``cfg.cost.delisting_haircut`` (default -30%, against
+the position's sign) on the decision day ``t+1`` (relative to its last, frozen
+price), is force-liquidated at spread + explicit fees (continuous venue, booked
+as a trade on decision row ``t`` and counted in turnover) and the event is
+recorded in ``BacktestResult.diagnostics["delistings"]``.  Names with no price
+on ``t`` are placed on the optimizer's no-trade list.
 
 Eligibility: ``md.eligible`` (wide bool panel, if present) or the
 ``eligible_fn(date) -> Index`` kwarg marks the investable universe as of a
@@ -457,8 +475,24 @@ class DailyBarSimulator:
         N = len(tickers)
         md_pos = md.dates.get_indexer(dates)
         close = md.close.loc[dates]
-        R = close.pct_change(fill_method=None)  # return realised on row date
+        # return realised on the row date, measured from the last close before it:
+        # equals pct_change on consecutive closes; after a halt it carries the whole
+        # halt-period move (module docstring, "Halts vs delistings")
+        R = close / close.ffill().shift(1) - 1.0
+        R = R.where(close.notna())
         price_ok = close.notna()
+        # halt / delisting classification inputs (positions in md.dates)
+        have_md = md.close.notna().to_numpy()
+        last_close_md = (
+            pd.DataFrame(np.where(have_md, np.arange(len(md.dates), dtype=float)[:, None], np.nan))
+            .ffill()
+            .to_numpy()
+        )
+        vendor_pos = md.delisting_positions()  # nan = not covered -> causal rule
+        gap_days = int(getattr(self.cfg.alpha, "delisting_gap_days", 63))
+        halts_open: dict[str, dict[str, Any]] = {}
+        halts_log: list[dict[str, object]] = []
+        n_halted = 0
         elig_panel = getattr(md, "eligible", None)
         elig_md: np.ndarray | None = None  # rows aligned with md.dates
         if elig_panel is not None:
@@ -630,15 +664,40 @@ class DailyBarSimulator:
             r = R.iloc[i + 1].values.copy()
             held = w_post != 0
             nan_r = ~np.isfinite(r)
-            liquidate = held & nan_r
-            r[nan_r] = 0.0
+            r[nan_r] = 0.0  # unheld names: irrelevant; halted (frozen) names: 0
+            missing = held & nan_r
+            liquidate = np.zeros(N, dtype=bool)
+            if missing.any():
+                # halt or delisting? (module docstring): vendor date if covered,
+                # else the causal G-day gap rule -- never a later price
+                p1 = int(md_pos[i + 1])
+                lp = last_close_md[p1]
+                covered = ~np.isnan(vendor_pos)
+                by_vendor = covered & (vendor_pos < p1)
+                by_gap = ~covered & np.isfinite(lp) & (p1 - lp >= gap_days)
+                liquidate = missing & (by_vendor | by_gap)
+                frozen = missing & ~liquidate
+                n_halted += int(frozen.sum())
+                for j in np.where(frozen)[0]:
+                    tk = tickers[j]
+                    ep = halts_open.get(tk)
+                    if ep is None:
+                        ep = {"ticker": tk, "start": t1, "weight": float(w_post[j]), "days": 0}
+                        halts_open[tk] = ep
+                    ep["days"] += 1
+            for tk in list(halts_open):
+                j = tickers.get_loc(tk)
+                if liquidate[j]:
+                    halts_log.append({**halts_open.pop(tk), "end": t1, "outcome": "delisted"})
+                elif not nan_r[j] or not held[j]:
+                    halts_log.append({**halts_open.pop(tk), "end": t1, "outcome": "resumed"})
             if liquidate.any():
-                # Delisting / permanent halt: the name has no close on t+1.  Apply
-                # cfg.cost.delisting_haircut against the position's sign (a loss
-                # for longs and shorts alike -- conservative), force-liquidate the
-                # remaining value at spread + explicit fees (continuous venue, no
-                # impact), book the exit as a trade on this decision row (with its
-                # cost) and record it in diagnostics["delistings"].
+                # Delisting: apply cfg.cost.delisting_haircut against the
+                # position's sign (a loss for longs and shorts alike --
+                # conservative), force-liquidate the remaining value at spread +
+                # explicit fees (continuous venue, no impact), book the exit as a
+                # trade on this decision row (with its cost) and record it in
+                # diagnostics["delistings"].
                 r[liquidate] = haircut * np.sign(w_post[liquidate])
                 x_liq = np.zeros(N)
                 x_liq[liquidate] = -w_post[liquidate] * (1.0 + r[liquidate])
@@ -713,6 +772,8 @@ class DailyBarSimulator:
             periods_per_year=self.cfg.trading_days_per_year,
             diagnostics={
                 "delistings": delistings,
+                "halts": halts_log + [{**ep, "end": None, "outcome": "open"} for ep in halts_open.values()],
+                "n_halted_name_days": n_halted,
                 "solve_log": solve_log,
                 "n_failed_solves": n_failed,
                 "run_time_sec": time.perf_counter() - t_start,

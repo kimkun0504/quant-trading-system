@@ -14,7 +14,7 @@ export function NewRunPage() {
           <MarginNote handbook={{ page: 'validation', section: '13. The trial ledger' }}>
             Every launch with a new configuration or new data adds a trial to the ledger, which
             raises the bar for the deflated Sharpe of every run in its family. Re-running an
-            identical config and data does not.
+            identical config on the same data, with the same settings and clean code, does not.
           </MarginNote>
         }
       >

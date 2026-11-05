@@ -129,9 +129,10 @@ export function ValidationTab() {
         title="IC by year"
         note={
           <MarginNote handbook={{ page: 'validation', section: '14. The hurdle gates' }}>
-            The mean IC was positive in {positiveYears} of {ic.by_year.length} years. The IC-sign
-            gate needs at least two thirds; with four or five yearly folds the rule is coarse, so
-            read the bars, not just the count.
+            The mean IC was positive in {positiveYears} of {ic.by_year.length} calendar years. The
+            IC-sign gate is not scored on years: it needs a positive mean IC in at least two thirds
+            of the purged walk-forward blocks (the same blocks as the fold Sharpes below). With
+            about six blocks the rule is coarse, so read the bars, not just the count.
           </MarginNote>
         }
       >

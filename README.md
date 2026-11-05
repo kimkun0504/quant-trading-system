@@ -11,9 +11,9 @@ integration problems surface before any one layer is deepened:
 | Transaction cost | `qts.tcost` | 2026 IBKR Pro / SEC §31 / FINRA TAF / CAT fee schedule, square-root impact in the cvxportfolio convex form `a·|x| + b·σ·|x|^1.5/√V`, auction-vs-continuous venue costing, borrow holding cost, TCA ledger with implementation-shortfall decomposition and monthly recalibration of `b` |
 | Portfolio | `qts.portfolio` | Boyd single-period convex optimizer (cvxpy + Clarabel) in factor form, full constraint menu (book type, position/ADV caps, beta & style neutrality, industry bands, no-trade, turnover penalty), Gârleanu–Pedersen half-life shrinkage in alpha space, vol targeting within hard caps, transfer coefficient, holding-period and factor attribution diagnostics |
 | Execution | `qts.execution` | Order generation, routing table (LOC/MOC in the closing auction, IBKR ClosePx / VWAP / ArrivalPx / Adaptive algos by size and signal urgency, passive limits for reversal legs), ib_async-style payload builders, VWAP / POV / Almgren–Chriss schedules, fill simulator feeding the TCA ledger |
-| Backtest | `qts.backtest` | Daily-bar simulator (signals at close *t*, trades at the close, returns *t→t+1*, costs and borrow booked explicitly, delistings handled), performance metrics incl. Newey–West t, Lo-adjusted Sharpe, breakeven cost, cost sensitivity |
+| Backtest | `qts.backtest` | Daily-bar simulator (signals at the close of *s*, trades at the close of *t* = *s* + signal lag, default 1 day, returns *t→t+1*, costs and borrow booked explicitly, halts frozen and delistings haircut with the same causal rule as the labels), performance metrics incl. Newey–West t, Lo-adjusted Sharpe, breakeven cost, cost sensitivity |
 | Validation | `qts.validation` | Purged walk-forward / k-fold / combinatorial purged CV with label-horizon purging and embargo, deflated Sharpe ratio, PBO (CSCV), append-only trial ledger, plan hurdle gates, leakage tripwires (PIT shift test, planted-oracle test, AST `shift(-k)` registry), Nagel "collapse to momentum" audit |
-| Data | `qts.data` | Seeded synthetic market with known factor structure and a planted alpha of known IC; Parquet/DuckDB PIT store; PIT universe builder with hysteresis; parsers for Ken French, FINRA short interest (with publication lag), Sharadar SF1 (keyed on filing date), Fama-French-48 from SIC; yfinance prototyping loader |
+| Data | `qts.data` | Seeded synthetic market with known factor structure and a planted alpha of known IC; Parquet/DuckDB PIT store; PIT universe builder with hysteresis; parsers for Ken French, FINRA short interest (with publication lag), Sharadar SF1 (keyed on filing date), Fama-French-48 from SIC; Norgate price / delisting-date loader (`norgate_to_store`, needs the `norgatedata` package; fetch layer not yet run against a licensed install); yfinance prototyping loader |
 
 The design rationale, the evidence behind every choice, and the phased
 roadmap are in `docs/BUILD_PLAN.md`. `docs/REVIEW_NOTES.md` records the
@@ -23,8 +23,8 @@ review amendments applied in code.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"            # add ".[data]" for yfinance / requests / polars
-pytest                             # ~140 tests, ~4 min (LightGBM walk-forward and pipeline smoke are the slow part)
+pip install -e ".[dev,data]"       # or `make install`; "data" = yfinance / requests / polars
+make test-fast                     # fast tier; `make test-slow` runs the ML walk-forward and pipeline tests
 
 python scripts/run_demo.py         # phase 1: rank composite on a synthetic market
 python scripts/run_demo.py --ml    # phase 2: + walk-forward LightGBM / ridge sleeve
@@ -33,7 +33,7 @@ python scripts/run_real.py --help  # same pipeline on a ParquetStore of real dat
 
 `run_demo.py` prints the backtest summary, alpha IC report (ICIR annualised at
 the sampled frequency), the value-weighted decile long-short t-stat, DSR with its
-ledger-derived trial count, calendar-year fold Sharpes, cost sensitivity and the
+ledger-derived trial count, net Sharpe by purged walk-forward fold, cost sensitivity and the
 plan's hurdle gates. Each gate reports `PASS` / `FAIL` / `skipped`; a gate whose
 input is unavailable (e.g. PBO without a configuration grid, see
 `SystemConfig.pipeline_pbo_configs`) is *skipped* and only the required gates
@@ -82,19 +82,25 @@ w  = SinglePeriodOptimizer(SystemConfig().portfolio, tc).solve(ao.expected_retur
   and for the pipeline; the pipeline's exposures hook raises on any failure other than the risk
   model's warm-up, so the label definition cannot change silently mid-sample.
 * Labels of names that delist inside the forward window use the return to the last close times
-  `1 + AlphaConfig.delisting_return` (default −30 %, conservative CRSP-style) instead of NaN.
+  `1 + CostConfig.delisting_haircut` (default −30 %, conservative CRSP-style) instead of NaN; a
+  temporary halt gets no haircut. Halt vs delisting is decided causally (vendor `delisting_dates`,
+  else a 63-day gap rule), and the backtest simulator uses the same rule.
 * Walk-forward training purges any label whose forward window overlaps the prediction
   date and applies an embargo ≥ horizon; the trailing validation block is purged the same way.
 * The trial ledger is append-only; the deflated Sharpe ratio is computed from its trial count,
-  the cross-trial Sharpe variance and Nyholt effective trials of the pipeline's family. Identical
-  re-runs (same config hash + data hash) update the record instead of adding a trial.
+  the cross-trial Sharpe variance and Nyholt effective trials of the pipeline's family
+  (`pipeline_phase{p}:{data_hash[:12]}`). Nothing is rewritten: identical re-runs (same config
+  hash, data hash, run settings and a clean code version) are collapsed into one trial when the
+  ledger is read. `qts ledger migrate` renames pre-November bare `pipeline_phaseN` families once.
 
 ## Status and what is next
 
-Done: the thin slice end-to-end on synthetic data; 100 unit/integration tests.
+Done: the thin slice end-to-end on synthetic data, with fast and slow test tiers (see `CONTRIBUTING.md`).
 
 Phase 0 (next): point `scripts/run_real.py` at a `ParquetStore` filled from
-Norgate / Sharadar (see `qts/data/loaders.py` and `docs/BUILD_PLAN.md` §7),
+Norgate (`qts.data.loaders.norgate_to_store`: adjusted and unadjusted closes, volume,
+delisting dates) and Sharadar (`sharadar_sf1_to_pit_fundamentals`; shares, market cap,
+industries) — see `docs/handbook/12_operating_guide.md` and `docs/BUILD_PLAN.md` §7 —
 start the daily IBKR borrow-rate logger, download the Ken French files, and
 re-run the hurdle gates on 2006–2025 data. Known deepening items are listed
 in `docs/REVIEW_NOTES.md`.

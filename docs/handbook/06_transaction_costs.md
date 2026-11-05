@@ -452,13 +452,15 @@ where:
 </callout>
 
 ### How it works: venue choice
-`SquareRootImpact.cost_for_venue_choice(notional, adv_usd, sigma_daily, half_spread_bps, date)` compares the per-dollar costs
+`SquareRootImpact.cost_for_venue_choice(notional, adv_usd, sigma_daily, half_spread_bps, date, price=..., auction_max_pct=None)` compares the per-dollar costs (bp of $Q$) of three ways to execute:
 
 $$
-\text{cont} = h + b_c\,\sigma\,(Q/\text{ADV})^{e-1}, \qquad \text{auc} = \beta_a\,\sigma\,(Q/\text{ADV})^{e-1}
+\text{cont} = h + b_c\,\sigma\,(Q/\text{ADV})^{e-1}, \qquad \text{auc} = f_a + \beta_a\,\sigma\,(Q/\text{ADV})^{e-1},
 $$
 
-and returns the cheaper venue. With D2 the impact terms are equal on a normal day, so the auction wins by exactly the half-spread at **every** size. At 0.18% of ADV (σ = 2%, $h$ = 2 bp): continuous 10.49 bp, auction 8.49 bp. On Russell day at 1% of ADV: 22.0 bp against 10.3 bp. The function ignores the auction exchange fee (\$0.001/share, 0.2 bp on a \$50 stock), which narrows the gap slightly. Note that "cheaper per dollar at every size" does **not** mean "send everything to the auction": the auction is only 9% of the day's volume, so a large order would be a large share of it. The cap that stops this lives in the router and in the routed venue below.
+and **routed**, the router's split (auction up to $q_a = \min(Q, \kappa\phi A)$, the rest continuous, charged the metaorder increment exactly as the routed venue below). $f_a$ is the closing-auction exchange fee, `auction_exchange_fee_per_share / price` (\$0.001/share = 0.2 bp on a \$50 stock); it needs `price`, and without it the fee is left out and the result says `fees_included = False`. Commissions and regulatory fees are the same per share on both venues and do not change the choice. It returns all three costs, `venue` (the cheapest) and `venue_within_cap` (the cheapest the router may use: the pure auction only when the whole order fits under the $\kappa$ = 2% cap, otherwise routed or continuous).
+
+With D2 the impact terms are equal on a normal day, so the uncapped auction wins by $h - f_a$ at **every** size. At 0.18% of ADV (σ = 2%, $h$ = 2 bp, \$50 stock): continuous 10.49 bp, auction 8.69 bp. On Russell day at 1% of ADV: 22.0 bp against 10.5 bp. Only when the fee exceeds the half-spread (a cheap stock with a tight spread: 2 bp of fee at \$5) does the continuous session win. "Cheaper per dollar at every size" does **not** mean "send everything to the auction": the auction is only 9% of the day's volume, so a large order would be a large share of it. That is what `venue_within_cap` and the routed option capture: a \$1M order in a \$50M-ADV name is 11× the cap, and the routed split costs 30.1 bp against 30.3 bp continuous.
 
 ### How it works: the routed venue (design decision D3)
 The router sends up to `ExecutionConfig.auction_max_pct_of_auction_volume` (κ = 2%) of the expected auction volume to the close and the rest to an algo (→ see **Execution › The routing table**). The routed venue prices a trade the same way. Per name, with $q = \lvert\text{trade}\rvert$ in dollars, $A$ = `adv_usd`, $h$ the half-spread (fraction):
@@ -529,7 +531,7 @@ The optimizer caches one compiled problem and re-solves it with new coefficients
 - **Russell calendar.** The June rule ("last Friday of June") approximates the official calendar. December dates must be added yearly, or a December reconstitution is priced as a normal day (or a quad-witching day if it happens to fall on the 15th–21st).
 - **Raising $b_{\text{auc}}$ above $b_c\,\phi^{e-1}$** (0.3 at the defaults) switches the optimizer to the loose upper-bound surrogate. Expect lower turnover and a lower transfer coefficient. The backtest's booked costs stay exact.
 - **Changing the exponent** changes $\beta_a$ too: at $e$ = 1.6 the normal-day $\beta_a = 0.3/0.09^{0.6} = 1.27 > 1$, so D2's equality no longer holds and the surrogate becomes an upper bound. Recalibrate both prefactors together.
-- **The fill simulator is not routed.** `FillSimulator` prices a split's continuous child as an independent order, $C(q_c)$, not as the increment (→ see **Execution › Fill simulation**). For execution research it is slightly optimistic relative to the cost model.
+- **The fill simulator prices splits like the model.** `FillSimulator` charges a split's algo child the increment $C(q_a + q_c) - C(q_a)$ on the day's realised volume, with $q_a$ the auction child's filled shares (→ see **Execution › The fill simulator**), so simulated fills and backtest costs use the same metaorder rule.
 
 ### Worked example
 A \$500,000 buy of a \$50 stock (10,000 shares), ADV \$50M, σ = 2%/day, half-spread 2 bp, NAV \$5M ($x$ = 0.1), on a normal day (2026-06-15, $\phi$ = 0.09). Run through `TransactionCostModel.estimate`:

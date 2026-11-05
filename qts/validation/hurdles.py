@@ -337,7 +337,11 @@ class HurdleReport:
                     ok,
                     float(breakeven_cost_bps),
                     need,
-                    f"breakeven {float(breakeven_cost_bps):.1f} bps {'>=' if ok else '<'} 2x modeled {need:.1f} bps",
+                    (
+                        f"breakeven {float(breakeven_cost_bps):.1f} bps {'>=' if ok else '<'} "
+                        f"{BREAKEVEN_MULTIPLE:g}x modeled {float(modeled_cost_bps):.1f} bps "
+                        f"(= {need:.1f} bps)"
+                    ),
                 )
             )
         elif (
@@ -350,7 +354,7 @@ class HurdleReport:
                     "breakeven_cost",
                     True,
                     float("inf"),
-                    2 * float(modeled_cost_bps),
+                    BREAKEVEN_MULTIPLE * float(modeled_cost_bps),
                     "zero turnover: breakeven undefined (inf)",
                 )
             )

@@ -114,7 +114,7 @@ A **bias** is a systematic difference between what a backtest saw and what a tra
 **Guards in the code.** One knob, `CostConfig.delisting_haircut = -0.30`, is the single source of the delisting assumption for both labels and the backtest (the former `AlphaConfig.delisting_return` was removed; the pipeline passes the cost setting to the alpha model):
 
 - In the labels (`qts/alpha/targets.py::forward_returns`): if a name has no close at the label window's end, the label is the return to its last close before the end, compounded with the −30% haircut **if that is a delisting**, and without it if it is a temporary halt.
-- In the simulator: a held name with no close on $t+1$ earns −30% against the position's sign (a loss for longs and shorts alike, conservatively) and is liquidated at spread plus fees.
+- In the simulator: a held name with no close on $t+1$ is classified with the same rule below. If it is a delisting it earns −30% against the position's sign (a loss for longs and shorts alike, conservatively) and is liquidated at spread plus fees; if it is a halt the position is frozen at its last price until prices return.
 
 **Halts versus delistings, without looking ahead.** A trading halt (pending news, a regulatory halt, a long suspension) also produces missing closes, then prices resume. Deciding "halt or delisting" by peeking at whether prices come back later is a look-ahead: the second audit found that the earlier rule (a backward fill over the whole panel) made labels "realised" at $t$ depend on prices after $t$, verified on 4,228 label cells (HIGH finding 1). The rule is now causal:
 
@@ -124,7 +124,7 @@ A **bias** is a systematic difference between what a backtest saw and what a tra
 `qts/alpha/targets.py::label_realisation` gives, per decision date, the first date at which every label of that row is decided, so training and the trailing IC use a row only from then on. Without a delisting table, a delisting delays its rows by up to 63 days; supply `delisting_dates` for real data.
 
 <callout icon="⚠️" color="yellow_bg">
-The simulator does not apply this rule. On the day a held name has no close, the backtest cannot know whether prices will return, so it haircuts and liquidates every such position. A long halt therefore costs the backtest a −30% haircut even if the stock later resumes at the same price. That is conservative, and consistent with what a live book could do on the day.
+The simulator applies the same rule on the day it has to act. A held name with no close is frozen at its last price (no return, no trading) while it is a halt; the haircut and liquidation are booked when the vendor delisting date has passed or, without a vendor table, when the gap reaches 63 trading days. Without `delisting_dates` a real delisting therefore sits frozen in the book for up to 63 days before its loss is booked (→ see **Backtesting › Halts and delistings**).
 </callout>
 
 <callout icon="💡" color="blue_bg">

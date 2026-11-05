@@ -4,7 +4,7 @@
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-make install          # pip install -e ".[dev]" + pre-commit hooks (commit and push stages)
+make install          # pip install -e ".[dev,data]" + pre-commit hooks (commit and push stages)
 make help             # list all targets
 ```
 

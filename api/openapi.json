@@ -632,6 +632,66 @@
         }
       }
     },
+    "/api/config/warmup": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Effective warm-up for the default config",
+        "description": "Derived from ``risk.min_history_days``, ``alpha.train_min_days`` (with ML),\n``alpha.horizon_days`` and the signal lag of the default ``SystemConfig``.  A\nlaunch with ``config_overrides`` is checked against its own config.",
+        "operationId": "get_warmup_api_config_warmup_get",
+        "parameters": [
+          {
+            "name": "ml",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "include the walk-forward ML sleeve",
+              "default": false,
+              "title": "Ml"
+            },
+            "description": "include the walk-forward ML sleeve"
+          },
+          {
+            "name": "signal_lag_days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1,
+              "minimum": 0,
+              "description": "execution delay in days (D4)",
+              "default": 1,
+              "title": "Signal Lag Days"
+            },
+            "description": "execution delay in days (D4)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Warmup"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/health": {
       "get": {
         "tags": [
@@ -1682,9 +1742,9 @@
           "days": {
             "type": "integer",
             "maximum": 6000.0,
-            "minimum": 764.0,
+            "minimum": 300.0,
             "title": "Days",
-            "description": "512 warm-up days plus at least one year"
+            "description": "synthetic market length: at least the effective warm-up (GET /api/config/warmup) plus one year; checked against the run's own config at launch"
           },
           "seed": {
             "type": "integer",
@@ -2542,6 +2602,68 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "Warmup": {
+        "properties": {
+          "ml": {
+            "type": "boolean",
+            "title": "Ml"
+          },
+          "signal_lag_days": {
+            "type": "integer",
+            "title": "Signal Lag Days"
+          },
+          "warmup_days": {
+            "type": "integer",
+            "title": "Warmup Days",
+            "description": "max(risk_days, ml_days) + signal_lag_days"
+          },
+          "min_days": {
+            "type": "integer",
+            "title": "Min Days",
+            "description": "warmup_days + one year (trading_days_per_year): the launch floor"
+          },
+          "risk_days": {
+            "type": "integer",
+            "title": "Risk Days",
+            "description": "risk exposures warm-up + min_history_days of factor returns"
+          },
+          "ml_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ml Days",
+            "description": "universe lead + alpha.train_min_days + embargo (upper bound); null without ML"
+          },
+          "exact": {
+            "type": "boolean",
+            "title": "Exact",
+            "description": "true when the (exact) risk term binds"
+          },
+          "trading_days_per_year": {
+            "type": "integer",
+            "title": "Trading Days Per Year"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ml",
+          "signal_lag_days",
+          "warmup_days",
+          "min_days",
+          "risk_days",
+          "ml_days",
+          "exact",
+          "trading_days_per_year"
+        ],
+        "title": "Warmup",
+        "description": "Effective warm-up of a run (``qts.pipeline.estimate_warmup_days``): trading\ndays of the market panel used before the first out-of-sample backtest date."
       },
       "ValidationIssue": {
         "additionalProperties": false,

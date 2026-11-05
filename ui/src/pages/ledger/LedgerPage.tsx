@@ -103,8 +103,13 @@ export function LedgerPage() {
             the higher a run must score to count.
           </p>
           <p>
-            Re-running the same config hash on the same data hash updates its record (the re-runs
-            column) instead of adding a trial, so reproducing a result never penalises it.
+            Nothing is ever rewritten: every run appends a line. When the ledger is read, lines from
+            an identical run (same config hash, data hash, run settings and a clean code version)
+            collapse into one trial, counted in the re-runs column, so reproducing a result never
+            penalises it. A run from a dirty working tree or without a data hash always counts as a
+            new trial. Families are per phase and data set, for example{' '}
+            <code>pipeline_phase1:&lt;data hash&gt;</code>; records written before data hashes
+            existed sit in <code>legacy</code>, where <code>qts ledger migrate</code> puts them.
           </p>
         </div>
       </Annotated>

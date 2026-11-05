@@ -472,7 +472,14 @@ class PortfolioConfig(_ConfigBase):
     net_exposure_target: float = 0.0
     net_exposure_band: float = 0.05
     max_position_weight: float = 0.02
+    # Per-name daily trade cap |x_i| <= p * ADV_i / NAV.  p = max_adv_participation,
+    # or -- with participation_from_urgency -- the router's urgency-derived algo
+    # participation ExecutionRouter.participation(half_life) (1-5 %, 1.3 % at a 20-day
+    # half-life; qts.execution.router), so the optimizer never plans a same-day trade
+    # the router would flag as multi-day.  Off by default: it lowers turnover and the
+    # transfer coefficient for slow signals (docs/notes/participation_alignment.md).
     max_adv_participation: float = 0.05
+    participation_from_urgency: bool = False
     beta_neutral: bool = True
     industry_band: float = 0.03
     style_band_sd: float = 0.10

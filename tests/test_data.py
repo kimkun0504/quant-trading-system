@@ -760,3 +760,47 @@ def test_finra_ratio_uses_shares_at_settlement_across_split():
     assert ratio.loc[pub1] == pytest.approx(0.05)
     assert ratio.loc[pub2 - pd.offsets.BDay(1)] == pytest.approx(0.05)
     assert ratio.loc[pub2] == pytest.approx(0.05)  # 2M (post-split basis) / 40M
+
+
+# ----------------------------------------------------------------------------- Norgate (P9)
+def test_norgate_frames_to_store_mapping(tmp_path):
+    from qts.data.loaders import norgate_frames_to_store
+    from qts.data.store import ParquetStore
+
+    d = pd.bdate_range("2020-01-01", periods=4)
+    adj = {
+        "AAA": pd.DataFrame({"Close": [10.0, 11.0, 12.0, 13.0], "Volume": [5.0, 5, 5, 5]}, index=d),
+        "BBB-202001": pd.DataFrame({"Close": [20.0, 21.0], "Volume": [1.0, 1]}, index=d[:2]),
+    }
+    raw = {
+        "AAA": pd.DataFrame({"Close": [20.0, 22.0, 24.0, 26.0], "Volume": [100.0, 110, 120, 130]}, index=d),
+        "BBB-202001": pd.DataFrame({"Close": [40.0, 42.0], "Volume": [7.0, 8]}, index=d[:2]),
+    }
+    store = ParquetStore(str(tmp_path / "store"))
+    info = norgate_frames_to_store(store, adj, raw, delisted=["BBB-202001"])
+    assert info["n_symbols"] == 2 and info["n_delisted"] == 1
+    close = store.read_wide("prices_close")
+    assert close.loc[d[3], "AAA"] == 13.0 and np.isnan(close.loc[d[3], "BBB-202001"])
+    assert store.read_wide("prices_close_raw").loc[d[1], "BBB-202001"] == 42.0
+    assert store.read_wide("prices_volume").loc[d[2], "AAA"] == 120.0  # unadjusted shares
+    dd = store.read_long("delisting_dates").set_index("ticker")["delisting_date"]
+    assert pd.Timestamp(dd["BBB-202001"]) == d[1] and pd.isna(dd["AAA"])
+    with pytest.raises(ValueError, match="no symbol"):
+        norgate_frames_to_store(store, adj, {})
+
+
+def test_norgate_to_store_without_package_raises_clear_importerror(tmp_path, monkeypatch):
+    import builtins
+
+    from qts.data.loaders import norgate_to_store
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *a, **k):
+        if name == "norgatedata":
+            raise ImportError("No module named 'norgatedata'")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(ImportError, match="pip install norgatedata"):
+        norgate_to_store(object())

@@ -124,3 +124,27 @@ def test_jobs_survive_restart(fixture_root):
         assert j["status"] == "failed" and "Interrupted" in j["message"]
     for f in (fixture_root / "_jobs").glob("*.json"):
         f.unlink()
+
+
+# ----------------------------------------------------------------------------- warm-up (P7)
+def test_warmup_endpoint_derives_from_config(client):
+    w = S.Warmup.model_validate(client.get("/api/config/warmup").json())
+    # risk: 252 exposure warm-up + 252 factor-return days + 1; + signal lag 1
+    assert (w.warmup_days, w.min_days, w.risk_days, w.ml_days, w.exact) == (506, 758, 505, None, True)
+    w0 = S.Warmup.model_validate(client.get("/api/config/warmup?signal_lag_days=0").json())
+    assert w0.warmup_days == 505 and w0.signal_lag_days == 0
+    wm = S.Warmup.model_validate(client.get("/api/config/warmup?ml=true").json())
+    # ML: universe lead 51 + train_min_days 756 + horizon 20 + lag 1 = 828; + lag 1
+    assert (wm.warmup_days, wm.min_days, wm.ml_days, wm.exact) == (829, 1081, 828, False)
+    assert client.get("/api/config/warmup?signal_lag_days=3").status_code == 422
+
+
+def test_days_floor_follows_the_runs_config(client):
+    assert post(client, days=758).status_code == 202  # 506 + 252
+    got = issues(post(client, days=757))
+    assert "at least 758 (506 warm-up days" in got[("body", "days")]
+    got = issues(post(client, ml=True, days=1080))
+    assert "at least 1081 (829 warm-up days" in got[("body", "days")]
+    assert post(client, ml=True, days=1081).status_code == 202
+    # overrides move the floor: a shorter risk history lowers it
+    assert post(client, days=600, config_overrides={"risk.min_history_days": 126}).status_code == 202

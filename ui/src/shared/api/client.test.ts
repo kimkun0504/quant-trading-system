@@ -32,7 +32,7 @@ describe('api client', () => {
   it('returns the series that were asked for', async () => {
     const s = await api.getRunSeries('20261104T175159Z_944dd5b4', ['nav', 'drawdown']);
     expect(Object.keys(s.series)).toEqual(['nav', 'drawdown']);
-    expect(s.dates).toHaveLength(1000);
-    expect(s.series.nav).toHaveLength(1000);
+    expect(s.dates).toHaveLength(1006);
+    expect(s.series.nav).toHaveLength(1006);
   });
 });

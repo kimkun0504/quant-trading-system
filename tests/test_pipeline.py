@@ -422,3 +422,54 @@ def test_ic_by_fold_groups_sampled_ic_by_block():
     out = ResearchPipeline._ic_by_fold(ic, blocks)
     assert list(out.index) == [d[0], d[30]]  # last block has no finite IC -> dropped
     assert out.iloc[0] == pytest.approx(-0.05) and out.iloc[1] == pytest.approx(0.175)
+
+
+# ----------------------------------------------------------------------------- warm-up (P7)
+def test_estimate_warmup_days_matches_backtest_start():
+    """Without ML the estimate is exact: the first out-of-sample date sits at
+    position 2 * min_history_days + 1 + L of md.dates (505 + L for the defaults)."""
+    from qts.core.config import SystemConfig
+    from qts.data.synthetic import SyntheticSpec, generate
+    from qts.pipeline import ResearchPipeline, estimate_warmup_days
+
+    md = generate(SyntheticSpec(n_stocks=60, n_days=600, seed=0))
+    for lag in (0, 2):
+        cfg = SystemConfig()
+        cfg.universe.top_n_by_mcap = 60
+        cfg.execution.signal_lag_days = lag
+        est = estimate_warmup_days(cfg, use_ml=False)
+        assert est.exact and est.ml_days is None and est.risk_days == 505
+        assert est.days == 505 + lag
+        p = ResearchPipeline(cfg, use_ml=False, ledger_path=None, runs_root=None).fit(md)
+        assert md.dates.get_loc(p.backtest_dates()[0]) == est.days
+
+
+def test_estimate_warmup_days_ml_terms():
+    from qts.core.config import SystemConfig
+    from qts.pipeline import estimate_warmup_days
+
+    cfg = SystemConfig()
+    est = estimate_warmup_days(cfg, use_ml=True)
+    # universe lead max(5, 63 // 2) - 1 + 21 = 51; 51 + 756 + 20 + 1 = 828; + lag 1
+    assert est.ml_days == 828 and est.days == 829 and not est.exact
+    cfg.alpha.train_min_days = 100  # risk term binds again
+    est = estimate_warmup_days(cfg, use_ml=True)
+    assert est.days == 506 and est.exact
+    assert estimate_warmup_days(SystemConfig(), use_ml=False, risk_warmup_days=100).risk_days == 353
+
+
+@pytest.mark.slow
+def test_estimate_warmup_days_ml_is_an_upper_bound():
+    """With ML the estimate is conservative: the measured first out-of-sample date
+    (820 on this market) is at or before it, and within one refresh period."""
+    from qts.core.config import SystemConfig
+    from qts.data.synthetic import SyntheticSpec, generate
+    from qts.pipeline import ResearchPipeline, estimate_warmup_days
+
+    md = generate(SyntheticSpec(n_stocks=60, n_days=1000, seed=0))
+    cfg = SystemConfig()
+    cfg.universe.top_n_by_mcap = 60
+    est = estimate_warmup_days(cfg, use_ml=True)
+    p = ResearchPipeline(cfg, use_ml=True, ledger_path=None, runs_root=None).fit(md)
+    got = md.dates.get_loc(p.backtest_dates()[0])
+    assert est.days - cfg.universe.refresh_days - 5 <= got <= est.days

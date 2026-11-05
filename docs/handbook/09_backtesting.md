@@ -186,12 +186,21 @@ on that day's impact. This treats impact within a streak as fully persistent, wh
 
 **No silent zero cost.** `CostEstimate` raises on missing columns, non-finite or negative costs; a legacy cost model's output goes through `cost_frame`, which raises on unrecognised columns (audit tcost #8).
 
-### Delistings
-A held name whose next close is missing (delisting, permanent halt) would otherwise earn 0 and vanish for free. The simulator instead:
-1. applies `CostConfig.delisting_haircut = -0.30` **against the position's sign**: a long earns −30% and a short earns −30% too (the price is treated as +30%). This is conservative for both. The haircut follows the CRSP-style convention for performance delistings with missing returns (Shumway 1997). The same field is the label haircut (single source);
+### Halts and delistings
+A held name whose next close is missing is either **halted** (prices will come back) or **delisted**. The simulator decides which with the same causal rule as the labels (→ see **Data & universe › Delisting returns**), never by looking at later prices:
+
+- if `md.delisting_dates` covers the name, it is delisted on $t+1$ if and only if the vendor's last trading date is before $t+1$ (a `NaT` or later date means halted);
+- otherwise it is delisted on the first missing day that is $G$ = `AlphaConfig.delisting_gap_days` (63) trading days after its last close, and halted before that.
+
+A **halted** position is frozen at its last price: it earns 0 on each missing day, cannot be traded (it is on the optimiser's no-trade list), keeps its weight, and a frozen short still pays borrow. When a close reappears the return is measured from the last close before the halt, so the whole halt-period move lands on the resumption day. Frozen name-days are counted in `diagnostics["n_halted_name_days"]`; each episode is recorded in `diagnostics["halts"]` as `{ticker, start, end, days, weight, outcome}` with `outcome` = `resumed`, `delisted` or `open` (still halted at the end of the backtest).
+
+A **delisted** name would otherwise earn 0 and vanish for free. The simulator instead:
+1. applies `CostConfig.delisting_haircut = -0.30` **against the position's sign**, relative to its last (frozen) price: a long earns −30% and a short earns −30% too (the price is treated as +30%). This is conservative for both. The haircut follows the CRSP-style convention for performance delistings with missing returns (Shumway 1997). The same field is the label haircut (single source);
 2. force-liquidates the remaining value, $x_{\text{liq}} = -w(1+r)$, at continuous-venue **spread + fees** (no impact, no persistence);
 3. books the liquidation as a trade on decision row $t$, so it appears in `trades`, turnover and costs;
 4. records `{date, ticker, weight, haircut_return, liquidation_usd, cost_usd}` in `diagnostics["delistings"]`; the weight is 0 afterwards.
+
+Without a vendor delisting table a real delisting is therefore held frozen for 63 trading days before the haircut, which delays (but does not remove) the loss; supply `delisting_dates` for real data.
 
 Names with no price at $t$ go on the optimiser's no-trade list, and their weights are carried unchanged.
 
@@ -241,7 +250,7 @@ bt = sim.run(
 
 `dates` must be a subset of `md.dates` with at least two entries; consecutive trading days are assumed (see the borrow note below).
 
-**Diagnostics.** `BacktestResult.diagnostics` holds `solve_log`, `delistings`, `forced_exits`, `n_failed_solves`, `n_no_signal_days`, `n_ineligible_name_days`, `n_out_of_model_name_days` (names outside the risk model still held after a solve, i.e. forced exits in progress), `signal_lag_days`, `venue`, `rebalance_every` and `run_time_sec`. One `solve_log` entry per solve:
+**Diagnostics.** `BacktestResult.diagnostics` holds `solve_log`, `delistings`, `halts`, `n_halted_name_days`, `forced_exits`, `n_failed_solves`, `n_no_signal_days`, `n_ineligible_name_days`, `n_out_of_model_name_days` (names outside the risk model still held after a solve, i.e. forced exits in progress), `signal_lag_days`, `venue`, `rebalance_every` and `run_time_sec`. One `solve_log` entry per solve:
 
 | Field | Meaning |
 |---|---|
@@ -261,7 +270,7 @@ When a number in the summary surprises you, the `solve_log` entry for the day in
 ### Pitfalls & checks
 - The engine stops if NAV ≤ 0 and truncates the results.
 - Borrow is charged once per *step*. If `dates` is a sparse subset (multi-day steps), borrow is under-charged proportionally (audit tcost #19). Run on consecutive trading days.
-- Tests: `test_nav_identity`, `test_rebalance_every_and_drift`, `test_delisting_is_liquidated_and_flagged`, `test_cost_frame_raises_on_unrecognised_or_nan`, `test_simulator_snapshot_is_the_cost_model_snapshot`, `test_run_with_tcost_model_venue_and_persistence`; `tests/test_simulator_handcomputed.py` (zero-cost path, constant-bps costs and borrow, long and short delistings, NAV ≤ 0 stop); `tests/test_audit2_costs_backtest.py::test_simulator_books_exact_streak_increment`, `test_gross_after_borrow_and_breakeven_net_of_borrow`.
+- Tests: `test_nav_identity`, `test_rebalance_every_and_drift`, `test_delisting_is_liquidated_and_flagged`, `test_cost_frame_raises_on_unrecognised_or_nan`, `test_simulator_snapshot_is_the_cost_model_snapshot`, `test_run_with_tcost_model_venue_and_persistence`; `tests/test_simulator_handcomputed.py` (zero-cost path, constant-bps costs and borrow, long and short delistings, halt-then-resume, causal gap-rule delisting, NAV ≤ 0 stop); `tests/test_audit2_costs_backtest.py::test_simulator_books_exact_streak_increment`, `test_gross_after_borrow_and_breakeven_net_of_borrow`.
 
 ### References
 - [Frazzini, Israel & Moskowitz, Trading Costs](https://conference.nber.org/conf_papers/f68262/f68262.pdf)
@@ -510,7 +519,7 @@ OVERALL: FAIL (phase 1)
 [PASS] ic_sign: IC > 0 in 4/5 folds (need >= 0.67)
 [skipped] incremental_ic: not applied (standalone signal)
 [PASS] net_sharpe_delta: net Sharpe by fold (vs zero baseline) >= +0.05 in 6/6 folds (need >= 0.67)
-[PASS] breakeven_cost: breakeven 44.1 bps >= 2x modeled 20.9 bps
+[PASS] breakeven_cost: breakeven 44.1 bps >= 2x modeled 10.5 bps (= 20.9 bps)
 [FAIL] dsr: DSR = 0.704 <= 0.95
 [skipped] pbo: PBO not supplied (no configuration grid run; set pipeline_pbo_configs)
 [PASS] phase_sharpe: phase-1 net Sharpe 0.96 >= 0.3

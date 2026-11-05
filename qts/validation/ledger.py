@@ -47,6 +47,18 @@ at **read** time: records sharing a ``dedup_key`` collapse into the latest one
 empty, ``"unknown"`` or dirty (``...+dirty``): a dirty tree or unknown code may
 differ from the last run in ways nobody recorded.  :meth:`raw_records` returns
 the undeduplicated lines.
+
+Family names and the one-off migration
+--------------------------------------
+``ResearchPipeline`` logs under ``pipeline_phase{p}:{data_hash[:12]}`` (one DSR
+search per phase *and* data set).  Records written before 2026-11-05 carry the
+bare ``pipeline_phase{p}`` (and the earliest ones an empty ``data_hash``), so
+they pool runs on different data into one family.  :meth:`TrialLedger.migrate_family_names`
+(CLI: ``qts ledger migrate``) is the single sanctioned rewrite of the file: it
+renames a bare pipeline family to the new format when the record has a data
+hash and to :data:`LEGACY_FAMILY` otherwise, records the old name in
+``family_migrated_from``, keeps every record (no trial is dropped) and writes a
+backup first.  It is idempotent.
 """
 
 from __future__ import annotations
@@ -57,6 +69,8 @@ import hashlib
 import json
 import math
 import os
+import re
+import shutil
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -93,6 +107,21 @@ def callable_identity(fn: Callable[..., Any] | None) -> str | None:
             payload += (callable_identity(v) if callable(v) else repr(v)).encode()
         name += "#" + hashlib.sha256(payload).hexdigest()[:12]
     return name
+
+
+#: Family of pre-November pipeline records that have no data hash (cannot be keyed).
+LEGACY_FAMILY = "legacy"
+_BARE_PIPELINE_FAMILY = re.compile(r"^pipeline_phase(\d+)$")
+
+
+def migrated_family(rec: dict) -> str | None:
+    """New family of a legacy record (module docstring), or ``None`` if it needs none."""
+    fam = str(rec.get("family") or "")
+    m = _BARE_PIPELINE_FAMILY.match(fam)
+    if not m:
+        return None
+    dh = str(rec.get("data_hash") or "")
+    return f"pipeline_phase{m.group(1)}:{dh[:12]}" if dh else LEGACY_FAMILY
 
 
 def _is_clean_code_version(code_version: str) -> bool:
@@ -224,6 +253,46 @@ class TrialLedger:
             finally:
                 os.close(fd)
         return rec
+
+    def migrate_family_names(self, dry_run: bool = False) -> list[dict]:
+        """One-off rewrite of legacy family names (module docstring).
+
+        Returns one ``{"line", "ts", "old", "new"}`` per changed record.  Unless
+        ``dry_run``, copies the file to ``<path>.bak-<UTC timestamp>`` and replaces
+        it atomically (temp file + ``os.replace``) under the exclusive lock; the
+        record count and every other field are unchanged."""
+        changes: list[dict] = []
+        with self._locked(exclusive=True):
+            with open(self.path) as f:
+                lines = f.readlines()
+            out: list[str] = []
+            for i, line in enumerate(lines):
+                if not line.strip():
+                    out.append(line)
+                    continue
+                rec = json.loads(line)
+                new = migrated_family(rec)
+                if new is None:
+                    out.append(line)
+                    continue
+                old = rec.get("family")
+                changes.append({"line": i + 1, "ts": rec.get("ts"), "old": old, "new": new})
+                rec["family"] = new
+                if rec.get("name") == old:
+                    rec["name"] = new
+                rec["family_migrated_from"] = old
+                out.append(json.dumps(rec, default=str) + "\n")
+            if dry_run or not changes:
+                return changes
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            shutil.copy2(self.path, f"{self.path}.bak-{stamp}")
+            tmp = f"{self.path}.tmp-{os.getpid()}"
+            with open(tmp, "w") as f:
+                f.writelines(out)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self.path)
+        return changes
 
     # ------------------------------------------------------------------ queries
     def n_trials(self, family: str | None = None) -> int:

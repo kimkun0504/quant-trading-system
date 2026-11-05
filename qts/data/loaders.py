@@ -17,6 +17,10 @@ Contents
 * Fama-French 48 industries from SIC: ``sic_to_ff48``, ``ff48_from_sic_series``.
 * Sharadar SF1 -> PIT fundamentals keyed on ``datekey`` (filing date):
   ``sharadar_sf1_to_pit_fundamentals``.
+* Norgate Data -> ParquetStore: ``norgate_frames_to_store`` (offline mapping of
+  adjusted / unadjusted price frames and delisting dates to store datasets,
+  tested) and ``norgate_to_store`` (fetch stub; needs the ``norgatedata``
+  package, raises ``ImportError`` without it).
 * Generic PIT helper ``pit_forward_fill`` (value visible from its
   availability date onward, never before).
 """
@@ -702,3 +706,122 @@ def sharadar_sf1_to_pit_fundamentals(sf1_df: pd.DataFrame, dimension: str = "ART
         if "pe" in out:
             out["earnings_yield"] = 1.0 / out["pe"].replace(0, np.nan)
     return out
+
+
+# =============================================================================
+# Norgate Data -> ParquetStore (prices, unadjusted prices, volume, delisting dates)
+# =============================================================================
+#: Norgate databases holding listed and delisted US equities.
+NORGATE_DATABASES = ("US Equities", "US Equities Delisted")
+
+
+def norgate_frames_to_store(store, adjusted: Dict[str, pd.DataFrame], unadjusted: Dict[str, pd.DataFrame],
+                            delisted: Iterable[str] = (), mode: str = "replace") -> Dict[str, object]:
+    """Write per-symbol Norgate price frames into a :class:`qts.data.store.ParquetStore`.
+
+    Pure function (no ``norgatedata`` import): ``adjusted`` / ``unadjusted`` map a
+    symbol to the DataFrame ``norgatedata.price_timeseries`` returns (DatetimeIndex,
+    columns ``Close`` and ``Volume``) with total-return adjustment and no
+    adjustment respectively; ``delisted`` lists the symbols from the
+    ``"US Equities Delisted"`` database.  Mapping:
+
+    ==========================  ============================================
+    store dataset               source
+    ==========================  ============================================
+    ``prices_close``            ``Close`` of the total-return adjusted frame
+    ``prices_close_raw``        ``Close`` of the unadjusted frame (as traded)
+    ``prices_volume``           ``Volume`` of the unadjusted frame (actual
+                                shares traded, not split-adjusted)
+    ``delisting_dates``         delisted symbols: last date of their price
+                                series; every other symbol ``NaT`` (alive),
+                                so all fetched symbols are *covered*
+    ==========================  ============================================
+
+    Norgate's delisted symbols carry a suffix (``XYZ-201203``) so a reused ticker
+    never merges two companies.  Not written here (other sources):
+    ``shares_outstanding`` and ``market_cap`` (Sharadar SF1 / DAILY), ``industry``
+    and ``industry_history`` (SIC -> FF48, :func:`ff48_from_sic_series`),
+    fundamentals (:func:`sharadar_sf1_to_pit_fundamentals`).
+
+    Returns ``{"n_symbols", "n_delisted", "start", "end"}``.
+    """
+    syms = sorted(set(adjusted) & set(unadjusted))
+    if not syms:
+        raise ValueError("norgate_frames_to_store: no symbol has both an adjusted and an unadjusted frame")
+
+    def wide(frames: Dict[str, pd.DataFrame], col: str) -> pd.DataFrame:
+        cols = {}
+        for s in syms:
+            f = frames[s]
+            if col not in f.columns:
+                raise KeyError(f"norgate frame for {s} has no {col!r} column (got {list(f.columns)})")
+            cols[s] = pd.to_numeric(f[col], errors="coerce")
+        out = pd.DataFrame(cols).sort_index()
+        out.index = pd.DatetimeIndex(out.index).tz_localize(None).normalize()
+        out.index.name = "date"
+        out.columns.name = "ticker"
+        return out
+
+    close = wide(adjusted, "Close")
+    close_raw = wide(unadjusted, "Close").reindex(close.index)
+    volume = wide(unadjusted, "Volume").reindex(close.index)
+    dead = set(delisted) & set(syms)
+    last = close.apply(lambda s: s.last_valid_index())
+    dd = pd.DataFrame({
+        "ticker": syms,
+        "delisting_date": pd.to_datetime([last[s] if s in dead else pd.NaT for s in syms]),
+    })
+    store.write_wide("prices_close", close, mode=mode)
+    store.write_wide("prices_close_raw", close_raw, mode=mode)
+    store.write_wide("prices_volume", volume, mode=mode)
+    store.write_long("delisting_dates", dd, mode="replace")
+    return {"n_symbols": len(syms), "n_delisted": len(dead),
+            "start": close.index.min(), "end": close.index.max()}
+
+
+def norgate_to_store(store, symbols: Optional[Sequence[str]] = None, start: str = "1990-01-01",
+                     end: Optional[str] = None, include_delisted: bool = True,
+                     mode: str = "replace") -> Dict[str, object]:
+    """Fetch US equities from a local Norgate Data install and write them to ``store``.
+
+    Requires the ``norgatedata`` package (Windows, with Norgate Data Updater
+    running and a Platinum/Diamond subscription for delisted securities); raises
+    :class:`ImportError` with install instructions when it is missing.  For each
+    symbol (``symbols``, default: every symbol of :data:`NORGATE_DATABASES`, the
+    delisted database only with ``include_delisted``) it requests two daily
+    series with ``norgatedata.price_timeseries`` -- total-return adjusted and
+    unadjusted, no padding -- and hands them to :func:`norgate_frames_to_store`
+    (dataset mapping documented there).
+
+    Status: the offline mapping (:func:`norgate_frames_to_store`) is unit-tested;
+    this fetch layer is a thin stub written against the documented
+    ``norgatedata`` API and has not been run against a licensed install in this
+    repository -- check the first load (survivorship_check, delisting count,
+    a few prices against the vendor's charts) before trusting it.
+    """
+    try:
+        import norgatedata as nd  # type: ignore[import-not-found]
+    except ImportError as e:
+        raise ImportError(
+            "norgate_to_store needs the 'norgatedata' package and a running Norgate Data Updater "
+            "(Windows): pip install norgatedata.  Without it, export the series yourself and call "
+            "qts.data.loaders.norgate_frames_to_store(store, adjusted, unadjusted, delisted)."
+        ) from e
+    delisted_db: List[str] = list(nd.database_symbols(NORGATE_DATABASES[1])) if include_delisted else []
+    if symbols is None:
+        symbols = list(nd.database_symbols(NORGATE_DATABASES[0])) + delisted_db
+    adj_t = nd.StockPriceAdjustmentType.TOTALRETURN
+    raw_t = nd.StockPriceAdjustmentType.NONE
+    pad = nd.PaddingType.NONE
+    adjusted: Dict[str, pd.DataFrame] = {}
+    unadjusted: Dict[str, pd.DataFrame] = {}
+    for s in symbols:
+        kw = dict(padding_setting=pad, start_date=start, timeseriesformat="pandas-dataframe")
+        if end is not None:
+            kw["end_date"] = end
+        a = nd.price_timeseries(s, stock_price_adjustment_setting=adj_t, **kw)
+        u = nd.price_timeseries(s, stock_price_adjustment_setting=raw_t, **kw)
+        if a is None or u is None or len(a) == 0:
+            continue
+        adjusted[s], unadjusted[s] = a, u
+    return norgate_frames_to_store(store, adjusted, unadjusted, delisted=delisted_db, mode=mode)

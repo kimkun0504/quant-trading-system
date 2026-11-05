@@ -121,6 +121,26 @@ class MarketData:
         e = self.eligible.reindex(index=alive.index, columns=alive.columns)
         return e.fillna(False).astype(bool) & alive
 
+    def delisting_positions(self) -> np.ndarray:
+        """Per ticker: index position in ``dates`` of the vendor's last trading
+        date (``delisting_dates``).  ``inf`` = covered and known not delisted
+        (``NaT``); ``nan`` = not covered (the causal gap rule
+        ``AlphaConfig.delisting_gap_days`` applies).  Shared by the label builder
+        (:mod:`qts.alpha.targets`) and the simulator so both classify a missing
+        close the same way."""
+        n = len(self.tickers)
+        out = np.full(n, np.nan)
+        dd_src = self.delisting_dates
+        if dd_src is None:
+            return out
+        dd = pd.to_datetime(dd_src.reindex(self.tickers))
+        covered = np.asarray(self.tickers.isin(dd_src.index))
+        known = dd.notna().to_numpy()
+        pos = self.dates.searchsorted(pd.DatetimeIndex(dd[known]), side="right") - 1
+        out[covered] = np.inf
+        out[np.flatnonzero(known)] = pos
+        return out
+
     @property
     def returns(self) -> Wide:
         """Simple total returns from the *adjusted* close."""

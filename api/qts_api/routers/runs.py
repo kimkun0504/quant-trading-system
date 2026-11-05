@@ -9,8 +9,9 @@ from qts.core.manifest import git_info, new_run_id
 
 from qts_api import schemas as S
 from qts_api.deps import get_jobs, get_registry, get_settings
-from qts_api.problems import Problem
+from qts_api.problems import Problem, summarize
 from qts_api.routers._common import problems
+from qts_api.routers.config import warmup_info
 from qts_api.services.config_schema import ConfigError, validate_overrides
 from qts_api.services.jobs import JobManager, QueueFull, default_label
 from qts_api.services.registry import RUN_ID_MAX_LEN, RunNotFound, RunRegistry, RunUnreadable, valid_run_id
@@ -184,13 +185,25 @@ def launch_run(
         issues += [{"loc": loc, "msg": msg, "type": t} for loc, msg, t in e.issues]
         cfg = None
     if issues or cfg is None:
-        from qts_api.problems import summarize
-
         raise Problem(422, summarize(issues), type_="validation-error", title="Invalid run request", errors=issues)
     cfg.seed = body.seed
     cfg.execution.signal_lag_days = body.signal_lag_days
     if body.kind == "synthetic":
         cfg.universe.top_n_by_mcap = min(cfg.universe.top_n_by_mcap, body.stocks)
+        # P7: the floor is the run's own effective warm-up plus one year
+        wu = warmup_info(cfg, body.ml)
+        if body.days < wu["min_days"]:
+            issue = {
+                "loc": ["body", "days"],
+                "msg": (
+                    f"days must be at least {wu['min_days']} ({wu['warmup_days']} warm-up days "
+                    f"for this configuration plus one year)"
+                ),
+                "type": "value_error",
+            }
+            raise Problem(
+                422, summarize([issue]), type_="validation-error", title="Invalid run request", errors=[issue]
+            )
     cfg.validate()
     config_hash = cfg.hash()
     run_id = new_run_id(config_hash)

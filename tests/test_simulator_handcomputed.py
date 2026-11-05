@@ -14,14 +14,21 @@ Simulator semantics pinned here (``qts/backtest/simulator.py``, read 2026-11-04)
 * ``nav_{t+1} = nav_t * (1 + w_post . r_{t+1}) - costs_t``; ``gross = w_post . r``,
   ``net = nav_{t+1} / nav_t - 1``; ``turnover_t = sum |x|``;
 * drift: ``w_pre_{t+1} = w_post * (1 + r_{t+1}) * nav_t / nav_{t+1}``;
-* delisting (held name with NaN close on ``t+1``): its return on ``t+1`` is
+* a held name with NaN close on ``t+1`` is a *delisting* when
+  ``md.delisting_dates`` says its last trading date is before ``t+1``, or (name
+  not covered) when ``t+1`` is ``cfg.alpha.delisting_gap_days`` trading days
+  after its last close; otherwise it is *halted*.
+* delisting: its return on ``t+1`` is
   ``cfg.cost.delisting_haircut * sign(w)`` (default -0.30: a loss for longs
   *and* shorts), the residual value ``x_liq = -w * (1 + haircut_ret)`` is
   booked as an extra trade on row ``t`` (counted in trades / turnover), priced
   by ``estimate(x_liq * nav_t, venue="continuous")`` with the **impact column
   zeroed** (spread + fees only), and the name's drifted weight is set to 0.
-  A name with no price on ``t`` goes on ``no_trade`` and its ``w_post`` is
-  forced to ``w_pre`` (here 0) whatever the optimizer returns.
+* halt: the position is frozen at its last price (return 0 per missing day,
+  weight carried); on resumption the return is measured from the last close
+  before the halt.
+* A name with no price on ``t`` goes on ``no_trade`` and its ``w_post`` is
+  forced to ``w_pre`` whatever the optimizer returns.
 """
 
 from __future__ import annotations
@@ -66,13 +73,22 @@ def _lag0_config() -> SystemConfig:
     return cfg
 
 
-def make_md(close: dict | None = None) -> MarketData:
+def make_md(close: dict | None = None, delisting_dates: dict | None = None) -> MarketData:
     close_df = pd.DataFrame(close or CLOSE, index=DATES)[list(TICKERS)]
     close_df.columns = TICKERS
     vol = pd.DataFrame(1e6, index=DATES, columns=TICKERS)
     cap = close_df * 1e8
+    dd = None
+    if delisting_dates is not None:  # vendor table covering every ticker; NaT = alive
+        dd = pd.Series(pd.NaT, index=TICKERS, dtype="datetime64[ns]")
+        for k, v in delisting_dates.items():
+            dd[k] = v
     md = MarketData(
-        close=close_df, volume=vol, market_cap=cap, industry=pd.Series(["X", "Y", "X"], index=TICKERS)
+        close=close_df,
+        volume=vol,
+        market_cap=cap,
+        industry=pd.Series(["X", "Y", "X"], index=TICKERS),
+        delisting_dates=dd,
     )
     md.validate()
     return md
@@ -155,10 +171,12 @@ def alpha_fn(t) -> AlphaOutput:
     return AlphaOutput(date=t, score=z, expected_return=z, horizon_days=20, half_life_days=60.0)
 
 
-def run(cost, targets, md=None):
+def run(cost, targets, md=None, gap_days: int | None = None):
     md = md or make_md()
     cfg = SystemConfig()
     cfg.execution.signal_lag_days = 0  # mechanics test: trade on the signal date's close
+    if gap_days is not None:
+        cfg.alpha.delisting_gap_days = gap_days
     opt = PresetOptimizer(targets)
     res = DailyBarSimulator(cfg, cost).run(md, DATES, alpha_fn, risk_fn, opt, nav0=NAV0)
     return res, opt, cfg
@@ -295,11 +313,13 @@ TARGETS_CONST = dict.fromkeys(DATES[:4], W_LS)
 
 
 def test_delisting_long_haircut_and_liquidation_cost():
-    """C (long .25) has no close on d3 and d4 (index 3 = 'day 4')."""
+    """C (long .25) has no close on d3 and d4 (index 3 = 'day 4'); the vendor
+    delisting table says its last trading date is d2, so the gap is a delisting
+    decided on d3 (no waiting for the causal gap rule)."""
     close = {k: list(v) for k, v in CLOSE.items()}
     close["C"][3] = close["C"][4] = np.nan
     cost = bps_model()
-    res, opt, cfg = run(cost, TARGETS_CONST, make_md(close))
+    res, opt, cfg = run(cost, TARGETS_CONST, make_md(close, {"C": DATES[2]}))
     h = cfg.cost.delisting_haircut
     assert h == -0.30
     w = np.array(W_LS)
@@ -354,14 +374,16 @@ def test_delisting_long_haircut_and_liquidation_cost():
     assert ev["liquidation_usd"] == pytest.approx(0.175 * nav2, rel=NAV_RTOL)
     assert ev["cost_usd"] == pytest.approx(c2_liq, rel=NAV_RTOL)
     assert res.summary()["n_delistings"] == 1
+    assert res.diagnostics["halts"] == [] and res.diagnostics["n_halted_name_days"] == 0
 
 
 def test_delisting_short_haircut_is_a_loss():
-    """B (short -.25) has no close on d3 and d4: the haircut is applied *against*
-    the position's sign (r = -0.30 * sign(-.25) = +0.30), i.e. a loss for the short."""
+    """B (short -.25) has no close on d3 and d4 (vendor last trading date d2): the
+    haircut is applied *against* the position's sign (r = -0.30 * sign(-.25) =
+    +0.30), i.e. a loss for the short."""
     close = {k: list(v) for k, v in CLOSE.items()}
     close["B"][3] = close["B"][4] = np.nan
-    res, opt, _ = run(bps_model(), TARGETS_CONST, make_md(close))
+    res, opt, _ = run(bps_model(), TARGETS_CONST, make_md(close, {"B": DATES[2]}))
     w = np.array(W_LS)
     nav1 = NAV0 * 1.0625 - 825.0
     w_pre1 = np.array([0.55, -0.25, 0.2625]) * NAV0 / nav1
@@ -388,6 +410,103 @@ def test_delisting_short_haircut_is_a_loss():
     assert ev["ticker"] == "B" and ev["haircut_return"] == pytest.approx(0.30)
     assert ev["liquidation_usd"] == pytest.approx(0.325 * nav2, rel=NAV_RTOL)
     assert opt.calls[3]["no_trade"] == ["B"]
+
+
+# ----------------------------------------------------------------------------- halts
+def _d0_d1_baseline():
+    """NAV and drifted book through d2 for TARGETS_CONST (C's d2 return is 0 in
+    the base closes, so a C halt starting on d2 or d3 leaves these unchanged)."""
+    c0 = 8e-4 * NAV0 + 1e-4 * 0.25 * NAV0  # 825
+    nav1 = NAV0 * 1.0625 - c0
+    w_pre1 = np.array([0.55, -0.25, 0.2625]) * NAV0 / nav1
+    x1 = np.array(W_LS) - w_pre1
+    c1 = 8e-4 * np.abs(x1).sum() * nav1 + 1e-4 * 0.25 * nav1
+    nav2 = nav1 * 0.925 - c1  # d2 gross: .5*(-.1) + (-.25)*(.1) + .25*0 = -.075
+    return nav1, nav2
+
+
+@pytest.mark.parametrize("vendor", [None, {"C": pd.NaT}], ids=["causal-rule", "vendor-NaT"])
+def test_halt_then_resume_is_frozen_not_delisted(vendor):
+    """C (long .25) has no close on d2 and d3 and resumes on d4 at 23.1.  Not a
+    delisting (gap 2 < G = 63, or the vendor table says alive): the position is
+    frozen at 21 (return 0 on d2 and d3, no trade, still weighted), and the d4
+    return is 23.1 / 21 - 1 = +10% from the last close before the halt."""
+    close = {k: list(v) for k, v in CLOSE.items()}
+    close["C"][2] = close["C"][3] = np.nan
+    res, opt, _ = run(bps_model(), TARGETS_CONST, make_md(close, vendor))
+    nav1, nav2 = _d0_d1_baseline()
+    # d2: C has no price -> no_trade, w_post_C = w_pre_C = .25 * nav1 / nav2 (drift with r_C = 0)
+    w2c = 0.25 * nav1 / nav2
+    w2 = np.array([0.5, -0.25, w2c])
+    x2 = w2 - np.array([0.45, -0.275, 0.25]) * nav1 / nav2
+    assert x2[2] == 0.0
+    c2 = 8e-4 * np.abs(x2).sum() * nav2 + 1e-4 * 0.25 * nav2  # no liquidation cost
+    # d3 returns: A 0, B -10%, C frozen 0 -> gross = (-.25)(-.1) = .025
+    nav3 = nav2 * 1.025 - c2
+    # d3: C still has no price -> frozen again: w_post_C = w2c * nav2 / nav3 = .25 * nav1 / nav3
+    w3c = 0.25 * nav1 / nav3
+    w3 = np.array([0.5, -0.25, w3c])
+    x3 = w3 - np.array([0.5, -0.225, w2c]) * nav2 / nav3
+    c3 = 8e-4 * np.abs(x3).sum() * nav3 + 1e-4 * 0.25 * nav3
+    # d4 returns: A +10%, B 0, C 23.1/21 - 1 = +10% (whole halt-period move)
+    g4 = 0.5 * 0.10 + w3c * 0.10
+    nav4 = nav3 * (1 + g4) - c3
+
+    np.testing.assert_allclose(res.nav.to_numpy(), [NAV0, nav1, nav2, nav3, nav4], rtol=NAV_RTOL, atol=0)
+    np.testing.assert_allclose(
+        res.returns["gross"].to_numpy(), [0.0625, -0.075, 0.025, g4], atol=ATOL, rtol=0
+    )
+    np.testing.assert_allclose(res.weights.to_numpy()[2:], [w2, w3], atol=ATOL, rtol=0)
+    np.testing.assert_allclose(res.trades.to_numpy()[2:], [x2, x3], atol=ATOL, rtol=0)
+    np.testing.assert_allclose(res.costs["total"].to_numpy()[2:], [c2, c3], rtol=NAV_RTOL, atol=1e-9)
+    assert opt.calls[2]["no_trade"] == ["C"] and opt.calls[3]["no_trade"] == ["C"]
+    assert res.diagnostics["delistings"] == []
+    assert res.diagnostics["n_halted_name_days"] == 2
+    (ep,) = res.diagnostics["halts"]
+    assert ep["ticker"] == "C" and ep["outcome"] == "resumed" and ep["days"] == 2
+    assert ep["start"] == DATES[2] and ep["end"] == DATES[4] and ep["weight"] == pytest.approx(0.25)
+
+
+def test_causal_gap_rule_delists_after_g_days():
+    """C (long .25) has no close on d3 and d4, no vendor table, G = 2.  On d3 the
+    gap is 1 day (< G): frozen.  On d4 the gap reaches 2 = G: delisted, the -30%
+    haircut is applied to the frozen price and the rest is liquidated on row d3."""
+    close = {k: list(v) for k, v in CLOSE.items()}
+    close["C"][3] = close["C"][4] = np.nan
+    res, opt, _ = run(bps_model(), TARGETS_CONST, make_md(close), gap_days=2)
+    nav1, nav2 = _d0_d1_baseline()
+    # d2: normal rebalance back to W_LS
+    x2 = np.array(W_LS) - np.array([0.45, -0.275, 0.25]) * nav1 / nav2
+    c2 = 8e-4 * np.abs(x2).sum() * nav2 + 1e-4 * 0.25 * nav2
+    # d3 returns: A 0, B -10%, C frozen (gap 1) -> gross = .025, no liquidation
+    nav3 = nav2 * 1.025 - c2
+    # d3: C has no price -> no_trade, frozen weight .25 * nav2 / nav3
+    w3c = 0.25 * nav2 / nav3
+    x3 = np.array([0.5, -0.25, w3c]) - np.array([0.5, -0.225, 0.25]) * nav2 / nav3
+    # d4: gap 2 = G -> delisted: r_C = -.30; x_liq_C = -w3c * .70 (spread 5 + fees 1 bps)
+    x_liq = np.array([0.0, 0.0, -0.7 * w3c])
+    c3 = 8e-4 * np.abs(x3).sum() * nav3 + 1e-4 * 0.25 * nav3 + 6e-4 * 0.7 * w3c * nav3
+    g4 = 0.5 * 0.10 + w3c * (-0.30)
+    nav4 = nav3 * (1 + g4) - c3
+
+    np.testing.assert_allclose(res.nav.to_numpy(), [NAV0, nav1, nav2, nav3, nav4], rtol=NAV_RTOL, atol=0)
+    np.testing.assert_allclose(
+        res.returns["gross"].to_numpy(), [0.0625, -0.075, 0.025, g4], atol=ATOL, rtol=0
+    )
+    np.testing.assert_allclose(res.trades.to_numpy()[3], x3 + x_liq, atol=ATOL, rtol=0)
+    assert res.trades.iloc[2, 2] == pytest.approx(x2[2], abs=ATOL)  # d2: no liquidation yet
+    assert opt.calls[3]["no_trade"] == ["C"]  # frozen on d3: no trading
+    (ev,) = res.diagnostics["delistings"]
+    assert ev["date"] == DATES[4] and ev["ticker"] == "C"
+    assert ev["weight"] == pytest.approx(w3c) and ev["haircut_return"] == pytest.approx(-0.30)
+    assert ev["liquidation_usd"] == pytest.approx(0.7 * w3c * nav3, rel=NAV_RTOL)
+    assert res.diagnostics["n_halted_name_days"] == 1
+    (ep,) = res.diagnostics["halts"]
+    assert ep["outcome"] == "delisted" and ep["start"] == DATES[3] and ep["end"] == DATES[4]
+    # with the default G = 63 the same gap is still a halt at the end of the panel
+    res63, _, _ = run(bps_model(), TARGETS_CONST, make_md(close))
+    assert res63.diagnostics["delistings"] == []
+    assert [e["outcome"] for e in res63.diagnostics["halts"]] == ["open"]
 
 
 def test_nav_nonpositive_stops_early():

@@ -18,11 +18,20 @@ export const CONFIG_SCHEMA: ConfigSchema = {
           minimum: 0,
           maximum: 10,
         },
+        risk_aversion_mode: {
+          type: 'string',
+          title: 'Risk aversion mode',
+          description:
+            '"target_vol": gamma is searched per solve so the book\u2019s ex-ante vol hits target_vol_annual (capped books accepted; vol_target_mode unused). "fixed": gamma = risk_aversion, target enforced by vol_target_mode.',
+          default: 'target_vol',
+          enum: ['target_vol', 'fixed'],
+        },
         risk_aversion: {
           type: 'number',
           title: 'Risk aversion',
-          description: 'Weight on portfolio variance in the objective.',
-          default: 10.0,
+          description:
+            'Annual risk aversion gamma on portfolio variance. Used as-is when risk_aversion_mode is "fixed" or no vol target is set; in "target_vol" mode gamma is searched per solve and this value is only the fallback.',
+          default: 2.0,
           minimum: 0,
           maximum: 100,
         },

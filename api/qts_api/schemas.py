@@ -317,7 +317,14 @@ class LaunchRunRequest(_Model):
     ml: bool
     phase: Phase
     stocks: int = Field(ge=50, le=3000)
-    days: int = Field(ge=764, le=6000, description="512 warm-up days plus at least one year")
+    days: int = Field(
+        ge=300,
+        le=6000,
+        description=(
+            "synthetic market length: at least the effective warm-up (GET /api/config/warmup) "
+            "plus one year; checked against the run's own config at launch"
+        ),
+    )
     seed: int = Field(ge=0, le=2**31 - 1)
     signal_lag_days: SignalLag
     config_overrides: dict[str, Union[bool, int, float, str]] = Field(  # noqa: UP007
@@ -335,6 +342,22 @@ class LaunchRunRequest(_Model):
         if v is not None and any(ord(ch) < 32 or 0x7F <= ord(ch) < 0xA0 for ch in v):
             raise ValueError("label must not contain control characters")
         return v
+
+
+class Warmup(_Model):
+    """Effective warm-up of a run (``qts.pipeline.estimate_warmup_days``): trading
+    days of the market panel used before the first out-of-sample backtest date."""
+
+    ml: bool
+    signal_lag_days: int
+    warmup_days: int = Field(description="max(risk_days, ml_days) + signal_lag_days")
+    min_days: int = Field(description="warmup_days + one year (trading_days_per_year): the launch floor")
+    risk_days: int = Field(description="risk exposures warm-up + min_history_days of factor returns")
+    ml_days: int | None = Field(
+        description="universe lead + alpha.train_min_days + embargo (upper bound); null without ML"
+    )
+    exact: bool = Field(description="true when the (exact) risk term binds")
+    trading_days_per_year: int
 
 
 class LaunchRunResponse(_Model):

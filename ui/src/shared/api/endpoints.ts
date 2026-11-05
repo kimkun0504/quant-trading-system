@@ -15,6 +15,7 @@ import type {
   RunId,
   RunSeriesName,
   RunSummary,
+  Warmup,
 } from './schema';
 
 /** One function per endpoint; the only place that knows URL shapes (relative to API_BASE_URL). */
@@ -42,6 +43,12 @@ export const api = {
   getLedger: (signal?: AbortSignal) => apiGet<Ledger>('/ledger', undefined, signal),
   getConfigSchema: (signal?: AbortSignal) =>
     apiGet<ConfigSchema>('/config/schema', undefined, signal),
+  getWarmup: (ml: boolean, signalLagDays: 0 | 1, signal?: AbortSignal) =>
+    apiGet<Warmup>(
+      '/config/warmup',
+      { ml: String(ml), signal_lag_days: String(signalLagDays) },
+      signal,
+    ),
   cancelJob: (jobId: string) => apiDelete<Job>(`/jobs/${encodeURIComponent(jobId)}`),
   getHealth: (signal?: AbortSignal) => apiGet<Health>('/health', undefined, signal),
 };

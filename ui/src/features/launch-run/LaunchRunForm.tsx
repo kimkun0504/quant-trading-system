@@ -3,10 +3,10 @@ import type { ReactNode, SyntheticEvent } from 'react';
 import type { Phase, RunKind } from '@/shared/api';
 import { groupFields, overrideFields } from './schemaFields';
 import type { OverrideField } from './schemaFields';
-import { useConfigSchema, useLaunchRun } from '@/entities/run';
+import { useConfigSchema, useLaunchRun, useWarmup } from '@/entities/run';
 import { Button } from '@/shared/ui';
 import { ErrorState } from '@/shared/ui/ErrorState';
-import { DEFAULT_VALUES, toRequest, validateLaunch, WARMUP_DAYS } from './validation';
+import { DEFAULT_VALUES, toRequest, validateLaunch } from './validation';
 import type { FieldName, LaunchErrors, LaunchFormValues } from './validation';
 import styles from './LaunchRunForm.module.css';
 
@@ -28,26 +28,28 @@ export function LaunchRunForm({
   const summaryRef = useRef<HTMLDivElement | null>(null);
   const schema = useConfigSchema();
   const launch = useLaunchRun();
+  const warmup = useWarmup(values.ml, values.signal_lag_days === '0' ? 0 : 1);
   const fields = useMemo(() => overrideFields(schema.data), [schema.data]);
   const groups = useMemo(() => groupFields(fields), [fields]);
+  const validate = (v: LaunchFormValues) => validateLaunch(v, fields, warmup.data);
   const idBase = useId();
   const fid = (name: string) => `${idBase}-${name.replace(/[^a-z0-9]/gi, '-')}`;
 
   const set = <K extends keyof LaunchFormValues>(k: K, v: LaunchFormValues[K]) => {
     const next = { ...values, [k]: v };
     setValues(next);
-    if (submitted) setErrors(validateLaunch(next, fields));
+    if (submitted) setErrors(validate(next));
   };
   const setOverride = (path: string, v: string | boolean) => {
     const next = { ...values, overrides: { ...values.overrides, [path]: v } };
     setValues(next);
-    if (submitted) setErrors(validateLaunch(next, fields));
+    if (submitted) setErrors(validate(next));
   };
 
   const onSubmit = (e: SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
     setSubmitted(true);
-    const errs = validateLaunch(values, fields);
+    const errs = validate(values);
     setErrors(errs);
     if (Object.keys(errs).length) {
       requestAnimationFrame(() => summaryRef.current?.focus());
@@ -111,7 +113,7 @@ export function LaunchRunForm({
           const phase = Number(v) as Phase;
           const next = { ...values, phase, ml: phase === 2 ? true : values.ml };
           setValues(next);
-          if (submitted) setErrors(validateLaunch(next, fields));
+          if (submitted) setErrors(validate(next));
         }}
         options={[
           {
@@ -160,7 +162,11 @@ export function LaunchRunForm({
           label="Days of market data"
           value={values.days}
           onChange={(v) => set('days', v)}
-          hint={`The first ${WARMUP_DAYS} are warm-up for the risk and alpha models.`}
+          hint={
+            warmup.data
+              ? `The first ${warmup.data.warmup_days} are warm-up for the risk${values.ml ? ' and ML' : ''} models; use at least ${warmup.data.min_days.toLocaleString('en-US')}.`
+              : 'The first days are warm-up for the risk and alpha models.'
+          }
           error={errors.days}
           describedBy={describedBy('days', `${fid('days')}-hint`)}
         />

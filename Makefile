@@ -11,8 +11,8 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
-install: ## Editable install with dev extras and git hooks
-	$(PIP) install -e ".[dev]"
+install: ## Editable install with dev + data extras and git hooks
+	$(PIP) install -e ".[dev,data]"
 	pre-commit install --install-hooks || true
 
 lint: ## Ruff lint (no fixes)

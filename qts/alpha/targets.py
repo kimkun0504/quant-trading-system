@@ -109,19 +109,8 @@ DEFAULT_DELISTING_GAP_DAYS = AlphaConfig().delisting_gap_days
 
 def _delist_pos(md: MarketData) -> np.ndarray:
     """Per ticker: position of the known last trading date (``inf`` = known
-    alive, ``nan`` = not covered -> causal rule)."""
-    n = len(md.tickers)
-    out = np.full(n, np.nan)
-    dd = md.delisting_dates
-    if dd is None:
-        return out
-    dd = pd.to_datetime(dd.reindex(md.tickers))
-    covered = np.asarray(md.tickers.isin(md.delisting_dates.index))
-    known = dd.notna().to_numpy()
-    pos = md.dates.searchsorted(pd.DatetimeIndex(dd[known]), side="right") - 1
-    out[covered] = np.inf
-    out[np.flatnonzero(known)] = pos
-    return out
+    alive, ``nan`` = not covered -> causal rule); :meth:`MarketData.delisting_positions`."""
+    return md.delisting_positions()
 
 
 def _forward_returns_resolved(

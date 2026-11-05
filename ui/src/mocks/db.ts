@@ -1,5 +1,5 @@
 import type { Job, LaunchRunRequest, Ledger, RunSummary } from '@/shared/api';
-import { generateRun } from './fixtures/generate';
+import { generateRun, ledgerFamily, mockDataHash, mockWarmup } from './fixtures/generate';
 import type { GeneratedRun, RunSpec } from './fixtures/generate';
 import { seedLedger } from './fixtures/ledger';
 import { FAILED_SPEC, RUNNING_SPEC, SEED_SPECS } from './fixtures/runs';
@@ -56,7 +56,7 @@ function stageMessage(progress: number, spec: RunSpec): string {
   let msg = STAGES[0]?.[1] ?? '';
   for (const [at, m] of STAGES) if (progress >= at) msg = m;
   if (msg === 'Running the backtest') {
-    const n = spec.days - 512;
+    const n = spec.days - mockWarmup(spec.use_ml, spec.signal_lag_days).warmup_days;
     const day = Math.round(((progress - 0.35) / 0.55) * n);
     return `${msg}: day ${day} of ${n}`;
   }
@@ -73,7 +73,7 @@ export function launch(req: LaunchRunRequest, now = Date.now()): Job {
   const lagZero = req.signal_lag_days === 0;
   const base = 0.35 + ((req.seed * 37) % 60) / 100 - (req.ml ? 0.05 : 0);
   const sharpeNet = lagZero ? 2.45 : base;
-  const family = `pipeline_phase${req.phase}`;
+  const family = ledgerFamily(req.phase, mockDataHash(req));
   const nTrials = db.ledger.trials.filter((t) => t.family === family).length + 1;
   const spec: RunSpec = {
     id,
@@ -121,8 +121,8 @@ export function pollJob(jobId: string, now = Date.now()): Job | undefined {
     db.ledger.trials.push({
       id: `trial-${db.ledger.trials.length + 1}`,
       ts: rec.spec.created_at,
-      name: `pipeline_phase${rec.spec.phase}`,
-      family: `pipeline_phase${rec.spec.phase}`,
+      name: ledgerFamily(rec.spec.phase, done.summary.data_hash),
+      family: ledgerFamily(rec.spec.phase, done.summary.data_hash),
       config_hash: done.summary.config_hash,
       data_hash: done.summary.data_hash,
       sharpe_annual: s.sharpe_net,

@@ -288,6 +288,22 @@ export interface LaunchRunRequest {
   venue?: Venue | null;
 }
 
+/** `GET /api/config/warmup` (`qts.pipeline.estimate_warmup_days`). */
+export interface Warmup {
+  ml: boolean;
+  signal_lag_days: number;
+  /** max(risk_days, ml_days) + signal_lag_days. */
+  warmup_days: number;
+  /** warmup_days + one year: the launch floor for `days`. */
+  min_days: number;
+  risk_days: number;
+  /** Upper bound; null without ML. */
+  ml_days: number | null;
+  /** True when the (exact) risk term binds. */
+  exact: boolean;
+  trading_days_per_year: number;
+}
+
 export interface LaunchRunResponse {
   job_id: string;
   run_id: RunId;

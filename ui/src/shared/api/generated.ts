@@ -176,6 +176,28 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/config/warmup': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Effective warm-up for the default config
+     * @description Derived from ``risk.min_history_days``, ``alpha.train_min_days`` (with ML),
+     *     ``alpha.horizon_days`` and the signal lag of the default ``SystemConfig``.  A
+     *     launch with ``config_overrides`` is checked against its own config.
+     */
+    get: operations['get_warmup_api_config_warmup_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/health': {
     parameters: {
       query?: never;
@@ -602,7 +624,7 @@ export interface components {
       stocks: number;
       /**
        * Days
-       * @description 512 warm-up days plus at least one year
+       * @description synthetic market length: at least the effective warm-up (GET /api/config/warmup) plus one year; checked against the run's own config at launch
        */
       days: number;
       /** Seed */
@@ -909,6 +931,44 @@ export interface components {
       input?: unknown;
       /** Context */
       ctx?: Record<string, never>;
+    };
+    /**
+     * Warmup
+     * @description Effective warm-up of a run (``qts.pipeline.estimate_warmup_days``): trading
+     *     days of the market panel used before the first out-of-sample backtest date.
+     */
+    Warmup: {
+      /** Ml */
+      ml: boolean;
+      /** Signal Lag Days */
+      signal_lag_days: number;
+      /**
+       * Warmup Days
+       * @description max(risk_days, ml_days) + signal_lag_days
+       */
+      warmup_days: number;
+      /**
+       * Min Days
+       * @description warmup_days + one year (trading_days_per_year): the launch floor
+       */
+      min_days: number;
+      /**
+       * Risk Days
+       * @description risk exposures warm-up + min_history_days of factor returns
+       */
+      risk_days: number;
+      /**
+       * Ml Days
+       * @description universe lead + alpha.train_min_days + embargo (upper bound); null without ML
+       */
+      ml_days: number | null;
+      /**
+       * Exact
+       * @description true when the (exact) risk term binds
+       */
+      exact: boolean;
+      /** Trading Days Per Year */
+      trading_days_per_year: number;
     };
     /** ValidationIssue */
     ValidationIssue: {
@@ -1422,6 +1482,40 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['JsonSchemaObject'];
+        };
+      };
+    };
+  };
+  get_warmup_api_config_warmup_get: {
+    parameters: {
+      query?: {
+        /** @description include the walk-forward ML sleeve */
+        ml?: boolean;
+        /** @description execution delay in days (D4) */
+        signal_lag_days?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['Warmup'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
         };
       };
     };

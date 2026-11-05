@@ -222,7 +222,7 @@ runs/
 
 ## Reading the report card
 
-This walkthrough uses `runs/demo_post_refactor.txt`, the most recent stored demo report when this page was written (`runs/demo_audit2.txt` did not exist yet). It was produced by `qts demo --compare-lag` on the default synthetic market (300 names × 1,512 days, seed 0), so the report card shown is the **lag-0** run. Its numbers come from an uncommitted working tree at commit 63ce32b and do not reproduce on the current code; read it for the *format*, not as evidence. All figures are synthetic and from the out-of-sample backtest window.
+This walkthrough uses `runs/demo_post_refactor.txt`, the most recent stored demo report when this page was written (`runs/demo_audit2.txt` did not exist yet). It was produced by `qts demo --compare-lag` on the default synthetic market (300 names × 1,512 days, seed 0) by code that still printed the lag-0 card first, so the report card shown is the **lag-0** run. Current code prints the card of the configured lag (default 1) first, then the lag-0 vs lag-1 comparison. Its numbers come from an uncommitted working tree at commit 63ce32b and do not reproduce on the current code; read it for the *format*, not as evidence. All figures are synthetic and from the out-of-sample backtest window.
 
 ### The warnings above the card
 
@@ -339,7 +339,7 @@ OVERALL: FAIL (phase 1)
 [PASS] ic_sign: IC > 0 in 4/5 folds (need >= 0.67)
 [skipped] incremental_ic: not applied (standalone signal)
 [PASS] net_sharpe_delta: net Sharpe by fold (vs zero baseline) >= +0.05 in 6/6 folds (need >= 0.67)
-[PASS] breakeven_cost: breakeven 44.1 bps >= 2x modeled 20.9 bps
+[PASS] breakeven_cost: breakeven 44.1 bps >= 2x modeled 10.5 bps (= 20.9 bps)
 [FAIL] dsr: DSR = 0.704 <= 0.95
 [skipped] pbo: PBO not supplied (no configuration grid run; set pipeline_pbo_configs)
 [PASS] phase_sharpe: phase-1 net Sharpe 0.96 >= 0.3
@@ -437,7 +437,7 @@ The workbench is designed as an annotated lab notebook (`ui/DESIGN.md`): a calm 
 
 1. **Market data.** *Synthetic market* (seeded, with a planted signal; validates plumbing) or *Data store* (the `ParquetStore` at `QTS_STORE_PATH`).
 2. **Phase.** *Phase 1: composite* (net Sharpe bar 0.3) or *Phase 2: composite + ML* (bar 0.5); the "Train the ML sleeve" checkbox turns on the walk-forward LightGBM / MLP / ridge sleeve.
-3. **Stocks, days, seed.** 50–3,000 names; 764–6,000 days (the API's 512-day warm-up allowance plus at least a year); the seed fixes the market and the models.
+3. **Stocks, days, seed.** 50–3,000 names; up to 6,000 days and at least the effective warm-up plus a year. The warm-up comes from `GET /api/config/warmup` (`qts.pipeline.estimate_warmup_days`): risk exposures warm-up plus `risk.min_history_days` of factor returns (505 days with the defaults), or, with the ML sleeve, the universe lead plus `alpha.train_min_days` plus the label embargo (828), whichever is longer, plus the signal lag. With the defaults the floor is 758 days without ML and 1,081 with it. The form shows the floor; the API re-checks it against the run's own config, so an override such as a longer `risk.min_history_days` raises it. The seed fixes the market and the models.
 4. **Signal lag.** *Trade at the next close (1 day)*, the realistic default, or *Trade at the same close (0 days)*, the optimistic bound, which the run page flags.
 5. **Config overrides** (collapsed). Generated from `GET /api/config/schema`: every scalar field of every `SystemConfig` section, grouped by section, with enums as selects, booleans as checkboxes and bounds checked in the browser and again, strictly, by the API. `seed` and `execution.signal_lag_days` come from the form's own fields.
 6. **Launch run.** The API validates the request (unknown fields, wrong types such as `"stocks": "60"`, out-of-range values and unknown override paths all return a 422 with one error per field), fixes the run id, queues the job and answers 202. The page then polls the job every 750 ms and shows stage-based progress: market data, universe, risk model, alpha model, the backtest ("day k of n"), evaluation, writing. When the job finishes, the new run opens.
@@ -446,7 +446,7 @@ Each job runs in its own process (a crash cannot take the API down), follows the
 
 ## Loading real data into the ParquetStore
 
-`qts` has parsers and transforms for each source but no vendor downloaders for Norgate or Sharadar: you export from the vendor, then write the panels into a `ParquetStore` with the dataset names below. The store keeps one value per `(date, ticker)`; point-in-time correctness comes from writing panels that are already keyed on availability dates.
+`qts` has parsers and transforms for each source and one loader stub, `qts.data.loaders.norgate_to_store` (Norgate prices and delisting dates, needs the `norgatedata` package; see below). For everything else you export from the vendor, then write the panels into a `ParquetStore` with the dataset names below. The store keeps one value per `(date, ticker)`; point-in-time correctness comes from writing panels that are already keyed on availability dates.
 
 ### The dataset names
 
@@ -470,6 +470,17 @@ Wide datasets are date × ticker DataFrames with a `DatetimeIndex`; `write_wide`
 ### Prices and corporate events (Norgate or Sharadar SEP)
 
 Norgate is the build plan's price source: delisting-complete history from 1990 with index constituents. Use the total-return adjusted series for `prices_close` and the unadjusted series for `prices_close_raw`, keep volume unadjusted (actual shares), and take the delisting date of every dead security. Key everything on a permanent identifier mapped to a ticker string that is unique across the whole history (a reused ticker must not merge two companies).
+
+With a local Norgate install (Windows, Norgate Data Updater running, `pip install norgatedata`), `norgate_to_store` does the price part in one call: it requests each symbol of "US Equities" and "US Equities Delisted" twice (total-return adjusted and unadjusted) and writes `prices_close`, `prices_close_raw`, `prices_volume` (unadjusted shares) and `delisting_dates` (delisted symbols: their last price date; every other symbol `NaT`, so all are covered). Without the package it raises `ImportError`; the offline mapping `norgate_frames_to_store(store, adjusted, unadjusted, delisted)` accepts frames you exported yourself and is unit-tested. The fetch layer itself has not yet been run against a licensed install: check the first load (`survivorship_check`, the delisting count, a few prices against the vendor's charts). Norgate's delisted symbols carry a date suffix (`XYZ-201203`), which keeps reused tickers apart. Shares outstanding, market cap and industries come from Sharadar.
+
+```python
+from qts.data.loaders import norgate_to_store
+from qts.data.store import ParquetStore
+store = ParquetStore("data/store")
+norgate_to_store(store, start="1990-01-01")            # prices, raw prices, volume, delisting dates
+```
+
+The same panels written by hand:
 
 ```python
 from qts.data.store import ParquetStore

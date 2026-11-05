@@ -63,6 +63,7 @@ API runs share one registry and one ledger.
 | DELETE | `/api/jobs/{job_id}`               | `Job` (cancel)           | 404           |
 | GET    | `/api/ledger`                      | `Ledger`                 |               |
 | GET    | `/api/config/schema`               | `JsonSchemaObject`       |               |
+| GET    | `/api/config/warmup?ml=&signal_lag_days=` | `Warmup`          | 422           |
 | GET    | `/api/health`                      | `Health`                 |               |
 
 **Errors** are RFC 7807 problem documents (`application/problem+json`):
@@ -132,7 +133,10 @@ exposures empty with `latest: null`; holdings from `weights.parquet` with
 overrides: each dotted path must name a scalar leaf of `SystemConfig` with a value of the right
 type, inside the curated bounds and enums; the nested dict then goes through
 `SystemConfig.from_dict` (strict) and `validate()`. `seed` and `execution.signal_lag_days` are set
-by the request's own fields and rejected as overrides. The run id
+by the request's own fields and rejected as overrides. For synthetic runs `days` must cover the
+run's effective warm-up plus one year, computed from its own config (overrides included) by
+`qts.pipeline.estimate_warmup_days`; `GET /api/config/warmup?ml=&signal_lag_days=` returns the
+same numbers for the default config (the launch form's floor). The run id
 (`<UTC timestamp>_<config_hash[:8]>`) is fixed at submission and returned with the job id.
 
 `JobManager` keeps a FIFO queue and runs at most `QTS_MAX_WORKERS` (default 1) jobs, each in its

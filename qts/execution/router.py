@@ -62,6 +62,17 @@ ALGO_ARRIVAL = "ArrivalPx"
 ALGO_ADAPTIVE = "Adaptive"
 
 
+def participation_for_half_life(half_life_days: float | None, algo_max_pct_adv: float) -> float:
+    """Urgency-derived participation rate (fraction of ADV): ``urgency_from_half_life(h)``
+    clipped to ``[0.01, algo_max_pct_adv]`` (``algo_max_pct_adv`` if ``h`` is unknown).
+    The router's ``maxPctVol``; also the optimizer's per-name ADV cap when
+    ``PortfolioConfig.participation_from_urgency`` is on."""
+    cap = float(min(algo_max_pct_adv, 0.5))
+    if half_life_days is None or not np.isfinite(float(half_life_days)):
+        return cap
+    return float(np.clip(urgency_from_half_life(float(half_life_days)), min(0.01, cap), cap))
+
+
 class ExecutionRouter:
     """``loc_offset_impact_mult``: the LOC offset is
     ``max(cfg.loc_offset_bps, loc_offset_impact_mult * expected_auction_impact_bps)``
@@ -158,12 +169,9 @@ class ExecutionRouter:
         return self.round_to_tick(indicative_px * (1 + hs), "up")
 
     def participation(self, half_life_days: float | None) -> float:
-        """``maxPctVol`` for an algo order: ``urgency_from_half_life(h)`` clipped
-        to ``[0.01, cfg.algo_max_pct_adv]`` (``algo_max_pct_adv`` if ``h`` unknown)."""
-        cap = float(min(self.cfg.algo_max_pct_adv, 0.5))
-        if half_life_days is None or not np.isfinite(float(half_life_days)):
-            return cap
-        return float(np.clip(urgency_from_half_life(float(half_life_days)), min(0.01, cap), cap))
+        """``maxPctVol`` for an algo order: :func:`participation_for_half_life`
+        with ``cfg.algo_max_pct_adv``."""
+        return participation_for_half_life(half_life_days, self.cfg.algo_max_pct_adv)
 
     def _auction_order(self, o: Order, qty: float, auc: float, sig: float, ind: float, meta: dict) -> Order:
         """LOC through the indicative (MOC when no indicative price) for ``qty`` shares."""

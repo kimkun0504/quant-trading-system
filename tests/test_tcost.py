@@ -119,10 +119,45 @@ def test_participation_cap_and_auction_volume():
     assert imp.auction_share_for_date("2026-06-26") == pytest.approx(0.34)  # Russell recon Friday
     assert imp.auction_share_for_date("2026-03-20") == pytest.approx(0.20)  # quad witching
     choice = imp.cost_for_venue_choice(1e5, 1e7, 0.02, half_spread_bps=5.0, date="2026-11-03")
-    assert set(choice) >= {"continuous_bps", "auction_bps", "venue"}
+    assert set(choice) >= {"continuous_bps", "auction_bps", "routed_bps", "venue", "venue_within_cap"}
     assert choice["auction_bps"] == pytest.approx(
         1e4 * CostConfig().impact_b_auction * 0.02 * np.sqrt(1e5 / (0.09 * 1e7))
     )
+    assert choice["fees_included"] is False and choice["auction_fee_bps"] == 0.0
+
+
+def test_cost_for_venue_choice_fee_and_routed_by_hand():
+    """P15: the auction leg carries the exchange fee ($0.001/sh at $50 = 0.2 bp) and the
+    routed option prices the router's split with the continuous increment."""
+    cfg = CostConfig()
+    imp = SquareRootImpact(cfg)
+    q, A, sig, h, px = 1e6, 5e7, 0.02, 2.0, 50.0
+    ch = imp.cost_for_venue_choice(q, A, sig, half_spread_bps=h, date="2026-06-15", price=px)
+    fee = 1e4 * cfg.auction_exchange_fee_per_share / px
+    assert fee == pytest.approx(0.2) and ch["auction_fee_bps"] == pytest.approx(fee) and ch["fees_included"]
+    phi, e = 0.09, cfg.impact_exponent
+
+    def C(x, v, b):  # dollars
+        return b * sig * x**e / v ** (e - 1)
+
+    b_a, b_c = cfg.impact_b_auction, cfg.impact_b_continuous
+    assert ch["continuous_bps"] == pytest.approx(h + 1e4 * C(q, A, b_c) / q)
+    assert ch["auction_bps"] == pytest.approx(fee + 1e4 * C(q, phi * A, b_a) / q)
+    qa = 0.02 * phi * A  # router cap kappa = 2% of the auction volume: $90,000
+    qc = q - qa
+    routed = 1e4 * (fee * qa / 1e4 + h * qc / 1e4 + C(qa, phi * A, b_a) + C(q, A, b_c) - C(qa, A, b_c)) / q
+    assert ch["routed_bps"] == pytest.approx(routed, rel=1e-12)
+    assert ch["routed_auction_fraction"] == pytest.approx(qa / q)
+    # D2: equal impact on a normal day -> the uncapped auction is cheapest by h - fee, but a
+    # $1M order is 11x the cap, so within the router's cap the routed split wins
+    assert ch["continuous_bps"] - ch["auction_bps"] == pytest.approx(h - fee)
+    assert ch["venue"] == "auction" and ch["venue_within_cap"] == "routed"
+    small = imp.cost_for_venue_choice(5e4, A, sig, half_spread_bps=h, date="2026-06-15", price=px)
+    assert small["routed_auction_fraction"] == 1.0 and small["venue_within_cap"] == "auction"
+    assert small["routed_bps"] == pytest.approx(small["auction_bps"])
+    # a fee above the half-spread makes the continuous session cheaper for tiny orders
+    pricey = imp.cost_for_venue_choice(1e3, A, sig, half_spread_bps=0.1, date="2026-06-15", price=5.0)
+    assert pricey["auction_fee_bps"] == pytest.approx(2.0) and pricey["venue"] == "continuous"
 
 
 def test_cvx_cost_expression_is_dcp_and_solves():

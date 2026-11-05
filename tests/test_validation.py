@@ -286,6 +286,13 @@ def test_hurdles_pass_and_fail():
         net_sharpe=0.4,
     )
     assert not bad["overall"]
+    # P2: the message names the modeled cost and the doubled bar separately
+    assert good["details"]["breakeven_cost"]["reason"] == (
+        "breakeven 40.0 bps >= 2x modeled 15.0 bps (= 30.0 bps)"
+    )
+    assert (
+        bad["details"]["breakeven_cost"]["reason"] == "breakeven 20.0 bps < 2x modeled 15.0 bps (= 30.0 bps)"
+    )
     for g in ("t_stat", "incremental_ic", "net_sharpe_delta", "breakeven_cost", "dsr", "pbo", "phase_sharpe"):
         assert bad["gates"][g] is False, g
     # suspect: too-good Sharpe fails even when everything else passes
@@ -500,3 +507,57 @@ def test_purged_fold_blocks():
     b2 = purged_fold_blocks(d[:70], n_splits=6, embargo_days=20, label_horizon=20, min_fold_days=20)
     assert len(b2) == 3 and min(len(x) for x in b2) >= 20  # splits reduced to keep blocks >= 20 days
     assert purged_fold_blocks(d[:10], 6, 20, 20, 20) == []
+
+
+# --------------------------------------------------------------------------- ledger migration (P13)
+def test_ledger_migrate_family_names(tmp_path, capsys):
+    import json
+
+    from qts.cli import main
+    from qts.validation.ledger import LEGACY_FAMILY, TrialLedger
+
+    p = tmp_path / "ledger.jsonl"
+    recs = [
+        {
+            "ts": "2026-11-04T03:47:32",
+            "name": "pipeline_phase1",
+            "family": "pipeline_phase1",
+            "data_hash": "",
+        },
+        {
+            "ts": "2026-11-04T17:51:59",
+            "name": "pipeline_phase2",
+            "family": "pipeline_phase2",
+            "data_hash": "6c473c276d0c99aa",
+        },
+        {
+            "ts": "2026-11-05T13:17:25",
+            "name": "pipeline_phase1:acc387f0eca5",
+            "family": "pipeline_phase1:acc387f0eca5",
+            "data_hash": "acc387f0eca5ff",
+        },
+        {"ts": "2026-11-05T13:20:00", "name": "mom:lb=12", "family": "mom", "data_hash": ""},
+    ]
+    p.write_text("".join(json.dumps(r) + "\n" for r in recs))
+    led = TrialLedger(str(p))
+    dry = led.migrate_family_names(dry_run=True)
+    assert [(c["old"], c["new"]) for c in dry] == [
+        ("pipeline_phase1", LEGACY_FAMILY),
+        ("pipeline_phase2", "pipeline_phase2:6c473c276d0c"),
+    ]
+    assert p.read_text().count('pipeline_phase1"') == 2  # dry run changed nothing
+    assert main(["ledger", "migrate", "--path", str(p)]) == 0
+    assert "renamed 2 record(s)" in capsys.readouterr().out
+    after = led.raw_records()
+    assert len(after) == 4
+    assert [r["family"] for r in after] == [
+        LEGACY_FAMILY,
+        "pipeline_phase2:6c473c276d0c",
+        "pipeline_phase1:acc387f0eca5",
+        "mom",
+    ]
+    assert after[1]["name"] == "pipeline_phase2:6c473c276d0c"
+    assert after[1]["family_migrated_from"] == "pipeline_phase2" and "family_migrated_from" not in after[2]
+    assert len(list(tmp_path.glob("ledger.jsonl.bak-*"))) == 1
+    assert led.migrate_family_names() == []  # idempotent
+    assert led.n_trials("pipeline_phase2:6c473c276d0c") == 1

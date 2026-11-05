@@ -8,6 +8,7 @@ import type {
 } from '@/shared/api';
 import { CONFIG_SCHEMA } from './fixtures/configSchema';
 import { cancelJob, db, launch, listSummaries, pollJob } from './db';
+import { mockWarmup } from './fixtures/generate';
 
 /**
  * MSW handlers implementing the API contract in shared/api/schema.ts.
@@ -99,9 +100,12 @@ export const handlers = [
   http.post('*/api/runs', async ({ request }) => {
     await delay();
     const body = (await request.json()) as LaunchRunRequest;
-    if (body.stocks < 50 || body.days < 764)
+    const wu = mockWarmup(body.ml, body.signal_lag_days);
+    if (body.stocks < 50 || body.days < wu.min_days)
       return HttpResponse.json<ApiErrorBody | LaunchRunResponse>(
-        { detail: 'stocks must be ≥ 50 and days ≥ 764 (512 warm-up days + 1 year)' },
+        {
+          detail: `stocks must be ≥ 50 and days ≥ ${wu.min_days} (${wu.warmup_days} warm-up days + 1 year)`,
+        },
         { status: 422 },
       );
     const job = launch(body);
@@ -121,6 +125,13 @@ export const handlers = [
     await delay(80);
     const job = cancelJob(params.jobId);
     return job ? HttpResponse.json(job) : notFound(`No job with id ${params.jobId}`);
+  }),
+
+  http.get('*/api/config/warmup', ({ request }) => {
+    const q = new URL(request.url).searchParams;
+    return HttpResponse.json(
+      mockWarmup(q.get('ml') === 'true', q.get('signal_lag_days') === '0' ? 0 : 1),
+    );
   }),
 
   http.get('*/api/health', () =>

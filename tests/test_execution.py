@@ -303,7 +303,8 @@ def test_fill_simulator_roundtrip_with_ledger(snapshot):
     assert f.loc["r1", "status"] == "filled" and f.loc["r1", "fill_px"] == rev.limit_px
     # HUGE's algo child (10% ADV, half-life 20d) is capped at urgency_from_half_life(20) ~1.3% of volume
     assert f.loc["h1-algo", "status"] == "partial"
-    assert f.loc["h1-algo", "filled_qty"] == pytest.approx(urgency_from_half_life(20.0) * 1_000_000)
+    # partial fills are whole shares: floor of the participation cap
+    assert f.loc["h1-algo", "filled_qty"] == np.floor(urgency_from_half_life(20.0) * 1_000_000)
     assert (f["fees_usd"] >= 0).all() and f.loc["s1", "fees_usd"] > 0
     d = led.decompose()
     assert len(d) == 7
@@ -321,3 +322,65 @@ def test_fill_simulator_roundtrip_with_ledger(snapshot):
     tight = routed[0].with_(limit_px=100.0)
     fills2 = sim.simulate([tight], realized, date="2026-11-03")
     assert fills2.iloc[0]["status"] == "unfilled"
+
+
+def test_fill_simulator_split_algo_child_priced_as_increment():
+    """P14: the algo child of a split is charged C(q_a + q_c) - C(q_a) (routed cost
+    model), partial fills are whole shares, ArrivalPx says it fills at the open."""
+    from qts.execution.orders import Order as O
+
+    cfg = CostConfig()
+    sim = FillSimulator(cfg)
+    realized = pd.DataFrame(
+        {"open": 100.0, "close": 100.0, "volume": 1_000_000.0, "sigma_daily": 0.02, "half_spread_bps": 0.0},
+        index=["X"],
+    )
+    auc = O(
+        "X",
+        "BUY",
+        2_000,
+        order_type="MOC",
+        order_id="p-auc",
+        meta={"split": "auction", "parent_order_id": "p", "parent_qty": 10_000},
+    )
+    algo = O(
+        "X",
+        "BUY",
+        8_000,
+        order_type="ALGO",
+        algo="Vwap",
+        order_id="p-algo",
+        algo_params={"maxPctVol": 0.05},
+        meta={"split": "continuous", "parent_order_id": "p", "parent_qty": 10_000},
+    )
+    f = sim.simulate([auc, algo], realized, date="2026-11-03").set_index("order_id")
+    # hand computation: C(Q) = b_c * sigma * Q^1.5 / V^0.5 in USD, V = 1e8 USD, b_c = 1.0
+    b, sig, V = cfg.impact_b_continuous, 0.02, 1e8
+    C = lambda q: b * sig * q**1.5 / V**0.5  # noqa: E731
+    inc_bps = 1e4 * (C(1e6) - C(2e5)) / 8e5  # q_a = 2,000 sh, q_c = 8,000 sh at 100
+    standalone_bps = 1e4 * C(8e5) / 8e5
+    assert f.loc["p-algo", "impact_bps"] == pytest.approx(inc_bps, rel=1e-12)
+    assert inc_bps > standalone_bps  # superadditive: splitting is not free
+    assert f.loc["p-algo", "fill_px"] == pytest.approx(100.0 * (1 + inc_bps / 1e4), rel=1e-12)
+    assert "increment over 2000 sh auction child" in f.loc["p-algo", "reason"]
+    # an unfilled auction child (LOC through its limit) leaves no metaorder to extend
+    loc = auc.with_(order_type="LOC", limit_px=99.0)
+    f2 = sim.simulate([loc, algo], realized, date="2026-11-03").set_index("order_id")
+    assert f2.loc["p-auc", "status"] == "unfilled"
+    assert f2.loc["p-algo", "impact_bps"] == pytest.approx(standalone_bps, rel=1e-12)
+    # without the auction child in the batch the planned q_a = parent_qty - qty is used
+    f3 = sim.simulate([algo], realized, date="2026-11-03").set_index("order_id")
+    assert f3.loc["p-algo", "impact_bps"] == pytest.approx(inc_bps, rel=1e-12)
+    # partial fill floored to whole shares; ArrivalPx fills at the open
+    arr = O(
+        "X",
+        "SELL",
+        60_000,
+        order_type="ALGO",
+        algo="ArrivalPx",
+        order_id="a",
+        algo_params={"maxPctVol": 0.0123456},
+    )
+    g = sim.simulate([arr], realized, date="2026-11-03").iloc[0]
+    assert g["status"] == "partial" and g["filled_qty"] == 12_345.0
+    assert g["reason"].startswith("ArrivalPx at arrival (open)")

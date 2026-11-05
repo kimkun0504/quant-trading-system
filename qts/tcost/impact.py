@@ -241,28 +241,89 @@ class SquareRootImpact:
         date=None,
         auction_share: float | None = None,
         auction_spread_bps: float = 0.0,
-    ) -> dict[str, float]:
-        """Compare expected all-in cost (bps) of continuous vs closing-auction execution.
+        price: float | None = None,
+        auction_max_pct: float | None = None,
+    ) -> dict[str, float | str | bool]:
+        """Compare expected all-in cost (bps of ``Q = |notional|``) of continuous,
+        closing-auction and routed execution.
 
-        Continuous: ``half_spread + b_cont * sigma * (Q/ADV)^(e-1)``.
-        Auction:    ``auction_spread + b_auction * sigma * (Q / (share*ADV))^(e-1)``
-        with ``b_auction = cfg.impact_b_auction`` (0.3) and the auction volume
-        as ``V``.  Auction fills clear at a single price so the spread term
-        defaults to 0 (set ``auction_spread_bps`` to be conservative).  With
-        the D2 defaults the impact legs are equal on a normal day, so the
-        auction wins by the half-spread.  Returns a dict with both estimates
-        and ``venue`` = the cheaper one.
+        With ``A = adv_usd``, ``phi`` the auction share of the day (``auction_share``
+        or :meth:`auction_share_for_date`), ``h = half_spread_bps``, ``f_a`` = the
+        closing-auction exchange fee in bps (``cfg.auction_exchange_fee_per_share /
+        price``; 0 when ``price`` is not given -- then ``fees_included`` is False)
+        and ``C_{V,b}(Q) = b * sigma * Q^e / V^(e-1)`` (dollars):
+
+        * continuous: ``h + 1e4 * C_{A,b_c}(Q) / Q``
+        * auction:    ``auction_spread + f_a + 1e4 * C_{phi A,b_a}(Q) / Q`` (one clearing
+          price, so ``auction_spread_bps`` defaults to 0)
+        * routed (as :class:`qts.execution.ExecutionRouter` executes, and the
+          ``routed`` venue of :mod:`qts.tcost.model` prices): ``q_a = min(Q, kappa *
+          phi * A)`` to the auction, ``q_c = Q - q_a`` continuous, the continuous leg
+          charged the metaorder increment::
+
+              1e4 * [ (auction_spread + f_a) q_a / 1e4 + h q_c / 1e4
+                      + C_{phi A,b_a}(q_a) + C_{A,b_c}(Q) - C_{A,b_c}(q_a) ] / Q
+
+          with ``kappa = auction_max_pct`` (default
+          ``ExecutionConfig().auction_max_pct_of_auction_volume``, 2%).
+
+        Commissions and regulatory fees are the same per share on both venues and
+        are left out (they do not change the choice).  With the D2 defaults the
+        auction and continuous impact legs are equal on a normal day, so the pure
+        auction wins by ``h - f_a``; it is also the venue the 2% cap would forbid for
+        a large order, which is what ``routed`` prices.  ``venue`` is the cheapest of
+        the three; ``venue_within_cap`` the cheapest the router may use (``auction`` only
+        when ``Q`` fits under the cap, else ``routed`` or ``continuous``).  Also returned: ``auction_share``, ``auction_fee_bps``,
+        ``routed_auction_fraction`` (``q_a / Q``) and ``fees_included``.
         """
+        from qts.core.config import ExecutionConfig
+
         share = self.auction_share_for_date(date) if auction_share is None else auction_share
-        cont = float(half_spread_bps) + float(
-            self.cost_bps(notional, adv_usd, sigma_daily, venue=VENUE_CONTINUOUS)
+        q = abs(float(notional))
+        a = float(adv_usd)
+        fee_bps = 0.0
+        fees_included = price is not None and np.isfinite(float(price)) and float(price) > 0
+        if fees_included:
+            fee_bps = 1e4 * float(getattr(self.cfg, "auction_exchange_fee_per_share", 0.0)) / float(price)
+        kappa = (
+            float(ExecutionConfig().auction_max_pct_of_auction_volume)
+            if auction_max_pct is None
+            else float(auction_max_pct)
         )
-        auc = float(auction_spread_bps) + float(
-            self.cost_bps(notional, adv_usd * share, sigma_daily, venue=VENUE_AUCTION)
+
+        def c_usd(qq: float, v: float, venue: str) -> float:
+            return float(self.cost_bps(qq, v, sigma_daily, venue=venue)) * qq / 1e4 if qq > 0 else 0.0
+
+        cont = float(half_spread_bps) + float(self.cost_bps(q, a, sigma_daily, venue=VENUE_CONTINUOUS))
+        auc = (
+            float(auction_spread_bps)
+            + fee_bps
+            + float(self.cost_bps(q, a * share, sigma_daily, venue=VENUE_AUCTION))
         )
+        qa = min(q, kappa * share * a) if np.isfinite(a) and a > 0 else 0.0
+        qc = q - qa
+        routed_usd = (
+            (float(auction_spread_bps) + fee_bps) * qa / 1e4
+            + float(half_spread_bps) * qc / 1e4
+            + c_usd(qa, a * share, VENUE_AUCTION)
+            + c_usd(q, a, VENUE_CONTINUOUS)
+            - c_usd(qa, a, VENUE_CONTINUOUS)
+        )
+        routed = 1e4 * routed_usd / q if q > 0 else 0.0
+        costs = {VENUE_AUCTION: auc, VENUE_ROUTED: routed, VENUE_CONTINUOUS: cont}
         return {
             "continuous_bps": cont,
             "auction_bps": auc,
+            "routed_bps": routed,
             "auction_share": share,
-            "venue": VENUE_AUCTION if auc <= cont else VENUE_CONTINUOUS,
+            "auction_fee_bps": fee_bps,
+            "routed_auction_fraction": qa / q if q > 0 else 0.0,
+            "fees_included": bool(fees_included),
+            "venue": min(costs, key=lambda k: costs[k]),
+            # respecting the router's auction cap: the pure auction only when Q fits under it
+            "venue_within_cap": (
+                min(costs, key=lambda k: costs[k])
+                if qa >= q
+                else min((VENUE_ROUTED, VENUE_CONTINUOUS), key=lambda k: costs[k])
+            ),
         }

@@ -123,6 +123,37 @@ def test_participation_bounds(ctx):
     assert "participation" in res.binding_constraints
 
 
+def test_participation_from_urgency(ctx):
+    """P16: with participation_from_urgency the per-name ADV cap is the router's
+    urgency-derived rate for the signal half-life, not max_adv_participation."""
+    from qts.core.config import ExecutionConfig
+    from qts.execution import ExecutionRouter
+    from qts.execution.scheduler import urgency_from_half_life
+
+    off = SinglePeriodOptimizer(ls_cfg(), SimpleCostModel())
+    assert off.participation_rate(20.0) == 0.05  # default: max_adv_participation
+    cfg = ls_cfg(participation_from_urgency=True)
+    opt = SinglePeriodOptimizer(cfg, SimpleCostModel(), exec_cfg=ExecutionConfig())
+    router = ExecutionRouter(ExecutionConfig())
+    for hl in (1.0, 5.0, 10.0, 20.0, 60.0, None):
+        assert opt.participation_rate(hl) == router.participation(hl)
+    assert opt.participation_rate(20.0) == pytest.approx(urgency_from_half_life(20.0))  # ~1.3 %
+    assert opt.participation_rate(60.0) == 0.01 and opt.participation_rate(None) == 0.05
+    nav = 5e7
+    res = opt.solve(ctx["alpha"] * 5, ctx["risk"], ctx["w0"], nav, ctx["snap"], alpha_half_life_days=20.0)
+    assert res.status == "optimal"
+    cap = opt.participation_rate(20.0) * ctx["snap"]["adv_usd"].reindex(res.x.index) / nav
+    assert ((res.x.abs() - cap) <= TOL).all()
+    assert "participation" in res.binding_constraints
+    assert any("from urgency" in n for n in res.notes)
+
+    # the cost model's exec_cfg is the fallback
+    class WithExec(SimpleCostModel):
+        exec_cfg = ExecutionConfig(algo_max_pct_adv=0.03)
+
+    assert SinglePeriodOptimizer(cfg, WithExec()).participation_rate(None) == 0.03
+
+
 def test_trade_aversion_monotone_turnover(ctx, risk_model, alpha_model, md):
     cm = SimpleCostModel()
     start = SinglePeriodOptimizer(ls_cfg(), cm).solve(

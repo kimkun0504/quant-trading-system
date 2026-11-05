@@ -21,7 +21,7 @@ describe('RunHeader (fixture via MSW)', () => {
       ),
     ).toBeInTheDocument();
     const manifest = screen.getByLabelText('Run manifest');
-    expect(manifest).toHaveTextContent(/Period10 Dec 2019 to 9 Oct 2023, 1,000 days/);
+    expect(manifest).toHaveTextContent(/Period10 Dec 2019 to 17 Oct 2023, 1,006 days/);
     expect(screen.getByText(DEMO)).toBeInTheDocument();
     expect(screen.queryByRole('note', { name: 'Suspicious result' })).not.toBeInTheDocument();
   });

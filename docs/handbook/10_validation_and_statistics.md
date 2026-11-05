@@ -890,7 +890,7 @@ hurdles = HurdleReport(cfg.validation).evaluate_signal(
 | `[PASS] ic_sign: IC > 0 in 4/5 folds (need >= 0.67)` | Old convention: five calendar years with IC observations, four positive, 80% ≥ 67%. Current code would report $k/6$ over the six purged blocks below. |
 | `[skipped] incremental_ic: not applied (standalone signal)` | No existing composite to be incremental to. Not required. |
 | `[PASS] net_sharpe_delta: ... >= +0.05 in 6/6 folds` | Six purged walk-forward blocks of 167–168 days with net Sharpes 0.76, 0.86, 1.13, 1.35, 0.94, 0.73. All exceed 0.05. |
-| `[PASS] breakeven_cost: breakeven 44.1 bps >= 2x modeled 20.9 bps` | Modeled cost 10.47 bp per side, so the bar is 20.93 bp; costs could rise 4.2× before gross alpha is gone. The cost-sensitivity table agrees (net Sharpe 1.17 at 0.5×, 1.01 at 1×, 0.70 at 2×, 0.38 at 3×). Its 1× value is above the simulator's 0.96 because, in this demo, the table started from gross returns and omitted borrow; current code starts from gross-after-borrow. |
+| `[PASS] breakeven_cost: breakeven 44.1 bps >= 2x modeled 10.5 bps (= 20.9 bps)` | Modeled cost 10.47 bp per side, so the bar is 20.93 bp; costs could rise 4.2× before gross alpha is gone. The cost-sensitivity table agrees (net Sharpe 1.17 at 0.5×, 1.01 at 1×, 0.70 at 2×, 0.38 at 3×). Its 1× value is above the simulator's 0.96 because, in this demo, the table started from gross returns and omitted borrow; current code starts from gross-after-borrow. |
 | `[FAIL] dsr: DSR = 0.704 <= 0.95` | See the calculation below. |
 | `[skipped] pbo: PBO not supplied (...)` | No `pipeline_pbo_configs` grid; not required. |
 | `[PASS] phase_sharpe: phase-1 net Sharpe 0.96 >= 0.3` | Clears the phase-1 bar comfortably. |

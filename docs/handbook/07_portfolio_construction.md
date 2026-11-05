@@ -276,7 +276,7 @@ $$
 $$
 
 where:
-- `max_adv_participation` = 0.05 (5% of ADV per day);
+- `max_adv_participation` = 0.05 (5% of ADV per day; with `participation_from_urgency` the router's urgency rate for the signal half-life instead);
 - $\text{ADV}_i$ in USD from the point-in-time cost snapshot; NAV in USD.
 
 Dividing by NAV converts dollars into weight units, so the constraint is linear in $x$. Example: ADV \$20M, NAV \$1M → cap = 0.05 × 20/1 = 1.0, i.e. 100% of NAV, never binding at this size. At NAV \$100M the same name is capped at 1% of NAV per day. **The constraint scales with NAV automatically**, which is why capacity tests should re-run the backtest at a larger `nav0`.
@@ -649,6 +649,7 @@ Defaults from `qts/core/config.py::PortfolioConfig`.
 | `net_exposure_band` | 0.05 | ± band on net exposure | also used by 130/30 |
 | `max_position_weight` | 0.02 | per-name absolute weight cap | all books |
 | `max_adv_participation` | 0.05 | per-name trade cap as share of ADV | converted to weights via ADV/NAV |
+| `participation_from_urgency` | False | use the router's urgency-derived rate `participation(half_life)` (1–5% of ADV) instead of `max_adv_participation` | see `docs/notes/participation_alignment.md` |
 | `beta_neutral` | True | bind the beta *style* | resolved via `factor_groups["style"]` |
 | `industry_band` | 0.03 | ± net weight per industry | via `factor_groups["industry"]`; 0 disables |
 | `style_band_sd` | 0.10 | ± sd exposure per style in `neutral_styles` | pipeline passes risk-only styles |

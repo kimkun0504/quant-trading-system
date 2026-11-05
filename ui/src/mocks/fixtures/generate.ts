@@ -22,6 +22,7 @@ import type {
   RunSummary,
   BacktestSummary,
   FoldSharpe,
+  Warmup,
 } from '@/shared/api';
 import {
   annualizedSharpe,
@@ -45,7 +46,7 @@ export interface RunSpec {
   phase: Phase;
   use_ml: boolean;
   stocks: number;
-  /** Simulated market length; the backtest starts after a 512-day warm-up. */
+  /** Simulated market length; the backtest starts after the effective warm-up (`mockWarmup`). */
   days: number;
   seed: number;
   signal_lag_days: 0 | 1;
@@ -74,7 +75,27 @@ export interface GeneratedRun {
   holdingsFor: (date: string | undefined) => RunHoldings;
 }
 
-export const WARMUP_DAYS = 512;
+/**
+ * `GET /api/config/warmup` for the default SystemConfig, mirroring
+ * `qts.pipeline.estimate_warmup_days`: risk = 252 exposure warm-up + 252 days of
+ * factor returns + 1; ML = universe lead 51 + train_min_days 756 + horizon 20 + lag;
+ * total = max(risk, ML) + lag.
+ */
+export function mockWarmup(ml: boolean, lag: 0 | 1): Warmup {
+  const riskDays = 252 + 252 + 1;
+  const mlDays = ml ? 51 + 756 + 20 + lag : null;
+  const warmupDays = Math.max(riskDays, mlDays ?? 0) + lag;
+  return {
+    ml,
+    signal_lag_days: lag,
+    warmup_days: warmupDays,
+    min_days: warmupDays + 252,
+    risk_days: riskDays,
+    ml_days: mlDays,
+    exact: mlDays === null || riskDays >= mlDays,
+    trading_days_per_year: 252,
+  };
+}
 const NAV0 = 5_000_000;
 const DAILY_VOL = 0.066 / Math.sqrt(252);
 
@@ -93,6 +114,19 @@ function hex(rng: Rng, n: number): string {
   let s = '';
   for (let i = 0; i < n; i++) s += Math.floor(rng() * 16).toString(16);
   return s;
+}
+
+/** Mock data hash: same market spec, same hash (like `qts.core.manifest.hash_market_data`). */
+export function mockDataHash(spec: Pick<RunSpec, 'kind' | 'seed' | 'stocks' | 'days'>): string {
+  return hex(mulberry32(hashString(`${spec.kind}${spec.seed}${spec.stocks}${spec.days}`)), 16);
+}
+
+/**
+ * Trial family the pipeline logs under: `pipeline_phase{p}:{data_hash[:12]}` (one DSR
+ * search per phase and data set); records without a data hash are `legacy`.
+ */
+export function ledgerFamily(phase: number, dataHash: string): string {
+  return dataHash ? `pipeline_phase${phase}:${dataHash.slice(0, 12)}` : 'legacy';
 }
 
 /** Fat-tailed shocks with volatility clustering, standardised to mean 0 / sd 1. */
@@ -145,7 +179,7 @@ const f2 = (x: number) => x.toFixed(2);
 export function evaluateHurdles(args: {
   phase: Phase;
   decileT: number;
-  icByYear: IcByYear[];
+  icByFold: number[];
   foldSharpes: FoldSharpe[];
   breakeven: number;
   costBps: number;
@@ -153,8 +187,8 @@ export function evaluateHurdles(args: {
   pbo: number | null;
   sharpeNet: number;
 }): Hurdles {
-  const { phase, decileT, icByYear, foldSharpes, breakeven, costBps, dsr, pbo, sharpeNet } = args;
-  const posYears = icByYear.filter((y) => y.mean_ic >= 0).length;
+  const { phase, decileT, icByFold, foldSharpes, breakeven, costBps, dsr, pbo, sharpeNet } = args;
+  const posIcFolds = icByFold.filter((x) => x > 0).length;
   const posFolds = foldSharpes.filter((f) => f.sharpe_net >= 0.05).length;
   const bar = phase === 2 ? 0.5 : 0.3;
   const gates: GateResult[] = [
@@ -167,10 +201,10 @@ export function evaluateHurdles(args: {
     ),
     gate(
       'ic_sign',
-      posYears / icByYear.length >= 2 / 3 ? 'PASS' : 'FAIL',
-      `${posYears}/${icByYear.length}`,
+      posIcFolds / icByFold.length >= 2 / 3 ? 'PASS' : 'FAIL',
+      `${posIcFolds}/${icByFold.length}`,
       '2/3',
-      `IC > 0 in ${posYears}/${icByYear.length} folds`,
+      `IC > 0 in ${posIcFolds}/${icByFold.length} folds (need >= 0.67)`,
     ),
     gate('incremental_ic', 'skipped', null, 0.005, 'not applied (standalone signal)'),
     gate(
@@ -185,7 +219,7 @@ export function evaluateHurdles(args: {
       breakeven >= 2 * costBps ? 'PASS' : 'FAIL',
       breakeven,
       2 * costBps,
-      `breakeven ${breakeven.toFixed(1)} bps vs 2x modeled ${(2 * costBps).toFixed(1)} bps`,
+      `breakeven ${breakeven.toFixed(1)} bps ${breakeven >= 2 * costBps ? '>=' : '<'} 2x modeled ${costBps.toFixed(1)} bps (= ${(2 * costBps).toFixed(1)} bps)`,
     ),
     gate(
       'dsr',
@@ -256,22 +290,24 @@ function configYaml(spec: RunSpec): string {
     '  min_price: 5.0',
     'alpha:',
     '  horizon_days: 20',
-    `  use_ml: ${spec.use_ml}`,
     'portfolio:',
     '  book: long_short',
     '  gross_leverage_max: 2.0',
+    '  risk_aversion_mode: target_vol',
+    '  risk_aversion: 2.0',
     '  target_vol_annual: 0.10',
     `  trade_aversion: ${spec.label.includes('aversion 2') ? '2.0' : '1.0'}`,
+    'execution:',
+    `  signal_lag_days: ${spec.signal_lag_days}`,
     'validation:',
     '  n_splits: 6',
     '  dsr_threshold: 0.95',
-    `pipeline_signal_lag_days: ${spec.signal_lag_days}`,
   ].join('\n');
 }
 
 export function generateRun(spec: RunSpec): GeneratedRun {
   const rng = mulberry32(spec.seed * 7919 + hashString(spec.id));
-  const n = Math.max(120, spec.days - WARMUP_DAYS);
+  const n = Math.max(120, spec.days - mockWarmup(spec.use_ml, spec.signal_lag_days).warmup_days);
   const dates = businessDays(spec.startDate ?? '2019-12-10', n);
 
   // --- returns: gross calibrated exactly to the target Sharpe, costs to the net target
@@ -335,15 +371,24 @@ export function generateRun(spec: RunSpec): GeneratedRun {
     mean_ic: spec.meanIc * Math.min(1.15, Math.sqrt(h / H)) * Math.exp(-Math.max(0, h - H) / 400),
   }));
 
-  // --- folds: calendar years with >= 60 return days
-  const yearIdx = new Map<string, number[]>();
-  dates.forEach((d, i) => {
-    const y = d.slice(0, 4);
-    yearIdx.set(y, [...(yearIdx.get(y) ?? []), net[i] ?? 0]);
-  });
-  const fold_sharpes: FoldSharpe[] = [...yearIdx.entries()]
-    .filter(([, xs]) => xs.length >= 60)
-    .map(([label, xs]) => ({ label, sharpe_net: annualizedSharpe(xs) }));
+  // --- folds: validation.n_splits (6) contiguous purged walk-forward test blocks over the
+  // backtest dates (qts.pipeline.purged_fold_blocks), labelled "YYYY-MM–YYYY-MM" like the API
+  const N_SPLITS = 6;
+  const edges = Array.from({ length: N_SPLITS + 1 }, (_, k) => Math.floor((k * n) / N_SPLITS));
+  const blocks = edges.slice(0, -1).map((lo, k) => [lo, (edges[k + 1] ?? n) - 1] as const);
+  const fold_sharpes: FoldSharpe[] = blocks.map(([lo, hi]) => ({
+    label: `${(dates[lo] ?? '').slice(0, 7)}–${(dates[hi] ?? '').slice(0, 7)}`,
+    sharpe_net: annualizedSharpe(net.slice(lo, hi + 1)),
+  }));
+  // mean sampled IC per block: the input of the ic_sign gate
+  const icByFold = blocks
+    .map(([lo, hi]) => {
+      const a = dates[lo] ?? '';
+      const b = dates[hi] ?? '';
+      const xs = icDates.flatMap((d, i) => (d >= a && d <= b ? [icSeries[i] ?? 0] : []));
+      return xs.length ? mean(xs) : null;
+    })
+    .filter((x): x is number => x !== null);
 
   // --- summary (all from the series)
   const sharpeNet = annualizedSharpe(net);
@@ -413,7 +458,7 @@ export function generateRun(spec: RunSpec): GeneratedRun {
   const hurdles = evaluateHurdles({
     phase: spec.phase,
     decileT: spec.decileT,
-    icByYear: by_year,
+    icByFold,
     foldSharpes: fold_sharpes,
     breakeven,
     costBps,
@@ -423,10 +468,7 @@ export function generateRun(spec: RunSpec): GeneratedRun {
   });
 
   const configHash = hex(mulberry32(hashString(`${spec.id}cfg`)), 16);
-  const dataHash = hex(
-    mulberry32(hashString(`${spec.kind}${spec.seed}${spec.stocks}${spec.days}`)),
-    16,
-  );
+  const dataHash = mockDataHash(spec);
   const gitSha = hex(mulberry32(hashString(spec.created_at)), 40);
 
   const notes: string[] = [];

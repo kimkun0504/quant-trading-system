@@ -120,7 +120,7 @@ import cvxpy as cp
 import numpy as np
 import pandas as pd
 
-from qts.core.config import PortfolioConfig
+from qts.core.config import ExecutionConfig, PortfolioConfig
 from qts.core.costs import VENUE_ROUTED
 from qts.core.risk_fill import out_of_model_specific_var
 from qts.core.roles import RISK_ONLY_STYLES
@@ -667,12 +667,16 @@ class SinglePeriodOptimizer:
         verbose: bool = False,
         reuse_problem: bool | None = None,
         exact_power: bool = True,
+        exec_cfg: ExecutionConfig | None = None,
     ):
         """``reuse_problem`` overrides ``cfg.reuse_problem`` (cache the DPP problem
         across solves while the ticker set / constraint structure is unchanged).
         ``exact_power`` enters the cost model's 3/2-power impact terms as exact
-        power cones instead of cvxpy's SOC approximation (see :func:`_parametrize`)."""
+        power cones instead of cvxpy's SOC approximation (see :func:`_parametrize`).
+        ``exec_cfg`` (default: the cost model's ``exec_cfg``, else ``ExecutionConfig()``)
+        supplies ``algo_max_pct_adv`` for ``cfg.participation_from_urgency``."""
         self.cfg = cfg
+        self.exec_cfg = exec_cfg
         self.cost_model = cost_model
         self.horizon_days = int(horizon_days)
         self.beta_band = float(getattr(cfg, "beta_band", 0.05) if beta_band is None else beta_band)
@@ -781,6 +785,18 @@ class SinglePeriodOptimizer:
         return beta_col_used, ind_cols, sty
 
     # ------------------------------------------------------------ problem data
+    def participation_rate(self, half_life_days: float | None = None) -> float:
+        """Per-name daily trade cap as a fraction of ADV: ``cfg.max_adv_participation``,
+        or with ``cfg.participation_from_urgency`` the router's urgency-derived rate
+        :func:`qts.execution.router.participation_for_half_life` (``half_life_days`` =
+        ``AlphaOutput.half_life_days``; unknown -> ``algo_max_pct_adv``)."""
+        if not getattr(self.cfg, "participation_from_urgency", False):
+            return float(self.cfg.max_adv_participation)
+        from qts.execution.router import participation_for_half_life
+
+        ec = self.exec_cfg or getattr(self.cost_model, "exec_cfg", None) or ExecutionConfig()
+        return participation_for_half_life(half_life_days, float(ec.algo_max_pct_adv))
+
     def _prepare(
         self,
         alpha: pd.Series,
@@ -794,6 +810,7 @@ class SinglePeriodOptimizer:
         force_to_zero,
         benchmark_weights,
         notes: list[str],
+        part_rate: float | None = None,
     ) -> _ProblemData:
         cfg = self.cfg
         full = pd.Index(alpha.index).union(pd.Index(w_current.index)).union(risk.tickers)
@@ -862,7 +879,8 @@ class SinglePeriodOptimizer:
             wb = pd.Series(benchmark_weights, dtype=float).reindex(tickers).fillna(0.0).values
 
         adv = np.asarray(pd.Series(_snap_get(snap, "adv_usd")).reindex(tickers).values, dtype=float)
-        part_cap = cfg.max_adv_participation * adv / max(nav, 1.0)
+        rate = float(cfg.max_adv_participation if part_rate is None else part_rate)
+        part_cap = rate * adv / max(nav, 1.0)
         nt = [t for t in (no_trade or []) if t in tickers]
         no_trade_mask = np.isin(tickers, nt)
         req_map = dict(force_to_zero or {})
@@ -1116,7 +1134,13 @@ class SinglePeriodOptimizer:
             force_to_zero,
             benchmark_weights,
             notes,
+            part_rate=self.participation_rate(alpha_half_life_days),
         )
+        if getattr(cfg, "participation_from_urgency", False):
+            notes.append(
+                f"ADV participation cap {self.participation_rate(alpha_half_life_days):.2%} "
+                f"from urgency (half-life {alpha_half_life_days})"
+            )
         tickers, w0 = pdat.tickers, pdat.w0
         g = self._gp_factor(pdat, H, alpha_half_life_days, venue, notes)
         if g != 1.0:

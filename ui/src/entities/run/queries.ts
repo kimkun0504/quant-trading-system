@@ -124,3 +124,12 @@ export function useConfigSchema() {
     staleTime: Infinity,
   });
 }
+
+/** Effective warm-up for the default config (`GET /api/config/warmup`); the launch form's `days` floor. */
+export function useWarmup(ml: boolean, signalLagDays: 0 | 1) {
+  return useQuery({
+    queryKey: ['config-warmup', ml, signalLagDays],
+    queryFn: ({ signal }) => api.getWarmup(ml, signalLagDays, signal),
+    staleTime: Infinity,
+  });
+}

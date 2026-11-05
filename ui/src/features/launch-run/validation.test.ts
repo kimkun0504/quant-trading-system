@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { mockWarmup } from '@/mocks/fixtures/generate';
 import { DEFAULT_VALUES, toRequest, validateLaunch } from './validation';
 
 describe('launch form validation', () => {
@@ -7,18 +8,38 @@ describe('launch form validation', () => {
   });
 
   it('names each problem in the field’s own terms', () => {
-    const e = validateLaunch({
-      ...DEFAULT_VALUES,
-      stocks: '10',
-      days: '500',
-      seed: '1.5',
-      phase: 2,
-      ml: false,
-    });
+    const e = validateLaunch(
+      {
+        ...DEFAULT_VALUES,
+        stocks: '10',
+        days: '500',
+        seed: '1.5',
+        phase: 2,
+        ml: false,
+      },
+      [],
+      { warmup_days: 506, min_days: 758 },
+    );
     expect(e.stocks).toBe('Use between 50 and 3,000.');
-    expect(e.days).toMatch(/at least 764 \(512 warm-up days plus one year\)/);
+    expect(e.days).toMatch(/at least 758 \(506 warm-up days plus one year\)/);
     expect(e.seed).toBe('A seed must be a whole number.');
     expect(e.ml).toMatch(/Phase 2 tests the ML sleeve/);
+  });
+
+  it('takes the days floor from the API warm-up, not a constant', () => {
+    const ml = mockWarmup(true, 1);
+    expect(ml.warmup_days).toBe(829);
+    expect(validateLaunch({ ...DEFAULT_VALUES, ml: true, days: '1080' }, [], ml).days).toBe(
+      'Use at least 1,081 (829 warm-up days plus one year) and at most 6,000.',
+    );
+    expect(
+      validateLaunch({ ...DEFAULT_VALUES, ml: true, days: '1081' }, [], ml).days,
+    ).toBeUndefined();
+    // before the warm-up has loaded only the schema floor applies (the server checks the rest)
+    expect(validateLaunch({ ...DEFAULT_VALUES, days: '400' }).days).toBeUndefined();
+    expect(validateLaunch({ ...DEFAULT_VALUES, days: '299' }).days).toBe(
+      'Use between 300 and 6,000.',
+    );
   });
 
   it('checks schema bounds of overrides', () => {

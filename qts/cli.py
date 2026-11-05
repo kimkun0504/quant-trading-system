@@ -12,6 +12,8 @@ Commands
 ``runs list``        run directories under ``--root`` (default ``runs``), newest first
 ``runs show ID``     manifest + headline numbers + hurdles of one run
 ``ledger show``      trial ledger table (``--path``, ``--family``)
+``ledger migrate``   one-off rename of pre-Nov-2026 bare ``pipeline_phaseN`` families
+                     (``--dry-run``; see ``qts.validation.ledger``)
 
 Every pipeline command writes a run directory (``--runs-root``, default
 ``runs``; ``--no-save`` disables) and logs to the trial ledger (``--ledger``).
@@ -102,8 +104,10 @@ def _run_pipeline(md, cfg, a: argparse.Namespace, out=None) -> int:
         print(format_result(res), file=out)
         return 0
     # headline = the configured lag (production default 1, or --signal-lag); lag 0 and 1
-    # are always run for the D4 comparison.  The fitted models are reused; only the
-    # backtest re-runs.
+    # are always run for the D4 comparison.  Each lag is a full fit + backtest:
+    # ResearchPipeline.run refits whenever cfg.execution.signal_lag_days differs from
+    # the lag the alpha was fitted with (labels, purge and IC windows depend on it),
+    # so nothing is reused across lags.
     base = int(cfg.execution.signal_lag_days)
     results = {}
     for lag in sorted({0, 1, base}):
@@ -253,6 +257,19 @@ def cmd_ledger(a: argparse.Namespace) -> int:
     if not Path(a.path).exists():
         print(f"(no ledger at {a.path})")
         return 0
+    if a.ledger_cmd == "migrate":
+        changes = TrialLedger(a.path).migrate_family_names(dry_run=a.dry_run)
+        if not changes:
+            print("nothing to migrate: every family already has the current format")
+            return 0
+        for c in changes:
+            print(f"line {c['line']:>4d}  {str(c['ts'])[:19]}  {c['old']} -> {c['new']}")
+        verb = "would rename" if a.dry_run else "renamed"
+        print(
+            f"{verb} {len(changes)} record(s)"
+            + ("" if a.dry_run else f"; backup at {a.path}.bak-<timestamp>")
+        )
+        return 0
     recs = TrialLedger(a.path).records(a.family)
     if not recs:
         print("(empty)")
@@ -321,6 +338,13 @@ def build_parser() -> argparse.ArgumentParser:
     ls = lsub.add_parser("show")
     ls.add_argument("--path", default=DEFAULT_LEDGER)
     ls.add_argument("--family", default=None)
+    lm = lsub.add_parser(
+        "migrate",
+        help="one-off: rename legacy 'pipeline_phaseN' families to 'pipeline_phaseN:<data_hash[:12]>' "
+        "(records without a data hash go to the 'legacy' family); writes a backup first",
+    )
+    lm.add_argument("--path", default=DEFAULT_LEDGER)
+    lm.add_argument("--dry-run", action="store_true", help="print the renames, change nothing")
     lg.set_defaults(func=cmd_ledger)
     return ap
 

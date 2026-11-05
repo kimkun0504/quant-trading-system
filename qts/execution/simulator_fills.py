@@ -15,10 +15,21 @@ Fill rules
   impact uses ``b_auction`` and ``V = auction_volume``.
 * **LOC**: same fill price; fills only if the limit is not violated (buy:
   fill_px <= limit; sell: fill_px >= limit).  Otherwise unfilled.
-* **ALGO** (Vwap/ClosePx/ArrivalPx/Adaptive): fills at a VWAP proxy
-  ``(open + close) / 2`` (ArrivalPx/Adaptive use ``open``) plus continuous
-  impact (``b_continuous``, ``V = full-day realized volume``) with spread
-  crossing; partial fill if ``qty > maxPctVol * volume``.
+* **ALGO** (Vwap/ClosePx): fills at a VWAP proxy ``(open + close) / 2``;
+  ArrivalPx/Adaptive fill at the arrival price ``open``.  Plus continuous
+  impact (``b_continuous``, ``V = full-day realized volume``) and spread
+  crossing.  Partial fill if ``qty > maxPctVol * volume``: the fill is the cap
+  floored to whole shares.
+  **Algo child of a split order** (``meta['split'] == "continuous"``, the
+  remainder after the router's auction child; ``qts.execution.router``): both
+  children are one metaorder, so the algo child is charged the *increment*
+  ``C(q_a + q_c) - C(q_a)`` (``C`` = continuous square-root cost on the day's
+  volume, ``q_a`` = USD of the auction child, ``q_c`` = USD of this fill), the
+  same rule as the routed venue of ``qts.tcost.model`` -- not ``C(q_c)`` as if it
+  were an independent order (``C`` is superadditive, so that would make splitting
+  look cheap).  ``q_a`` is the auction child's filled shares when it is simulated
+  earlier in the same call (the router emits it first), else the planned
+  ``parent_qty - qty``.
 * **LMT** (passive reversal): fills at the limit, no impact or spread, if the
   close crossed the limit (buy: close <= limit; sell: close >= limit).
   Crude; a probabilistic fill model (NautilusTrader-style) is a later step.
@@ -98,6 +109,7 @@ class FillSimulator:
             else auction_share_for_date(date, self.cfg.auction_volume_share_default)
         )
         rows = []
+        auction_filled: dict[str, float] = {}  # parent_order_id -> auction child's filled shares
         for o in orders:
             r = self._row(realized, o.ticker)
             close = float(r["close"])
@@ -133,21 +145,40 @@ class FillSimulator:
                     fill_px = np.nan
                 else:
                     filled, status, reason = o.qty, "filled", "auction fill"
+                if o.meta.get("split") == "auction" and o.meta.get("parent_order_id") is not None:
+                    auction_filled[str(o.meta["parent_order_id"])] = float(filled)
             elif o.order_type == "ALGO":
                 venue = VENUE_CONTINUOUS
                 max_pct = float(o.algo_params.get("maxPctVol", self.default_max_pct_vol))
                 cap = max_pct * vol if np.isfinite(vol) else o.qty
-                filled = float(min(o.qty, cap))
-                ref = open_ if o.algo in ("ArrivalPx", "Adaptive") else 0.5 * (open_ + close)
-                impact_bps = (
-                    float(self.impact.cost_bps(filled * ref, vol * ref, sigma, venue=venue))
-                    if filled > 0
-                    else 0.0
-                )
+                # partial fills are whole shares (floor of the participation cap)
+                filled = float(o.qty) if cap >= o.qty else float(np.floor(max(cap, 0.0)))
+                at_arrival = o.algo in ("ArrivalPx", "Adaptive")
+                ref = open_ if at_arrival else 0.5 * (open_ + close)
+                q_a_sh = 0.0
+                if o.meta.get("split") == "continuous":
+                    pid = o.meta.get("parent_order_id")
+                    planned = max(float(o.meta.get("parent_qty", o.qty)) - float(o.qty), 0.0)
+                    q_a_sh = auction_filled.get(str(pid), planned) if pid is not None else planned
+                if filled > 0:
+                    v_usd = vol * ref
+                    # increment C(q_a + q_c) - C(q_a), as bps of this fill's notional (q_a = 0:
+                    # the stand-alone C(q_c)); C(Q) = cost_bps(Q) * Q / 1e4
+                    q_a, q_all = q_a_sh * ref, (q_a_sh + filled) * ref
+                    c_all = float(self.impact.cost_bps(q_all, v_usd, sigma, venue=venue)) * q_all
+                    c_a = (
+                        float(self.impact.cost_bps(q_a, v_usd, sigma, venue=venue)) * q_a if q_a > 0 else 0.0
+                    )
+                    impact_bps = (c_all - c_a) / (filled * ref)
+                else:
+                    impact_bps = 0.0
                 spread_bps = hs_bps
                 fill_px = ref * (1 + s * (impact_bps + spread_bps) / 1e4) if filled > 0 else np.nan
                 status = "filled" if filled >= o.qty else ("partial" if filled > 0 else "unfilled")
-                reason = f"{o.algo} at VWAP proxy, participation cap {max_pct:.0%} of {vol:.0f}"
+                where = "at arrival (open)" if at_arrival else "at VWAP proxy (open+close)/2"
+                reason = f"{o.algo} {where}, participation cap {max_pct:.0%} of {vol:.0f}"
+                if q_a_sh > 0:
+                    reason += f"; split remainder priced as increment over {q_a_sh:.0f} sh auction child"
             elif o.order_type == "LMT":
                 venue = VENUE_CONTINUOUS
                 lim = o.limit_px if o.limit_px is not None else close

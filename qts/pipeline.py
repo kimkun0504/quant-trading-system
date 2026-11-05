@@ -116,9 +116,24 @@ With ``runs_root`` set, :meth:`ResearchPipeline.run` writes
     weights.parquet   date x ticker post-trade weights (decision dates)
     trades.parquet    date x ticker weight changes (decision dates)
     costs.parquet     date x {spread, impact, fees, borrow, total} USD
-    returns.parquet   date x {gross, net} (realisation dates)
+    returns.parquet   date x {gross, net, gross_after_borrow} (realisation dates;
+                      gross_after_borrow = gross - borrow / NAV, the base of the
+                      per-side cost gates)
     ic.parquet        column "rank_ic": sampled per-date rank IC
     hurdles.json      HurdleResult.to_dict()
+
+Written next to them by :func:`qts.runs.artifacts.write_extra_artifacts` (best
+effort, for the workbench API; layout in that module's docstring)::
+
+    extras.json         run facts (data kind, universe size, market days, seed,
+                        execution venue, label), DSR moments, IC by calendar year,
+                        factor roles
+    exante_vol.parquet  annualised ex-ante vol of the post-trade book
+    exposures.parquet   decision date x factor net book exposure
+    holdings.parquet    month-end holdings (weight, alpha, specific vol, industry)
+
+``summary.json`` is written right after ``manifest.json``: a directory without it
+is an interrupted run (``qts runs list`` shows it as unreadable).
 
 :func:`load_run` returns a typed :class:`RunRecord`; :func:`list_runs` lists
 run directories newest first.
@@ -214,6 +229,66 @@ def data_hash_of(md: MarketData) -> str:
     over **all** ``MarketData`` panels (incl. optional ones and ``extra``) and the
     eligibility panel (handbook fix #37) — see :func:`qts.core.manifest.hash_market_data`."""
     return hash_market_data(md)
+
+
+@dataclass(frozen=True)
+class WarmupEstimate:
+    """Trading days of a market panel consumed before the first out-of-sample
+    backtest date (:func:`estimate_warmup_days`)."""
+
+    days: int  #: total warm-up = max(risk_days, ml_days) + signal_lag_days
+    risk_days: int  #: risk exposures warm-up + factor-return history (exact)
+    ml_days: int | None  #: universe lead + ML training minimum + embargo (None without ML)
+    signal_lag_days: int  #: D4 execution lag added at the end
+    exact: bool  #: True when the risk term binds (exact); ML term is a conservative estimate
+
+
+def estimate_warmup_days(
+    cfg: SystemConfig, use_ml: bool, risk_warmup_days: int | None = None
+) -> WarmupEstimate:
+    """Warm-up implied by the config, i.e. the position in ``md.dates`` of the
+    first date :meth:`ResearchPipeline.backtest_dates` returns on a panel whose
+    names all have data from its first day.
+
+    With ``m = cfg.risk.min_history_days``, ``W`` = the risk model's exposure
+    warm-up (``risk_warmup_days``, default ``m``), ``L =
+    cfg.execution.signal_lag_days``, ``h = cfg.alpha.embargo_days or
+    cfg.alpha.horizon_days``:
+
+    * risk: exposures start at position ``W``; factor returns one day later
+      (the first return needs the previous day's exposures); the backtest needs
+      ``m`` of them -> ``risk_days = W + m + 1`` (exact; 505 for the defaults).
+    * ML (``use_ml``): the first walk-forward fit is ``train_min_days + h + L``
+      feature dates after the first feature date
+      (:meth:`qts.alpha.trainer.WalkForwardTrainer.schedule`); the first feature
+      date is the first universe date, at most ``max(5, adv_window // 2) - 1 +
+      refresh_days`` positions in (the ADV window's ``min_periods``, then up to
+      one refresh period) -> ``ml_days`` is an upper bound (828 for the
+      defaults with ``L = 1``, total 829; the synthetic market starts at 820).
+    * total ``days = max(risk_days, ml_days) + L`` (the decision at ``t`` reads
+      the signal of ``t - L``, which must itself be out of sample).
+
+    Data that start later per name (late listings, gaps) only move the start
+    further; this is the floor a launch form should enforce.
+    """
+    m = int(cfg.risk.min_history_days)
+    w = m if risk_warmup_days is None else int(risk_warmup_days)
+    lag = int(getattr(cfg.execution, "signal_lag_days", 0) or 0)
+    risk_days = w + m + 1
+    ml_days: int | None = None
+    if use_ml:
+        u = cfg.universe
+        lead = max(5, int(u.adv_window) // 2) - 1 + int(u.refresh_days)
+        h = int(cfg.alpha.embargo_days or cfg.alpha.horizon_days)
+        ml_days = lead + int(cfg.alpha.train_min_days) + h + lag
+    days = max(risk_days, ml_days or 0) + lag
+    return WarmupEstimate(
+        days=days,
+        risk_days=risk_days,
+        ml_days=ml_days,
+        signal_lag_days=lag,
+        exact=ml_days is None or risk_days >= ml_days,
+    )
 
 
 def purged_fold_blocks(
@@ -339,7 +414,9 @@ class ResearchPipeline:
         t["alpha_fit"] = time.perf_counter() - t0
 
         self.cost = TransactionCostModel(cfg.cost, cfg.execution)  # routed-venue auction cap (D3)
-        self.optimizer = SinglePeriodOptimizer(cfg.portfolio, self.cost, horizon_days=cfg.alpha.horizon_days)
+        self.optimizer = SinglePeriodOptimizer(
+            cfg.portfolio, self.cost, horizon_days=cfg.alpha.horizon_days, exec_cfg=cfg.execution
+        )
         self.timings_ = t
         return self
 

@@ -158,7 +158,12 @@ def test_delisting_is_liquidated_and_flagged(md, risk_model, alpha_model):
     kill_from = dates[15]
     close = md.close.copy()
     close.loc[kill_from:, tick] = np.nan
-    md2 = dataclasses.replace(md, close=close)
+    # vendor delisting table: last trading date dates[14] -> the gap on dates[15] is a
+    # delisting decided at once (without it the causal gap rule would treat it as a
+    # halt for cfg.alpha.delisting_gap_days days)
+    dd = pd.Series(pd.NaT, index=md.tickers, dtype="datetime64[ns]")
+    dd[tick] = dates[14]
+    md2 = dataclasses.replace(md, close=close, delisting_dates=dd)
     cfg = make_cfg()
     cm = SimpleCostModel(cfg.cost)
     opt = SinglePeriodOptimizer(cfg.portfolio, cm)
