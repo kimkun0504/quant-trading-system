@@ -17,6 +17,9 @@ Commands
 
 Every pipeline command writes a run directory (``--runs-root``, default
 ``runs``; ``--no-save`` disables) and logs to the trial ledger (``--ledger``).
+``--cache`` turns on the stage cache (``cfg.cache``, :mod:`qts.runs.cache`):
+fitted risk / alpha models are stored under ``<runs-root>/_cache`` and reused
+when data, config sections and code are unchanged (same numbers, same hashes).
 Only the standard library is used for argument parsing.
 """
 
@@ -71,6 +74,12 @@ def _add_pipeline_args(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--runs-root", default=DEFAULT_RUNS_ROOT, help="where run directories are written")
     ap.add_argument("--no-save", action="store_true", help="do not write a run directory")
     ap.add_argument("--max-days", type=int, default=None, help="backtest only the last N out-of-sample days")
+    ap.add_argument(
+        "--cache",
+        action="store_true",
+        help="reuse fitted risk / alpha models from the stage cache (cache.enabled; "
+        "default dir <runs-root>/_cache); results and config hash are unchanged",
+    )
     ap.add_argument("-v", "--verbose", action="store_true")
 
 
@@ -79,6 +88,9 @@ def _run_pipeline(md, cfg, a: argparse.Namespace, out=None) -> int:
 
     out = out if out is not None else sys.stdout  # resolved at call time (capture-friendly)
     cfg = cfg.with_overrides({"universe.top_n_by_mcap": min(cfg.universe.top_n_by_mcap, md.close.shape[1])})
+    if getattr(a, "cache", False):
+        root = cfg.cache.root or f"{a.runs_root}/_cache"  # also with --no-save
+        cfg = cfg.with_overrides({"cache.enabled": True, "cache.root": root})
     cfg, warn = _set_signal_lag(cfg, a.signal_lag)
     if warn:
         print(f"WARNING: {warn}", file=out)

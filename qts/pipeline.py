@@ -146,6 +146,7 @@ import logging
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
@@ -172,6 +173,7 @@ from qts.risk import BarraStyleRiskModel, HybridRiskModel, build_risk_model
 
 # The run registry and the report card live in qts.runs; re-exported here because
 # ``from qts.pipeline import save_run, load_run, format_result, ...`` is public API.
+from qts.runs.cache import DEFAULT_CACHE_DIRNAME, StageCache
 from qts.runs.registry import (
     RunRecord,
     _from_json_scalar,
@@ -381,6 +383,7 @@ class ResearchPipeline:
         self.cost: TransactionCostModel | None = None
         self.optimizer: SinglePeriodOptimizer | None = None
         self.timings_: dict[str, float] = {}
+        self.cache_info_: dict[str, str] = {}
         self.data_hash_: str = ""
         self._md_input: MarketData | None = None
         self._risk_first_date: pd.Timestamp | None = None
@@ -388,11 +391,26 @@ class ResearchPipeline:
 
     # ------------------------------------------------------------------ fit
     def fit(self, md: MarketData) -> ResearchPipeline:
+        """Universe -> risk model -> alpha model -> cost model / optimizer.
+
+        With ``cfg.cache.enabled`` the risk and alpha fits go through the
+        content-addressed stage cache (:mod:`qts.runs.cache`): a hit loads the
+        fitted model built from the *identical* data snapshot, config sections
+        and code (bitwise the same object a fresh fit builds); a miss fits and
+        stores.  ``self.cache_info_`` records ``hit`` / ``stored`` / ``miss``
+        per stage."""
         cfg = self.cfg
         t: dict[str, float] = {}
         self._md_input = md
+        cache = self._stage_cache()
+        self.cache_info_ = {}
         t0 = time.perf_counter()
-        self.data_hash_ = data_hash_of(md)
+        if cache is None:
+            self.data_hash_ = data_hash_of(md)
+            full_hash = ""
+        else:
+            full_hash = hash_market_data(md, n_chars=64)
+            self.data_hash_ = full_hash[:16]  # == data_hash_of(md)
         t["data_hash"] = time.perf_counter() - t0
 
         t0 = time.perf_counter()
@@ -404,23 +422,37 @@ class ResearchPipeline:
         # apply_mask keeps full level history (audit 2 #6); the risk model's
         # estimation universe is still "has a market cap", so it gets the view with
         # levels NaN outside the universe (unchanged risk-model behaviour)
-        self.risk = build_risk_model(cfg.risk, warmup_days=self.warmup_days).fit(masked_levels(self.md_u))
+        md_risk = masked_levels(self.md_u)
+        risk_key = self._cache_key(cache, "risk_fit", md, full_hash)
+        risk = self._cache_load(cache, "risk_fit", risk_key, md, full_hash, {"md": md_risk, "pipeline": self})
+        if risk is None:
+            risk = build_risk_model(cfg.risk, warmup_days=self.warmup_days).fit(md_risk)
+            self._cache_store(
+                cache, "risk_fit", risk_key, risk, md, full_hash, {"md": md_risk, "pipeline": self}
+            )
+        self.risk = risk
         self._risk_first_date = self._exposures_first_date()
         self._warned_warmup = False
         t["risk_fit"] = time.perf_counter() - t0
 
         t0 = time.perf_counter()
-        self.alpha = AlphaModel(
-            cfg.alpha,
-            composite_weight=self.composite_weight,
-            ml_factory=self.ml_factory,
-            use_ml=self.use_ml,
-            delisting_return=cfg.cost.delisting_haircut,
-            # labels / purge / trailing IC aligned to what is traded (execution lag L)
-            signal_lag_days=self.signal_lag_days(),
-        )
-        # residualize labels on the *risk model's* risk-only exposures (D1; plan 2.3: targets)
-        self.alpha.fit(self.md_u, risk_exposures_fn=self._exposures_fn)
+        alpha_key = self._cache_key(cache, "alpha_fit", md, full_hash, parent=risk_key)
+        alpha_refs = {"md": self.md_u, "ml_factory": self.ml_factory, "pipeline": self}
+        alpha = self._cache_load(cache, "alpha_fit", alpha_key, md, full_hash, alpha_refs)
+        if alpha is None:
+            alpha = AlphaModel(
+                cfg.alpha,
+                composite_weight=self.composite_weight,
+                ml_factory=self.ml_factory,
+                use_ml=self.use_ml,
+                delisting_return=cfg.cost.delisting_haircut,
+                # labels / purge / trailing IC aligned to what is traded (execution lag L)
+                signal_lag_days=self.signal_lag_days(),
+            )
+            # residualize labels on the *risk model's* risk-only exposures (D1; plan 2.3: targets)
+            alpha.fit(self.md_u, risk_exposures_fn=self._exposures_fn)
+            self._cache_store(cache, "alpha_fit", alpha_key, alpha, md, full_hash, alpha_refs)
+        self.alpha = alpha
         t["alpha_fit"] = time.perf_counter() - t0
 
         self.cost = TransactionCostModel(cfg.cost, cfg.execution)  # routed-venue auction cap (D3)
@@ -429,6 +461,85 @@ class ResearchPipeline:
         )
         self.timings_ = t
         return self
+
+    # ------------------------------------------------------------- stage cache
+    def _stage_cache(self) -> StageCache | None:
+        """The run's :class:`~qts.runs.cache.StageCache`, or ``None`` when
+        ``cfg.cache.enabled`` is off."""
+        cc = self.cfg.cache
+        if not cc.enabled:
+            return None
+        root = cc.root or str(Path(self.runs_root or "runs") / DEFAULT_CACHE_DIRNAME)
+        return StageCache(root)
+
+    def _cache_parts(self, stage: str, md: MarketData, full_hash: str) -> dict[str, Any]:
+        """Everything (besides code) the stage's result depends on.  The data
+        span (first / last date, shape) is listed explicitly next to the full
+        data hash: an entry is never served for another as-of span or snapshot."""
+        cfg = self.cfg
+        parts: dict[str, Any] = {
+            "data_hash": full_hash,
+            "data_span": self._data_span(md),
+            "universe": cfg.universe.hash(),
+            "risk": cfg.risk.hash(),
+            "warmup_days": self.warmup_days,
+        }
+        if stage == "alpha_fit":
+            parts.update(
+                alpha=cfg.alpha.hash(),
+                composite_weight=self.composite_weight,
+                use_ml=bool(self.use_ml),
+                ml_factory=callable_identity(self.ml_factory),
+                delisting_haircut=cfg.cost.delisting_haircut,
+                signal_lag_days=self.signal_lag_days(),
+            )
+        return parts
+
+    @staticmethod
+    def _data_span(md: MarketData) -> list[Any]:
+        d = md.dates
+        return [str(d[0]) if len(d) else None, str(d[-1]) if len(d) else None, len(d), len(md.tickers)]
+
+    def _cache_key(
+        self, cache: StageCache | None, stage: str, md: MarketData, full_hash: str, parent: str | None = None
+    ) -> str:
+        if cache is None:
+            return ""
+        parts = self._cache_parts(stage, md, full_hash)
+        if parent is not None:
+            parts["parent"] = parent  # alpha labels are residualised on the risk model
+        return cache.key(stage, parts)
+
+    def _cache_load(
+        self,
+        cache: StageCache | None,
+        stage: str,
+        key: str,
+        md: MarketData,
+        full_hash: str,
+        refs: Mapping[str, Any],
+    ) -> Any:
+        if cache is None or not key or stage not in self.cfg.cache.stages:
+            return None
+        obj = cache.load(stage, key, {"data_hash": full_hash, "data_span": self._data_span(md)}, refs)
+        self.cache_info_[stage] = "hit" if obj is not None else "miss"
+        return obj
+
+    def _cache_store(
+        self,
+        cache: StageCache | None,
+        stage: str,
+        key: str,
+        obj: Any,
+        md: MarketData,
+        full_hash: str,
+        refs: Mapping[str, Any],
+    ) -> None:
+        if cache is None or not key or stage not in self.cfg.cache.stages:
+            return
+        expect = {"data_hash": full_hash, "data_span": self._data_span(md)}
+        stored = cache.store(stage, key, obj, expect, refs, parts=self._cache_parts(stage, md, full_hash))
+        self.cache_info_[stage] = "stored" if stored is not None else "miss"
 
     def _exposures_first_date(self) -> pd.Timestamp | None:
         """First date of the risk model's exposure history (``ExposureHistory.first_date``)."""

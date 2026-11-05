@@ -191,3 +191,9 @@ validation:
 trading_days_per_year: 252
 seed: 0
 pipeline_pbo_configs: []
+cache:
+  enabled: false
+  root: ''
+  stages:
+  - risk_fit
+  - alpha_fit

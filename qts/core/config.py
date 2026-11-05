@@ -616,6 +616,31 @@ class ValidationConfig(_ConfigBase):
     required_gates: list[str] = field(default_factory=lambda: ["phase_sharpe", "suspect", "dsr"])
 
 
+#: Stages :class:`CacheConfig` may list (``qts.runs.cache.CACHEABLE_STAGES``).
+CACHE_STAGES = ("risk_fit", "alpha_fit")
+
+
+@dataclass(frozen=True)
+class CacheConfig(_ConfigBase):
+    """Content-addressed stage cache (:mod:`qts.runs.cache`).  **Operational
+    only**: a cache hit returns bitwise the object a fresh fit would build, so
+    this section is excluded from :meth:`SystemConfig.hash` (turning the cache
+    on or moving it changes no number and no config hash).
+
+    ``enabled``: off by default.  ``root``: cache directory; ``""`` means
+    ``<runs_root>/_cache`` (``runs/_cache`` when the pipeline has no runs root).
+    ``stages``: which of ``CACHE_STAGES`` to cache."""
+
+    enabled: bool = False
+    root: str = ""
+    stages: list[str] = field(default_factory=lambda: list(CACHE_STAGES))
+
+    def __post_init__(self) -> None:
+        unknown = sorted(set(self.stages) - set(CACHE_STAGES))
+        if unknown:
+            raise ValueError(f"cache.stages: unknown stage(s) {unknown}; known: {list(CACHE_STAGES)}")
+
+
 @dataclass(frozen=True)
 class SystemConfig(_ConfigBase):
     """Every behavioural knob of a run.  Serialise with ``to_dict``/``to_yaml``,
@@ -636,9 +661,23 @@ class SystemConfig(_ConfigBase):
     # overrides (e.g. [{"portfolio.risk_aversion": 5}, {"portfolio.risk_aversion": 20}]).
     # When empty the PBO gate is reported as skipped (a single configuration has no PBO).
     pipeline_pbo_configs: list[dict[str, Any]] = field(default_factory=lambda: cast(list[dict[str, Any]], []))
+    # Operational settings that cannot change a number; excluded from hash().
+    cache: CacheConfig = field(default_factory=CacheConfig)
+
+    #: Sections left out of :meth:`hash` (operational, not behavioural).
+    HASH_EXCLUDED_SECTIONS = ("cache",)
 
     # ------------------------------------------------------------------ serialisation
     # to_dict / from_dict / to_json / hash / to_yaml / from_yaml: see _ConfigBase.
+
+    def hash(self) -> str:
+        """Short SHA-256 of the canonical JSON **without** the operational
+        sections (:attr:`HASH_EXCLUDED_SECTIONS`): enabling the stage cache
+        changes no result, so it must not change the config hash, the trial
+        ledger's de-duplication key or the golden file."""
+        d = {k: v for k, v in self.to_dict().items() if k not in self.HASH_EXCLUDED_SECTIONS}
+        js = json.dumps(d, sort_keys=True, default=_json_default, separators=(",", ":"))
+        return hashlib.sha256(js.encode()).hexdigest()[:16]
 
     def with_overrides(self, overrides: Mapping[str, Any]) -> SystemConfig:
         """Deep copy with dotted-path overrides (``apply_overrides``)."""

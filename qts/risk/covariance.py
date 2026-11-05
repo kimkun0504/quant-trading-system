@@ -423,11 +423,7 @@ def specific_vra_multiplier(
     s2_prev = u2.ewm(halflife=half_life, min_periods=min_periods, ignore_na=True).mean().shift(1).values
     z2 = A**2 / np.where(s2_prev > 0, s2_prev, np.nan)
     if isinstance(market_cap, pd.DataFrame):
-        latest = market_cap.reindex(columns=U.columns).ffill().iloc[-1] if len(market_cap) else None
-        panel = market_cap.reindex(columns=U.columns).shift(1).reindex(U.index)
-        if latest is not None:
-            panel = panel.fillna(latest)
-        w = panel.fillna(0.0).clip(lower=0.0).values
+        w = _vra_cap_weights(market_cap, U)
     else:
         w = np.broadcast_to(market_cap.reindex(U.columns).fillna(0.0).clip(lower=0.0).values, A.shape)
     ok = np.isfinite(z2)
@@ -438,6 +434,56 @@ def specific_vra_multiplier(
         return 1.0
     lam2 = float(ewma_weights(len(B2), vra_half_life) @ B2)
     return float(np.sqrt(np.clip(lam2, 1e-6, None)))
+
+
+def _vra_cap_weights_pandas(market_cap: pd.DataFrame, U: pd.DataFrame) -> np.ndarray:
+    """Reference (pandas) form of :func:`_vra_cap_weights`; used when the fast
+    path's preconditions do not hold and by the equivalence test."""
+    latest = market_cap.reindex(columns=U.columns).ffill().iloc[-1] if len(market_cap) else None
+    panel = market_cap.reindex(columns=U.columns).shift(1).reindex(U.index)
+    if latest is not None:
+        panel = panel.fillna(latest)
+    return panel.fillna(0.0).clip(lower=0.0).values
+
+
+def _vra_cap_weights(market_cap: pd.DataFrame, U: pd.DataFrame) -> np.ndarray:
+    """Weights ``w_it`` of :func:`specific_vra_multiplier` from a cap panel:
+    the cap of the previous row of ``market_cap`` for each row of ``U``, then
+    the latest non-missing cap, then 0, floored at 0.
+
+    NumPy form of :func:`_vra_cap_weights_pandas` (bitwise identical, same
+    memory layout; the pandas chain forward-filled the *whole* cap history and
+    split the frame into one block per column, ~0.2-0.7 s per ``as_of`` at
+    300-1000 names).
+    Falls back to the pandas form for an empty or non-float64 panel or
+    non-unique labels."""
+    sub = market_cap.reindex(columns=U.columns)
+    if (
+        len(market_cap) == 0
+        or not market_cap.index.is_unique
+        or not U.columns.is_unique
+        or not all(dt == np.float64 for dt in sub.dtypes)
+    ):
+        return _vra_cap_weights_pandas(market_cap, U)
+    M = sub.to_numpy(dtype=np.float64)
+    n_rows, n_cols = M.shape
+    pos = market_cap.index.get_indexer(U.index)
+    # shift(1) then reindex(U.index): row of U at position p of the cap index gets
+    # cap row p - 1; p == 0 or a label absent from the cap index -> NaN
+    prev = pos - 1
+    have = pos > 0
+    panel = np.full((len(U.index), n_cols), np.nan)
+    if have.any():
+        panel[have] = M[prev[have]]
+    valid = ~np.isnan(M)
+    any_valid = valid.any(axis=0)
+    last = n_rows - 1 - np.argmax(valid[::-1], axis=0)
+    latest = np.where(any_valid, M[last, np.arange(n_cols)], np.nan)
+    panel = np.where(np.isnan(panel), latest[None, :], panel)
+    panel = np.where(np.isnan(panel), 0.0, panel)
+    # Fortran order like DataFrame.values: the row sums downstream are
+    # layout-sensitive in the last bit (numpy's pairwise summation)
+    return np.asfortranarray(np.where(panel >= 0.0, panel, 0.0))
 
 
 def structural_specific_vol(
@@ -501,6 +547,31 @@ def bayesian_shrink_specific(
     return pd.Series(out, index=sigma.index)
 
 
+def _column_quantiles(U: pd.DataFrame, q: float) -> pd.Series:
+    """``U.quantile(q)`` (linear interpolation, NaNs skipped) for a float64
+    frame, bitwise identical to pandas: pandas calls ``np.quantile`` once per
+    column when any value is missing; here the columns are sorted once (NaN
+    last) and every group of columns with the same number of valid values is
+    passed to ``np.quantile(..., axis=0)`` together (same order statistics,
+    same interpolation arithmetic).  Other dtypes use pandas."""
+    if not all(dt == np.float64 for dt in U.dtypes) or U.shape[1] == 0:
+        return U.quantile(q)
+    A = U.to_numpy(dtype=np.float64)
+    n, m = A.shape
+    out = np.full(m, np.nan)
+    if n:
+        cnt = n - np.isnan(A).sum(axis=0)
+        S = np.sort(A, axis=0)  # NaN sorted last
+        for k in np.unique(cnt):
+            if k == 0:
+                continue
+            cols = np.flatnonzero(cnt == k)
+            out[cols] = np.quantile(S[:k, cols], np.asarray([q], dtype=np.float64), axis=0, method="linear")[
+                0
+            ]
+    return pd.Series(out, index=U.columns, name=q)
+
+
 def specific_risk(
     specific_returns: pd.DataFrame,
     exposures_latest: pd.DataFrame,
@@ -533,7 +604,7 @@ def specific_risk(
 
     # robust-vs-equal sd ratio for outlier damping (USE4: sigma_robust = IQR/1.35,
     # Z = |sigma_eq / sigma_robust - 1|, gamma = clip((h-60)/120) * min(1, exp(1 - Z)))
-    q75, q25 = U.quantile(0.75), U.quantile(0.25)
+    q75, q25 = _column_quantiles(U, 0.75), _column_quantiles(U, 0.25)
     sd_robust = ((q75 - q25) / 1.35).replace(0.0, np.nan)
     sd_eq = U.std(ddof=0)
     Z = (sd_eq / sd_robust - 1.0).abs().fillna(0.0)

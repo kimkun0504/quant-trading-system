@@ -9,6 +9,7 @@ This page is the hands-on manual. It shows how to install the research package, 
 - This page is new. It covers the `qts` command (`demo`, `run`, `config`, `runs`, `ledger`), the run registry under `runs/<run_id>/`, the append-only trial ledger, the FastAPI service in `api/` and the React workbench in `ui/`.
 - Runs now trade one day after the signal by default (`ExecutionConfig.signal_lag_days = 1`); `qts demo --compare-lag` prints the lag-0 versus lag-1 comparison.
 - The defaults quoted here are those of `qts/core/config.py` and the generated `configs/default.yaml` as of 2026-11-05.
+- Stage cache (`--cache`, config section `cache`, off by default): fitted risk and alpha models are reused across runs on the same data; results and hashes are unchanged (→ see **The stage cache**).
 </callout>
 
 ## Install
@@ -99,6 +100,7 @@ cd ui && npm ci && cd ..
 | `--runs-root DIR` | `runs` | where run directories go |
 | `--no-save` | off | do not write a run directory |
 | `--max-days N` | all | backtest only the last N out-of-sample days (quick checks) |
+| `--cache` | off | reuse fitted risk and alpha models from the stage cache (`cache.enabled`; directory `<runs-root>/_cache`); same numbers, same hashes |
 | `-v` | off | log progress (every 50 backtest days) |
 
 The CLI clamps `universe.top_n_by_mcap` to the number of tickers in the data, so a 300-name synthetic market runs with a 300-name universe cap.
@@ -216,9 +218,63 @@ runs/
     nav.parquet  returns.parquet  weights.parquet  trades.parquet  costs.parquet  ic.parquet
     extras.json  exante_vol.parquet  exposures.parquet  holdings.parquet
   _staging/  _jobs/             API job workspace and job state (API only)
+  _cache/                       stage cache (only with cache.enabled / --cache; safe to delete)
+    risk_fit/<k2>/<key>.pkl|.json   fitted risk models
+    alpha_fit/<k2>/<key>.pkl|.json  fitted alpha models
 ```
 
 `qts.pipeline.load_run(path)` re-loads a run as a typed `RunRecord` (manifest, config, summary, hurdles and every frame). To reproduce a run, check out `manifest.git_sha` (only meaningful when `git_dirty` is false), install the library versions in `manifest.versions`, and run with `--config runs/<id>/config.yaml` on data with the same `data_hash`.
+
+## The stage cache
+
+Fitting the risk model (exposure history, factor and specific returns, the statistical companion) and the alpha model (features, labels, theme scores, composite and ML scores) takes about 40 s at 1,000 names × 6 years and grows linearly with the history. Both fits are deterministic functions of the data, a few config sections and the code. When you re-run the same data with different portfolio, cost or validation settings (a sweep, the `pipeline_pbo_configs` grid, `--compare-lag`, a re-launch from the UI), the fits come out identical every time. The stage cache stores each fitted model once and loads it on the next run instead of refitting.
+
+Turn it on per run with `--cache`, or in the config:
+
+```yaml
+cache:
+  enabled: true        # default false
+  root: ''             # '' -> <runs_root>/_cache (runs/_cache)
+  stages: [risk_fit, alpha_fit]
+```
+
+`cache` is an operational section: it is left out of `SystemConfig.hash()`, so turning the cache on changes neither the config hash, nor the trial-ledger key, nor the golden file. A cached run is **bitwise identical** to an uncached one (every NAV, weight, trade, cost, diagnostic and gate; `tests/test_stage_cache.py` checks this).
+
+**What the key covers.** Each entry is addressed by a SHA-256 over:
+
+| Part | `risk_fit` | `alpha_fit` |
+|---|---|---|
+| full data hash of the input `MarketData` (every panel, labels, eligibility) | yes | yes |
+| data span: first date, last date, number of dates and tickers | yes | yes |
+| config sections | `universe`, `risk`, `warmup_days` | the same + `alpha`, `cost.delisting_haircut`, `execution.signal_lag_days`, `use_ml`, `composite_weight`, ML factory identity |
+| upstream key | — | the `risk_fit` key (labels are residualised on the risk model) |
+| code | SHA-256 of every `qts/**/*.py` file + numerical library versions | same |
+
+So changing `portfolio.*`, `cost.*` (except the delisting haircut), `validation.*` or `--max-days` reuses both fits; changing `alpha.*` or the signal lag refits the alpha model only; changing `risk.*` or `universe.*` refits both. Any code edit, committed or not, invalidates everything.
+
+<callout icon="⚠️" color="yellow_bg">
+<b>Point in time.</b> An entry is only served for the identical data snapshot. Data through an earlier or later date, a revised price, or a different universe give a different key; the entry's sidecar repeats the data hash and span and is checked again on load. An entry fitted on data through June 28 can never serve a run on data through July 1, even though the two agree on every earlier day. Within a run nothing changes: the loaded model answers `as_of(t)` from data up to `t` exactly as a freshly fitted one does.
+</callout>
+
+**Housekeeping.** An entry is a pickle plus a JSON sidecar (stage, key parts, size, creation time). Entries are written atomically, so two runs can share a cache. At 1,000 names × 6 years the two entries take a few hundred MB together (most of it the alpha model's feature panel); delete `runs/_cache` (or the `root` you set) to reclaim space. There is no eviction. Pickles execute code when loaded: point `cache.root` only at a directory you own.
+
+<callout icon="🤔" color="purple_bg">
+<b>Why not cache the daily risk model or the optimizer too?</b> The per-day risk output depends on the alpha (alignment factor) and would need one file per day (gigabytes at 1,000 names × 15 years); the optimizer's answer depends on yesterday's book, so it is not reusable across configurations. The backtest loop is therefore not cached; it was made faster instead (see below).
+</callout>
+
+### How long a run takes
+
+Measured on the 2-vCPU development box (`scripts/bench_scale.py`, phase 1 composite, synthetic market, details in `docs/notes/perf_profile_2026-11-05.md`):
+
+| Run (phase 1, cache off) | Fit (risk + alpha) | Backtest | Per backtest day | Total |
+|---|---|---|---|---|
+| 300 names × 6 years, 1,005 out-of-sample days | 14 s | 6.3 min | 0.38 s | 6.6 min |
+| 1,000 names × 6 years, 1,005 days | 28 s | 10.3 min | 0.61 s | 10.8 min |
+| 1,000 names × 15 years, 3,273 days | 80 s | 27.0 min | 0.50 s | 28.5 min |
+
+With a warm cache the fits take well under a second (28.9 s → 0.3 s at 1,000 names × 6 years), so a parameter sweep pays the fit once. Reproduce with `python scripts/bench_scale.py --names 300 1000 --years 6 [--max-days 60 --cache]`.
+
+The backtest dominates: each out-of-sample day runs the risk model `as_of` (about 0.1–0.2 s) and one to eight convex solves (the γ search). Each solve is cvxpy compiling the problem plus the Clarabel solver; at 300 names the compile is the larger part (about 60 %), at 1,000 names the solver (about 75 %). Days with more γ-search steps cost more, so the per-day time varies along a run. `portfolio.reuse_problem: true` (compile once, re-solve with new parameters) cuts the compile time but changes results in the 6th–7th significant digit and needs memory growing with the square of the number of names, so it stays off by default.
 
 ## Reading the report card
 
@@ -639,7 +695,9 @@ CI covers the `qts` package only. The API tests (`make api-test`) and the UI che
 
 **Few or no eligible names.** Check that `prices_close_raw` exists (adjusted prices understate old price levels), that volume is in shares (not dollars or split-adjusted), and the universe size over time. The first refresh needs at least 31 days of volume history for ADV, so the start of the panel has no universe.
 
-**The backtest is slow.** It is solver-bound (one convex solve per day, up to 8 during the γ search). Use `--max-days`, a smaller `universe.top_n_by_mcap`, or `--rebalance-every 5`. Leave `portfolio.reuse_problem` off: its compile needs memory growing with the square of the number of names (about 3 GB at 600).
+**The backtest is slow.** It is solver-bound (one convex solve per day, up to 8 during the γ search; → see **The stage cache › How long a run takes** for measured times). Use `--max-days`, a smaller `universe.top_n_by_mcap`, or `--rebalance-every 5`; add `--cache` when you re-run the same data, so the risk and alpha fits are loaded instead of refitted. Leave `portfolio.reuse_problem` off: it changes results slightly and its compile needs memory growing with the square of the number of names (about 3 GB at 600).
+
+**The stage cache did not hit.** Something in the key changed: the data (any panel, any date, the span), a config section the stage reads, the code (any edit under `qts/`, committed or not) or a library version. Run with `-v`: the log says `stage cache hit` or `store` per stage, and a sidecar that does not match the run is logged as `does not match this run`.
 
 **Many "failed solves" in the summary.** Constraints conflict: usually the ADV participation cap against forced exits of illiquid names, or bands that the universe cannot satisfy. The book is held on a failed day. `portfolio.relax_participation_on_infeasible: true` re-solves without the ADV caps (opt-in).
 
