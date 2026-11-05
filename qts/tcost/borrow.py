@@ -33,6 +33,7 @@ The proxy is deliberately pessimistic for the ``short_interest`` alpha sleeve
 (it shorts exactly the high-SI names).  Replace with logged SLB rates as soon
 as they exist; ``snapshot["borrow_fee_source"]`` records which was used.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -48,8 +49,9 @@ except ImportError:  # pragma: no cover
 TRADING_DAYS = 252
 
 
-def borrow_fee_proxy(short_interest_ratio, days_to_cover=None, cfg: CostConfig | None = None,
-                     market_cap=None):
+def borrow_fee_proxy(
+    short_interest_ratio, days_to_cover=None, cfg: CostConfig | None = None, market_cap=None
+):
     """Annual borrow-fee proxy from short interest (see module docstring).
 
     ``short_interest_ratio`` is short interest / shares outstanding (fraction).
@@ -70,9 +72,9 @@ def borrow_fee_proxy(short_interest_ratio, days_to_cover=None, cfg: CostConfig |
         dtc = np.asarray(days_to_cover, dtype=float)
         with np.errstate(invalid="ignore"):
             u_dtc = np.clip((dtc - 2.0) / 8.0, 0.0, 1.0)
-        u = np.fmax(u, u_dtc)                       # fmax ignores NaN on one side
+        u = np.fmax(u, u_dtc)  # fmax ignores NaN on one side
     u = np.where(np.isfinite(u), u, 0.0)
-    fee = gc + (cap - gc) * u ** 2                  # convex rise GC -> cap
+    fee = gc + (cap - gc) * u**2  # convex rise GC -> cap
     if market_cap is not None:
         mc = np.asarray(market_cap, dtype=float)
         small = np.isfinite(mc) & (mc < float(getattr(cfg, "small_cap_threshold_usd", 2e9)))
@@ -82,8 +84,9 @@ def borrow_fee_proxy(short_interest_ratio, days_to_cover=None, cfg: CostConfig |
     return fee if np.ndim(fee) else float(fee)
 
 
-def borrow_fee_vector(index: pd.Index, borrow_fee_annual: pd.Series | None,
-                      cfg: CostConfig | None = None) -> pd.Series:
+def borrow_fee_vector(
+    index: pd.Index, borrow_fee_annual: pd.Series | None, cfg: CostConfig | None = None
+) -> pd.Series:
     """Per-name annual borrow fee aligned to ``index``; missing -> default."""
     cfg = cfg or CostConfig()
     if borrow_fee_annual is None:
@@ -91,8 +94,9 @@ def borrow_fee_vector(index: pd.Index, borrow_fee_annual: pd.Series | None,
     return borrow_fee_annual.reindex(index).fillna(cfg.default_borrow_fee_annual).astype(float)
 
 
-def holding_cost_fraction(w: pd.Series, borrow_fee_annual: pd.Series | None = None,
-                          cfg: CostConfig | None = None, days: int = 1) -> float:
+def holding_cost_fraction(
+    w: pd.Series, borrow_fee_annual: pd.Series | None = None, cfg: CostConfig | None = None, days: int = 1
+) -> float:
     """Borrow cost on short positions over ``days`` trading days, as a fraction of NAV:
     ``sum(|w_short| * fee / 252) * days``."""
     fee = borrow_fee_vector(w.index, borrow_fee_annual, cfg)
@@ -100,16 +104,16 @@ def holding_cost_fraction(w: pd.Series, borrow_fee_annual: pd.Series | None = No
     return float(-(short * fee.values).sum() / TRADING_DAYS * days)
 
 
-def holding_cost_breakdown(w: pd.Series, borrow_fee_annual: pd.Series | None = None,
-                           cfg: CostConfig | None = None, days: int = 1) -> pd.Series:
+def holding_cost_breakdown(
+    w: pd.Series, borrow_fee_annual: pd.Series | None = None, cfg: CostConfig | None = None, days: int = 1
+) -> pd.Series:
     """Per-name version of :func:`holding_cost_fraction`."""
     fee = borrow_fee_vector(w.index, borrow_fee_annual, cfg)
     short = np.minimum(w.astype(float).values, 0.0)
     return pd.Series(-short * fee.values / TRADING_DAYS * days, index=w.index)
 
 
-def cvx_holding_expression(w_post, borrow_fee_vector_annual: np.ndarray | pd.Series | float,
-                           days: int = 1):
+def cvx_holding_expression(w_post, borrow_fee_vector_annual: np.ndarray | pd.Series | float, days: int = 1):
     """cvxpy expression for daily borrow cost (fraction of NAV): ``sum(fee/252 * neg(w_post))``.
     Convex in ``w_post`` since ``neg`` is convex and the fee is non-negative."""
     if cp is None:  # pragma: no cover

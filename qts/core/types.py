@@ -21,6 +21,7 @@ Conventions (every module must follow these):
 between the risk layer and the portfolio layer; ``AlphaOutput`` is the
 contract between the alpha layer and the portfolio layer.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields, replace
@@ -64,10 +65,10 @@ class MarketData:
     it happened.
     """
 
-    close: Wide                       # split/dividend-adjusted close
-    volume: Wide                      # shares traded (actual shares, not split-adjusted)
-    market_cap: Wide                  # USD
-    industry: pd.Series               # ticker -> industry label (static fallback)
+    close: Wide  # split/dividend-adjusted close
+    volume: Wide  # shares traded (actual shares, not split-adjusted)
+    market_cap: Wide  # USD
+    industry: pd.Series  # ticker -> industry label (static fallback)
     spread_bps: Wide | None = None  # quoted half-spread proxy in bps
     short_interest_ratio: Wide | None = None  # short interest / shares out
     borrow_fee: Wide | None = None  # annualised borrow fee (fraction)
@@ -171,8 +172,10 @@ class MarketData:
 
     def slice_until(self, date: pd.Timestamp) -> MarketData:
         """Point-in-time view: every date-indexed panel cut at ``<= date``."""
+
         def cut(f: Wide | None) -> Wide | None:
             return None if f is None else f.loc[:date]
+
         changes: dict[str, Any] = {}
         for fl in fields(self):
             v = getattr(self, fl.name)
@@ -226,7 +229,9 @@ class RiskModelOutput:
         # median specific variance (conservative; callers should intersect first)
         B = self.exposures.reindex(t).fillna(0.0).to_numpy(dtype=np.float64)
         F = self.factor_cov.loc[self.factors, self.factors].to_numpy(dtype=np.float64)
-        D = np.diag(self.specific_var.reindex(t).fillna(self.specific_var.median()).to_numpy(dtype=np.float64))
+        D = np.diag(
+            self.specific_var.reindex(t).fillna(self.specific_var.median()).to_numpy(dtype=np.float64)
+        )
         cov = B @ F @ B.T + D
         if include_alignment and self.alignment_vector is not None and self.alignment_var > 0:
             y = self.alignment_vector.reindex(t).fillna(0.0).to_numpy(dtype=np.float64)[:, None]
@@ -240,7 +245,7 @@ class RiskModelOutput:
         d = self.specific_var.reindex(t).fillna(self.specific_var.median()).to_numpy(dtype=np.float64)
         wv = w.to_numpy(dtype=np.float64)
         fw = B.T @ wv
-        v = float(fw @ F @ fw + (wv ** 2 * d).sum())
+        v = float(fw @ F @ fw + (wv**2 * d).sum())
         if include_alignment and self.alignment_vector is not None and self.alignment_var > 0:
             y = self.alignment_vector.reindex(t).fillna(0.0).to_numpy(dtype=np.float64)
             v += self.alignment_var * float(y @ wv) ** 2

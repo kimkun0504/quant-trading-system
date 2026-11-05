@@ -25,6 +25,7 @@ validation block, evaluated every boosting round) is fully vectorised —
 date groups are laid out once as a padded ``(n_dates, max_names)`` array and
 ranked with ``scipy.stats.rankdata(axis=1)``; the label ranks are cached.
 """
+
 from __future__ import annotations
 
 import copy
@@ -82,7 +83,7 @@ def rank_ic_by_date(pred: pd.Series, y: pd.Series) -> pd.Series:
     rp = rp - rp.groupby(level="date").transform("mean")
     ry = ry - ry.groupby(level="date").transform("mean")
     num = (rp * ry).groupby(level="date").sum()
-    den = np.sqrt((rp ** 2).groupby(level="date").sum() * (ry ** 2).groupby(level="date").sum())
+    den = np.sqrt((rp**2).groupby(level="date").sum() * (ry**2).groupby(level="date").sum())
     n = g.size()
     return (num / den.replace(0, np.nan)).where(n >= IC_MIN_OBS)
 
@@ -178,8 +179,10 @@ class _Base:
 
     def _check_features(self, X: pd.DataFrame) -> None:
         if self.feature_names_ is not None and list(X.columns) != self.feature_names_:
-            raise ValueError("feature columns/order differ from those used in fit "
-                             f"({feature_signature(X.columns)} vs {feature_signature(self.feature_names_)})")
+            raise ValueError(
+                "feature columns/order differ from those used in fit "
+                f"({feature_signature(X.columns)} vs {feature_signature(self.feature_names_)})"
+            )
 
     @property
     def feature_hash_(self) -> str | None:
@@ -220,6 +223,7 @@ class RidgeModel(_Base):
 
     def fit(self, X, y, valid_mask=None):
         from sklearn.linear_model import Ridge
+
         self.feature_names_ = list(X.columns)
         vm = default_valid_mask(X) if valid_mask is None else valid_mask.reindex(X.index).fillna(False)
         keep = y.notna()
@@ -259,17 +263,26 @@ class LGBMModel(_Base):
     by keyword, other keywords are passed to ``LGBMRegressor`` unchanged.
     """
 
-    def __init__(self, n_seeds: int = 3, params: LGBMParams | None = None, base_seed: int = 0,
-                 **overrides):
+    def __init__(self, n_seeds: int = 3, params: LGBMParams | None = None, base_seed: int = 0, **overrides):
         known, extra = _split_overrides(LGBMParams, overrides)
         hp = replace(params or LGBMParams(), **known)
         self.hp = hp
         n_jobs = hp.n_jobs if hp.n_jobs else (os.cpu_count() or 1)
-        self.params = dict(objective="regression", n_estimators=hp.n_estimators, learning_rate=hp.learning_rate,
-                           num_leaves=hp.num_leaves, min_child_samples=hp.min_data_in_leaf,
-                           colsample_bytree=hp.feature_fraction, subsample=hp.bagging_fraction,
-                           subsample_freq=hp.bagging_freq, reg_lambda=hp.lambda_l2, n_jobs=n_jobs,
-                           metric="None", verbose=-1, **extra)
+        self.params = dict(
+            objective="regression",
+            n_estimators=hp.n_estimators,
+            learning_rate=hp.learning_rate,
+            num_leaves=hp.num_leaves,
+            min_child_samples=hp.min_data_in_leaf,
+            colsample_bytree=hp.feature_fraction,
+            subsample=hp.bagging_fraction,
+            subsample_freq=hp.bagging_freq,
+            reg_lambda=hp.lambda_l2,
+            n_jobs=n_jobs,
+            metric="None",
+            verbose=-1,
+            **extra,
+        )
         self.n_seeds = n_seeds
         self.early_stopping_rounds = hp.early_stopping_rounds
         self.refit_on_full = hp.refit_on_full
@@ -279,6 +292,7 @@ class LGBMModel(_Base):
 
     def fit(self, X, y, valid_mask=None):
         import lightgbm as lgb
+
         self.feature_names_ = list(X.columns)
         vm = default_valid_mask(X) if valid_mask is None else valid_mask.reindex(X.index).fillna(False)
         keep = y.notna()
@@ -294,7 +308,7 @@ class LGBMModel(_Base):
             m = lgb.LGBMRegressor(random_state=seed, **self.params)
             if len(Xv) > 0:
                 cb = [lgb.early_stopping(self.early_stopping_rounds, first_metric_only=True, verbose=False)]
-                if "eval_X" in inspect.signature(m.fit).parameters:   # lightgbm >= 4.7
+                if "eval_X" in inspect.signature(m.fit).parameters:  # lightgbm >= 4.7
                     m.fit(Xt, yt, eval_X=Xv, eval_y=yv, eval_metric=ic_metric, callbacks=cb)
                 else:
                     m.fit(Xt, yt, eval_set=[(Xv, yv)], eval_metric=ic_metric, callbacks=cb)
@@ -343,8 +357,7 @@ class MLPModel(_Base):
     ``learning_rate_init``, ``max_train_rows``, ...).
     """
 
-    def __init__(self, n_seeds: int = 3, params: MLPParams | None = None, base_seed: int = 0,
-                 **overrides):
+    def __init__(self, n_seeds: int = 3, params: MLPParams | None = None, base_seed: int = 0, **overrides):
         known, extra = _split_overrides(MLPParams, overrides)
         if extra:
             raise TypeError(f"MLPModel: unknown argument(s) {sorted(extra)}")
@@ -358,20 +371,30 @@ class MLPModel(_Base):
 
     def _new_net(self, seed: int, n_rows: int):
         from sklearn.neural_network import MLPRegressor
+
         hp = self.hp
-        return MLPRegressor(hidden_layer_sizes=tuple(hp.hidden), alpha=hp.alpha,
-                            batch_size=max(1, min(hp.batch_size, n_rows)), learning_rate_init=hp.learning_rate_init,
-                            shuffle=True, random_state=seed)
+        return MLPRegressor(
+            hidden_layer_sizes=tuple(hp.hidden),
+            alpha=hp.alpha,
+            batch_size=max(1, min(hp.batch_size, n_rows)),
+            learning_rate_init=hp.learning_rate_init,
+            shuffle=True,
+            random_state=seed,
+        )
 
     def fit(self, X, y, valid_mask=None):
         import warnings
 
         from sklearn.preprocessing import StandardScaler
+
         hp = self.hp
         self.feature_names_ = list(X.columns)
         keep = y.notna().to_numpy()
-        vm = (default_valid_mask(X, frac=hp.valid_fraction) if valid_mask is None
-              else valid_mask.reindex(X.index).fillna(False).astype(bool)).to_numpy()
+        vm = (
+            default_valid_mask(X, frac=hp.valid_fraction)
+            if valid_mask is None
+            else valid_mask.reindex(X.index).fillna(False).astype(bool)
+        ).to_numpy()
         tr_idx = np.flatnonzero(keep & ~vm)
         va_idx = np.flatnonzero(keep & vm)
         all_idx = np.flatnonzero(keep)
@@ -391,10 +414,10 @@ class MLPModel(_Base):
             scorer = DateGroupedRankIC(_dates(X)[va_idx])
         self.models_, self.best_epochs_, self.valid_ic_ = [], [], []
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore")          # ConvergenceWarning per partial_fit epoch
+            warnings.simplefilter("ignore")  # ConvergenceWarning per partial_fit epoch
             for s in range(self.n_seeds):
                 seed = self.base_seed + s
-                if not have_valid:                   # no validation block: fixed max_iter epochs
+                if not have_valid:  # no validation block: fixed max_iter epochs
                     m = self._new_net(seed, len(all_idx))
                     Xa = self.scaler_.transform(Xv_all[all_idx])
                     for _ in range(hp.max_iter):

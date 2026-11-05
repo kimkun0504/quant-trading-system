@@ -18,6 +18,7 @@ Contents
   column on one market series.
 * :func:`industry_dummies` -- ticker x industry 0/1 matrix.
 """
+
 from __future__ import annotations
 
 from typing import Any, NamedTuple, TypeVar, cast
@@ -100,7 +101,7 @@ def winsorize_rows(x: ArrayOrFrame, pct: float, min_obs: int = WINSOR_MIN_OBS) -
     work: FloatArray = np.where(finite, arr, np.nan)
     if work.shape[1] == 0:
         return x
-    srt = np.sort(work, axis=1)                         # NaNs last
+    srt = np.sort(work, axis=1)  # NaNs last
     # nanpercentile divides the percentile by 100: reproduce q exactly
     q_lo = float(np.true_divide(100 * pct, 100))
     q_hi = float(np.true_divide(100 * (1 - pct), 100))
@@ -155,7 +156,7 @@ def row_corr(a: NDArray[Any], b: NDArray[Any], min_n: int = IC_MIN_OBS) -> Float
         mb = b0.sum(axis=1) / n
         ac = np.where(m, a0 - ma[:, None], 0.0)
         bc = np.where(m, b0 - mb[:, None], 0.0)
-        r = (ac * bc).sum(axis=1) / np.sqrt((ac ** 2).sum(axis=1) * (bc ** 2).sum(axis=1))
+        r = (ac * bc).sum(axis=1) / np.sqrt((ac**2).sum(axis=1) * (bc**2).sum(axis=1))
     r = np.where(n >= min_n, r, np.nan)
     return r
 
@@ -190,8 +191,7 @@ def _finite_1d(x: Vector) -> FloatArray:
     return arr[np.isfinite(arr)]
 
 
-def newey_west_se(x: Vector, lags: int | None = None,
-                  min_obs: int = 3) -> float:
+def newey_west_se(x: Vector, lags: int | None = None, min_obs: int = 3) -> float:
     """HAC standard error of the sample mean of ``x`` (Newey-West 1987).
 
     Long-run variance with the Bartlett kernel,
@@ -220,8 +220,7 @@ def newey_west_se(x: Vector, lags: int | None = None,
     return float(np.sqrt(s / n))
 
 
-def newey_west_tstat(x: Vector, lags: int | None = None,
-                     min_obs: int = 3) -> float:
+def newey_west_tstat(x: Vector, lags: int | None = None, min_obs: int = 3) -> float:
     """``mean(x) / newey_west_se(x, lags)`` (NaN if the SE is undefined)."""
     v = _finite_1d(x)
     se = newey_west_se(v, lags=lags, min_obs=min_obs)
@@ -273,8 +272,9 @@ def rolling_beta(returns: pd.DataFrame, market: pd.Series, window: int, min_peri
 
 
 # ----------------------------------------------------------------------------- industry dummies
-def industry_dummies(labels: pd.Series, tickers: pd.Index | None = None,
-                     drop_first: bool = False) -> pd.DataFrame:
+def industry_dummies(
+    labels: pd.Series, tickers: pd.Index | None = None, drop_first: bool = False
+) -> pd.DataFrame:
     """Ticker x industry 0/1 float matrix with columns sorted by label.
 
     ``labels`` maps ticker -> industry label (e.g. ``MarketData.industry`` or

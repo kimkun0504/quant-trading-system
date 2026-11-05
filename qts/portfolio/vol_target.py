@@ -10,14 +10,19 @@ full constraint set with a risk cap (``"projection"``, default; the cost term
 one solve, target is a ceiling).  Either way every band holds after
 targeting (see ``qts.portfolio.optimizer``).
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
 
-def portfolio_vol_scalar(predicted_vol_annual: float, target: float | None,
-                         max_leverage_scalar: float = 1.0, min_scalar: float = 0.0) -> float:
+def portfolio_vol_scalar(
+    predicted_vol_annual: float,
+    target: float | None,
+    max_leverage_scalar: float = 1.0,
+    min_scalar: float = 0.0,
+) -> float:
     """Multiplier applied to the whole book so that predicted vol <= target.
 
     ``max_leverage_scalar`` caps scaling *up* (default 1.0 = never lever up;
@@ -32,8 +37,9 @@ def portfolio_vol_scalar(predicted_vol_annual: float, target: float | None,
     return float(np.clip(s, min_scalar, max_leverage_scalar))
 
 
-def realized_vol_annual(returns: pd.Series, window: int = 63, half_life: int | None = None,
-                        periods_per_year: int = 252) -> float:
+def realized_vol_annual(
+    returns: pd.Series, window: int = 63, half_life: int | None = None, periods_per_year: int = 252
+) -> float:
     """Realised-vol fallback used when no ex-ante estimate is available
     (EWMA if ``half_life`` is given, else simple rolling window)."""
     r = pd.Series(returns).dropna()
@@ -46,6 +52,7 @@ def realized_vol_annual(returns: pd.Series, window: int = 63, half_life: int | N
     return float(np.sqrt(v * periods_per_year))
 
 
-def realized_vol_scalar(returns: pd.Series, target: float, window: int = 63,
-                        max_leverage_scalar: float = 1.0) -> float:
+def realized_vol_scalar(
+    returns: pd.Series, target: float, window: int = 63, max_leverage_scalar: float = 1.0
+) -> float:
     return portfolio_vol_scalar(realized_vol_annual(returns, window), target, max_leverage_scalar)

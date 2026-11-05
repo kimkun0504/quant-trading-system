@@ -1,4 +1,5 @@
 """qts.core.stats against brute-force references (scipy, numpy lstsq, explicit loops)."""
+
 from __future__ import annotations
 
 import warnings
@@ -21,8 +22,8 @@ def panels():
     b = 0.3 * a + pd.DataFrame(rng.standard_normal((T, N)), index=dates, columns=cols)
     a = a.mask(rng.random((T, N)) < 0.15)
     b = b.mask(rng.random((T, N)) < 0.15)
-    a.iloc[3, :50] = np.nan                     # a thin cross-section (< 20 pairs)
-    a.iloc[5, :10] = 1.0                        # ties
+    a.iloc[3, :50] = np.nan  # a thin cross-section (< 20 pairs)
+    a.iloc[5, :10] = 1.0  # ties
     return a, b
 
 
@@ -62,16 +63,16 @@ def test_winsorize_rows_sort_based_equals_nanpercentile_exactly(seed):
         a[rng.random((T, N)) < 0.03] = np.inf
         a[rng.random((T, N)) < 0.03] = -np.inf
         if rng.random() < 0.3:
-            a = np.round(a, 1)                              # ties
+            a = np.round(a, 1)  # ties
         pct = float(rng.choice([1e-3, 0.01, 0.025, 0.05, 0.2, 0.499]))
         got = stats.winsorize_rows(a, pct, min_obs=1)
         work = np.where(np.isfinite(a), a, np.nan)
         with np.errstate(all="ignore"), warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)      # all-NaN rows
+            warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN rows
             lo = np.nanpercentile(work, 100 * pct, axis=1, method="linear")
             hi = np.nanpercentile(work, 100 * (1 - pct), axis=1, method="linear")
         exp = np.clip(work, lo[:, None], hi[:, None])
-        np.testing.assert_array_equal(got, exp)             # exact, NaN == NaN
+        np.testing.assert_array_equal(got, exp)  # exact, NaN == NaN
 
 
 # --------------------------------------------------------------------------- rank-gauss
@@ -88,7 +89,7 @@ def test_rank_gauss_reference_and_bound(panels):
         assert got.loc[d].abs().max() <= norm.ppf(1 - 0.5 / n) + 1e-12
     assert got.isna().equals(a.isna())
     big = pd.DataFrame(np.arange(20000.0)[None, :])
-    assert stats.rank_gauss(big).abs().max().max() == pytest.approx(norm.ppf(1 - 1e-4))   # ~3.719
+    assert stats.rank_gauss(big).abs().max().max() == pytest.approx(norm.ppf(1 - 1e-4))  # ~3.719
     pd.testing.assert_frame_equal(crosssection.rank_gauss(a), got)
 
 
@@ -136,21 +137,21 @@ def _nw_brute(x, lags):
 def test_newey_west_matches_explicit_double_loop(lags):
     rng = np.random.default_rng(lags)
     e = rng.standard_normal(300)
-    x = 0.1 + np.convolve(e, [1.0, 0.6, 0.3], mode="same")      # MA(2): autocorrelated
+    x = 0.1 + np.convolve(e, [1.0, 0.6, 0.3], mode="same")  # MA(2): autocorrelated
     assert stats.newey_west_se(x, lags) == pytest.approx(_nw_brute(x, lags), rel=1e-12)
     assert stats.newey_west_tstat(x, lags) == pytest.approx(x.mean() / _nw_brute(x, lags), rel=1e-12)
 
 
 def test_newey_west_defaults_and_edge_cases():
     x = np.random.default_rng(1).standard_normal(250) + 0.05
-    assert stats.default_nw_lags(250) == 4                       # floor(4 * 2.5^(2/9))
+    assert stats.default_nw_lags(250) == 4  # floor(4 * 2.5^(2/9))
     assert stats.newey_west_se(x) == pytest.approx(_nw_brute(x, 4), rel=1e-12)
     # lags 0 = iid standard error with ddof=0
     assert stats.newey_west_se(x, 0) == pytest.approx(x.std(ddof=0) / np.sqrt(len(x)))
-    xs = pd.Series(np.r_[x, np.nan, np.inf])                     # non-finite dropped
+    xs = pd.Series(np.r_[x, np.nan, np.inf])  # non-finite dropped
     assert stats.newey_west_tstat(xs, 3) == pytest.approx(stats.newey_west_tstat(x, 3))
     assert np.isnan(stats.newey_west_tstat([1.0, 2.0], 1))
-    assert np.isnan(stats.newey_west_tstat(np.ones(30), 2))      # zero variance
+    assert np.isnan(stats.newey_west_tstat(np.ones(30), 2))  # zero variance
 
 
 # --------------------------------------------------------------------------- rolling beta
@@ -165,8 +166,8 @@ def test_rolling_beta_matches_lstsq():
     res = stats.rolling_beta(r, m, window=W, min_periods=W)
     for t in [W - 1, 60, T - 1]:
         for j in range(N):
-            y = r.iloc[t - W + 1:t + 1, j]
-            x = m.iloc[t - W + 1:t + 1]
+            y = r.iloc[t - W + 1 : t + 1, j]
+            x = m.iloc[t - W + 1 : t + 1]
             ok = y.notna()
             if ok.sum() < W:
                 assert np.isnan(res.beta.iloc[t, j])
@@ -175,7 +176,7 @@ def test_rolling_beta_matches_lstsq():
             coef, *_ = np.linalg.lstsq(X, y[ok], rcond=None)
             resid = y[ok] - X @ coef
             assert res.beta.iloc[t, j] == pytest.approx(coef[1], rel=1e-9)
-            assert res.resid_var.iloc[t, j] == pytest.approx((resid ** 2).mean(), rel=1e-6, abs=1e-14)
+            assert res.resid_var.iloc[t, j] == pytest.approx((resid**2).mean(), rel=1e-6, abs=1e-14)
     assert np.isnan(res.beta.iloc[W - 2]).all()
     np.testing.assert_allclose(res.resid_vol.to_numpy(), np.sqrt(res.resid_var.to_numpy()), equal_nan=True)
     with pytest.raises(ValueError):

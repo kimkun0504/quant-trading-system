@@ -39,6 +39,7 @@ The power term is ``cp.power(cp.abs(x), e)`` which is DCP-convex for ``e >= 1``
 (convex, increasing power of a convex non-negative argument).  Clarabel handles
 it through the power cone.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -89,8 +90,14 @@ class SquareRootImpact:
         raise ValueError(f"unknown venue {venue!r}")
 
     # --------------------------------------------------------- point estimate
-    def cost_bps(self, notional: ArrayLike, adv_usd: ArrayLike, sigma_daily: ArrayLike,
-                 b: float | None = None, venue: str = VENUE_CONTINUOUS) -> ArrayLike:
+    def cost_bps(
+        self,
+        notional: ArrayLike,
+        adv_usd: ArrayLike,
+        sigma_daily: ArrayLike,
+        b: float | None = None,
+        venue: str = VENUE_CONTINUOUS,
+    ) -> ArrayLike:
         """Expected impact in **bps of notional**: ``1e4 * b * sigma * (|Q|/V)^(e-1)``
         (``e = cfg.impact_exponent``; square root at the default 1.5).
 
@@ -109,9 +116,16 @@ class SquareRootImpact:
             return pd.Series(out, index=notional.index)
         return out if out.ndim else float(out)
 
-    def total_cost_fraction(self, x_usd: ArrayLike, adv_usd: ArrayLike, sigma_daily: ArrayLike,
-                            half_spread_bps: ArrayLike = 0.0, venue: str = VENUE_CONTINUOUS,
-                            b: float | None = None, explicit_bps: ArrayLike = 0.0) -> ArrayLike:
+    def total_cost_fraction(
+        self,
+        x_usd: ArrayLike,
+        adv_usd: ArrayLike,
+        sigma_daily: ArrayLike,
+        half_spread_bps: ArrayLike = 0.0,
+        venue: str = VENUE_CONTINUOUS,
+        b: float | None = None,
+        explicit_bps: ArrayLike = 0.0,
+    ) -> ArrayLike:
         """Integrated square-root cost of a trade, in **dollars**::
 
             C = (half_spread + explicit) * |x| + b * sigma * |x|^e / V^(e-1)
@@ -129,7 +143,7 @@ class SquareRootImpact:
         s = np.asarray(sigma_daily, dtype=float)
         a = (np.asarray(half_spread_bps, dtype=float) + np.asarray(explicit_bps, dtype=float)) / 1e4
         with np.errstate(divide="ignore", invalid="ignore"):
-            imp = bb * s * q ** self.exponent / v ** (self.exponent - 1.0)
+            imp = bb * s * q**self.exponent / v ** (self.exponent - 1.0)
         imp = np.where(q == 0, 0.0, imp)
         out = a * q + imp
         if isinstance(x_usd, pd.Series):
@@ -137,11 +151,18 @@ class SquareRootImpact:
         return out if np.ndim(out) else float(out)
 
     # --------------------------------------------------------------- convex
-    def cvx_cost_expression(self, x, nav: float, adv_usd: np.ndarray, sigma: np.ndarray,
-                            half_spread: np.ndarray, venue: str = VENUE_CONTINUOUS,
-                            b: float | None = None,
-                            explicit_buy_frac: np.ndarray | None = None,
-                            explicit_sell_frac: np.ndarray | None = None):
+    def cvx_cost_expression(
+        self,
+        x,
+        nav: float,
+        adv_usd: np.ndarray,
+        sigma: np.ndarray,
+        half_spread: np.ndarray,
+        venue: str = VENUE_CONTINUOUS,
+        b: float | None = None,
+        explicit_buy_frac: np.ndarray | None = None,
+        explicit_sell_frac: np.ndarray | None = None,
+    ):
         """cvxpy expression for trade cost as a **fraction of NAV**.
 
         Parameters
@@ -172,18 +193,21 @@ class SquareRootImpact:
         hs = np.broadcast_to(hs, (n,))
         s = np.broadcast_to(s, (n,))
         v = np.broadcast_to(v, (n,))
-        coef = bb * s / (v / float(nav)) ** (self.exponent - 1.0)     # multiplies |x|^e
+        coef = bb * s / (v / float(nav)) ** (self.exponent - 1.0)  # multiplies |x|^e
         ax = cp.abs(x)
         expr = cp.sum(cp.multiply(hs, ax)) + cp.sum(cp.multiply(coef, cp.power(ax, self.exponent)))
         if explicit_buy_frac is not None:
-            expr = expr + cp.sum(cp.multiply(np.broadcast_to(np.asarray(explicit_buy_frac, float), (n,)), cp.pos(x)))
+            expr = expr + cp.sum(
+                cp.multiply(np.broadcast_to(np.asarray(explicit_buy_frac, float), (n,)), cp.pos(x))
+            )
         if explicit_sell_frac is not None:
-            expr = expr + cp.sum(cp.multiply(np.broadcast_to(np.asarray(explicit_sell_frac, float), (n,)), cp.neg(x)))
+            expr = expr + cp.sum(
+                cp.multiply(np.broadcast_to(np.asarray(explicit_sell_frac, float), (n,)), cp.neg(x))
+            )
         return expr
 
     # ---------------------------------------------------------- constraints
-    def participation_cap(self, adv_usd: ArrayLike, nav: float,
-                          max_part: float | None = None) -> ArrayLike:
+    def participation_cap(self, adv_usd: ArrayLike, nav: float, max_part: float | None = None) -> ArrayLike:
         """Maximum absolute weight change per name for one day:
         ``max_part * adv_usd / nav``.  Default ``max_part = cfg.max_participation_adv``."""
         mp = self.cfg.max_participation_adv if max_part is None else float(max_part)
@@ -198,8 +222,9 @@ class SquareRootImpact:
         from ``cfg.auction_volume_share_default`` (the single source)."""
         return auction_share_for_date(date, self.share_default if share_default is None else share_default)
 
-    def auction_volume_estimate(self, adv_shares: ArrayLike, date=None,
-                                share_default: float | None = None) -> ArrayLike:
+    def auction_volume_estimate(
+        self, adv_shares: ArrayLike, date=None, share_default: float | None = None
+    ) -> ArrayLike:
         """Expected closing-auction volume (same units as ``adv_shares``)."""
         share = self.auction_share_for_date(date, share_default)
         out = np.asarray(adv_shares, dtype=float) * share
@@ -207,10 +232,16 @@ class SquareRootImpact:
             return pd.Series(out, index=adv_shares.index)
         return out if np.ndim(out) else float(out)
 
-    def cost_for_venue_choice(self, notional: float, adv_usd: float, sigma_daily: float,
-                              half_spread_bps: float = 0.0, date=None,
-                              auction_share: float | None = None,
-                              auction_spread_bps: float = 0.0) -> dict[str, float]:
+    def cost_for_venue_choice(
+        self,
+        notional: float,
+        adv_usd: float,
+        sigma_daily: float,
+        half_spread_bps: float = 0.0,
+        date=None,
+        auction_share: float | None = None,
+        auction_spread_bps: float = 0.0,
+    ) -> dict[str, float]:
         """Compare expected all-in cost (bps) of continuous vs closing-auction execution.
 
         Continuous: ``half_spread + b_cont * sigma * (Q/ADV)^(e-1)``.
@@ -223,7 +254,15 @@ class SquareRootImpact:
         and ``venue`` = the cheaper one.
         """
         share = self.auction_share_for_date(date) if auction_share is None else auction_share
-        cont = float(half_spread_bps) + float(self.cost_bps(notional, adv_usd, sigma_daily, venue=VENUE_CONTINUOUS))
-        auc = float(auction_spread_bps) + float(self.cost_bps(notional, adv_usd * share, sigma_daily, venue=VENUE_AUCTION))
-        return {"continuous_bps": cont, "auction_bps": auc, "auction_share": share,
-                "venue": VENUE_AUCTION if auc <= cont else VENUE_CONTINUOUS}
+        cont = float(half_spread_bps) + float(
+            self.cost_bps(notional, adv_usd, sigma_daily, venue=VENUE_CONTINUOUS)
+        )
+        auc = float(auction_spread_bps) + float(
+            self.cost_bps(notional, adv_usd * share, sigma_daily, venue=VENUE_AUCTION)
+        )
+        return {
+            "continuous_bps": cont,
+            "auction_bps": auc,
+            "auction_share": share,
+            "venue": VENUE_AUCTION if auc <= cont else VENUE_CONTINUOUS,
+        }

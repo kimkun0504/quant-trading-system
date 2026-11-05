@@ -9,14 +9,30 @@ the 5% ADV step), timing risk and, for auction-centric flow, simply getting to
 the close.  Almgren-Chriss assumes *linear* temporary impact and is kept here
 only as a reference trajectory and for the urgency intuition.
 """
+
 from __future__ import annotations
 
 import numpy as np
 
 # 13 half-hour buckets 09:30-16:00.  U-shape: heavy open, heavier close.
-DEFAULT_U_SHAPE = np.array([0.110, 0.075, 0.060, 0.055, 0.050, 0.048, 0.048, 0.050, 0.055, 0.065, 0.080, 0.104, 0.200])
-BUCKET_LABELS = ["09:30", "10:00", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30",
-                 "14:00", "14:30", "15:00", "15:30"]
+DEFAULT_U_SHAPE = np.array(
+    [0.110, 0.075, 0.060, 0.055, 0.050, 0.048, 0.048, 0.050, 0.055, 0.065, 0.080, 0.104, 0.200]
+)
+BUCKET_LABELS = [
+    "09:30",
+    "10:00",
+    "10:30",
+    "11:00",
+    "11:30",
+    "12:00",
+    "12:30",
+    "13:00",
+    "13:30",
+    "14:00",
+    "14:30",
+    "15:00",
+    "15:30",
+]
 
 
 def intraday_volume_curve(n_buckets: int = 13, close_share: float | None = None) -> np.ndarray:
@@ -64,8 +80,9 @@ def pov_schedule(qty: float, expected_volume_curve: np.ndarray, pct: float) -> n
     return out
 
 
-def urgency_from_half_life(half_life_days: float, min_part: float = 0.01, max_part: float = 0.25,
-                           ref_days: float = 5.0) -> float:
+def urgency_from_half_life(
+    half_life_days: float, min_part: float = 0.01, max_part: float = 0.25, ref_days: float = 5.0
+) -> float:
     """Map signal half-life to a target participation rate.
 
     Heuristic: a signal with half-life ``h`` loses ``1 - 2^(-1/h)`` of its
@@ -81,8 +98,9 @@ def urgency_from_half_life(half_life_days: float, min_part: float = 0.01, max_pa
     return float(np.clip(part, min_part, max_part))
 
 
-def almgren_chriss_schedule(qty: float, T_buckets: int, sigma: float, eta: float, lam: float,
-                            tau: float = 1.0) -> dict:
+def almgren_chriss_schedule(
+    qty: float, T_buckets: int, sigma: float, eta: float, lam: float, tau: float = 1.0
+) -> dict:
     """Closed-form Almgren-Chriss (2000) optimal liquidation trajectory.
 
     Minimises ``E[cost] + lam * Var[cost]`` with linear temporary impact
@@ -103,8 +121,8 @@ def almgren_chriss_schedule(qty: float, T_buckets: int, sigma: float, eta: float
         x = qty * (1 - t / (T * tau))
         kappa = 0.0
     else:
-        kt2 = lam * sigma ** 2 / eta
-        kappa = np.arccosh(kt2 * tau ** 2 / 2 + 1) / tau
+        kt2 = lam * sigma**2 / eta
+        kappa = np.arccosh(kt2 * tau**2 / 2 + 1) / tau
         x = qty * np.sinh(kappa * (T * tau - t)) / np.sinh(kappa * T * tau)
     n = -np.diff(x)
     return {"holdings": x, "trades": n, "kappa": float(kappa)}

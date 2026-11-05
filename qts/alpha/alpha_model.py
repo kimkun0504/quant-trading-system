@@ -38,6 +38,7 @@ The alpha layer does **not** apply Garleanu-Pedersen shrinkage itself: the
 portfolio layer applies it in *alpha space* (aim portfolio of the
 half-life-weighted alpha) when ``PortfolioConfig.use_gp_shrink`` is true.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -79,6 +80,7 @@ def default_ml_factory(cfg: AlphaConfig) -> Callable[[], object]:
         if not members:
             raise ValueError("AlphaConfig.ensemble_weights selects no ML member")
         return EnsembleModel(members, weights=weights)
+
     return factory
 
 
@@ -92,16 +94,25 @@ class AlphaModel:
     ``cfg.cost.delisting_haircut``).
     """
 
-    def __init__(self, cfg: AlphaConfig | None = None, composite_weight: float | None = None,
-                 ml_factory: Callable[[], object] | None = None, use_ml: bool = True,
-                 dynamic_weights: bool | None = None, ic_window: int | None = None,
-                 delisting_return: float | None = None):
+    def __init__(
+        self,
+        cfg: AlphaConfig | None = None,
+        composite_weight: float | None = None,
+        ml_factory: Callable[[], object] | None = None,
+        use_ml: bool = True,
+        dynamic_weights: bool | None = None,
+        ic_window: int | None = None,
+        delisting_return: float | None = None,
+    ):
         self.cfg = cfg or AlphaConfig()
         #: label haircut for names delisting inside the forward window; ``None`` ->
         #: ``CostConfig().delisting_haircut`` (single source; pass 0.0 to disable)
-        self.delisting_return = float(CostConfig().delisting_haircut if delisting_return is None
-                                      else delisting_return)
-        self.composite_weight = float(self.cfg.composite_weight if composite_weight is None else composite_weight)
+        self.delisting_return = float(
+            CostConfig().delisting_haircut if delisting_return is None else delisting_return
+        )
+        self.composite_weight = float(
+            self.cfg.composite_weight if composite_weight is None else composite_weight
+        )
         self.ml_factory = ml_factory
         self.use_ml = use_ml
         self.dynamic_weights = bool(self.cfg.dynamic_weights if dynamic_weights is None else dynamic_weights)
@@ -120,13 +131,21 @@ class AlphaModel:
         self.raw_features_ = self.features.build(md)
         self.X_: Long = self.features.process(self.raw_features_, md, valid=self.eligible_)
         # labels: used ONLY as training targets / for OOS evaluation
-        self.target_: Wide = residualize_forward_returns(md, h, exposures_fn=risk_exposures_fn,
-                                                         features=self.raw_features_,
-                                                         delisting_return=self.delisting_return)
+        self.target_: Wide = residualize_forward_returns(
+            md,
+            h,
+            exposures_fn=risk_exposures_fn,
+            features=self.raw_features_,
+            delisting_return=self.delisting_return,
+        )
         self.theme_returns_ = theme_portfolio_returns(self.X_, md)
         self.composite_score_, self.theme_scores_ = self.composite.score_all(
-            self.X_, md=md, dynamic=self.dynamic_weights, theme_returns=self.theme_returns_,
-            return_components=True)
+            self.X_,
+            md=md,
+            dynamic=self.dynamic_weights,
+            theme_returns=self.theme_returns_,
+            return_components=True,
+        )
         self.ml_score_: Wide | None = None
         if self.use_ml:
             y_long = self.target_.stack(future_stack=True)
@@ -135,7 +154,9 @@ class AlphaModel:
             factory = self.ml_factory or default_ml_factory(self.cfg)
             ml = self.trainer.run(self.X_, y_long, factory)
             self.ml_score_ = zscore(ml) if ml.notna().any().any() else None
-        self.combined_score_ = self._combine_history().where(self.eligible_.reindex_like(self.composite_score_))
+        self.combined_score_ = self._combine_history().where(
+            self.eligible_.reindex_like(self.composite_score_)
+        )
         self._half_life_cache = {}
         # per-date OOS rank IC of the combined score (label realised at date + h)
         self.oos_ic_ = rank_ic_series(self.combined_score_, self.target_)
@@ -165,7 +186,7 @@ class AlphaModel:
         end = pos - h
         if end < 0:
             return float("nan")
-        ic = self.oos_ic_.iloc[max(0, end - self.ic_window + 1): end + 1].dropna()
+        ic = self.oos_ic_.iloc[max(0, end - self.ic_window + 1) : end + 1].dropna()
         return float(ic.mean()) if len(ic) >= int(self.cfg.ic_min_obs) else float("nan")
 
     def ic_used(self, date: pd.Timestamp) -> float:
@@ -193,7 +214,7 @@ class AlphaModel:
         if hl is None:
             start = dates[max(pos, 0) // block * block]
             hist = panel.loc[:start]
-            hl = signal_half_life(hist.iloc[-int(self.cfg.half_life_lookback_days):])
+            hl = signal_half_life(hist.iloc[-int(self.cfg.half_life_lookback_days) :])
             if not np.isfinite(hl):
                 hl = float(self.cfg.horizon_days * 3)
             self._half_life_cache[key] = float(hl)
@@ -223,20 +244,31 @@ class AlphaModel:
             date = pd.Timestamp(earlier[-1])
         # eligible at `date` (in universe and alive): never score dead / out-of-universe names
         ok = self.eligible_.loc[date]
-        score = self.combined_score_.loc[date].where(ok.reindex(self.combined_score_.columns).fillna(False).astype(bool)).dropna()
+        score = (
+            self.combined_score_.loc[date]
+            .where(ok.reindex(self.combined_score_.columns).fillna(False).astype(bool))
+            .dropna()
+        )
         score = (score - score.mean()) / score.std(ddof=0)
         # Grinold: alpha = IC * sigma_resid * z
-        ic_shrunk = self.ic_used(date)                      # D5: shrink applies to the prior too
+        ic_shrunk = self.ic_used(date)  # D5: shrink applies to the prior too
         vol = self.resid_vol_h_.loc[date].reindex(score.index)
         vol = vol.fillna(vol.median()).fillna(0.0)
         expected = (ic_shrunk * vol * score).rename("expected_return")
         hl = self.half_life_as_of(date)
         components: dict[str, pd.Series] = {
-            f"theme_{th}": s.loc[date].reindex(score.index) for th, s in self.theme_scores_.items()}
+            f"theme_{th}": s.loc[date].reindex(score.index) for th, s in self.theme_scores_.items()
+        }
         components["composite"] = self.composite_score_.loc[date].reindex(score.index)
         if self.ml_score_ is not None:
             components["ml"] = self.ml_score_.loc[date].reindex(score.index)
-        return AlphaOutput(date=date, score=score.rename("score"), expected_return=expected,
-                           horizon_days=self.cfg.horizon_days, half_life_days=float(hl),
-                           components=components, ic_estimate=float(ic_shrunk),
-                           components_half_life=self.component_half_lives_as_of(date))
+        return AlphaOutput(
+            date=date,
+            score=score.rename("score"),
+            expected_return=expected,
+            horizon_days=self.cfg.horizon_days,
+            half_life_days=float(hl),
+            components=components,
+            ic_estimate=float(ic_shrunk),
+            components_half_life=self.component_half_lives_as_of(date),
+        )

@@ -26,6 +26,7 @@ squares, count), so the cost is ``O(C(S,S/2) * N)`` rather than
 ``O(C(S,S/2) * T * N)``.  Combinations are capped at ``max_combinations``
 (default 5000) with uniform random subsampling and a warning.
 """
+
 from __future__ import annotations
 
 import warnings
@@ -39,9 +40,9 @@ import pandas as pd
 def _group_stats(M: np.ndarray, n_groups: int):
     T = M.shape[0]
     edges = np.linspace(0, T, n_groups + 1).astype(int)
-    s1 = np.stack([M[edges[g]:edges[g + 1]].sum(axis=0) for g in range(n_groups)])          # S x N
-    s2 = np.stack([(M[edges[g]:edges[g + 1]] ** 2).sum(axis=0) for g in range(n_groups)])   # S x N
-    cnt = np.array([edges[g + 1] - edges[g] for g in range(n_groups)], dtype=float)         # S
+    s1 = np.stack([M[edges[g] : edges[g + 1]].sum(axis=0) for g in range(n_groups)])  # S x N
+    s2 = np.stack([(M[edges[g] : edges[g + 1]] ** 2).sum(axis=0) for g in range(n_groups)])  # S x N
+    cnt = np.array([edges[g + 1] - edges[g] for g in range(n_groups)], dtype=float)  # S
     return s1, s2, cnt
 
 
@@ -49,7 +50,7 @@ def _metric_from_stats(sum1: np.ndarray, sum2: np.ndarray, n: np.ndarray, metric
     """sum1/sum2: (C x N), n: (C,) -> metric per (combination, config)."""
     n = n[:, None]
     mean = sum1 / n
-    var = np.maximum(sum2 / n - mean ** 2, 0.0) * n / np.maximum(n - 1, 1)
+    var = np.maximum(sum2 / n - mean**2, 0.0) * n / np.maximum(n - 1, 1)
     sd = np.sqrt(var)
     if metric == "sharpe":
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -60,9 +61,13 @@ def _metric_from_stats(sum1: np.ndarray, sum2: np.ndarray, n: np.ndarray, metric
     raise ValueError(f"unknown metric {metric!r}")
 
 
-def probability_of_backtest_overfitting(perf_matrix: pd.DataFrame, n_groups: int = 16,
-                                        metric: str = "sharpe", max_combinations: int = 5000,
-                                        seed: int = 0) -> dict[str, object]:
+def probability_of_backtest_overfitting(
+    perf_matrix: pd.DataFrame,
+    n_groups: int = 16,
+    metric: str = "sharpe",
+    max_combinations: int = 5000,
+    seed: int = 0,
+) -> dict[str, object]:
     """CSCV estimate of the probability of backtest overfitting.
 
     Returns a dict with ``pbo``, ``logits`` (array), ``degradation_slope``,
@@ -92,8 +97,11 @@ def probability_of_backtest_overfitting(perf_matrix: pd.DataFrame, n_groups: int
     n_total = comb(n_groups, half)
     rng = np.random.default_rng(seed)
     if n_total > max_combinations:
-        warnings.warn(f"CSCV: {n_total} combinations capped to {max_combinations} random subsamples",
-                      RuntimeWarning, stacklevel=2)
+        warnings.warn(
+            f"CSCV: {n_total} combinations capped to {max_combinations} random subsamples",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         chosen = set()
         while len(chosen) < max_combinations:
             chosen.add(tuple(sorted(rng.choice(n_groups, half, replace=False).tolist())))
@@ -108,15 +116,19 @@ def probability_of_backtest_overfitting(perf_matrix: pd.DataFrame, n_groups: int
     is_s1, is_s2, is_n = mask @ s1, mask @ s2, mask @ cnt
     oos_mask = ~mask
     oos_s1, oos_s2, oos_n = oos_mask @ s1, oos_mask @ s2, oos_mask @ cnt
-    is_metric = _metric_from_stats(is_s1, is_s2, is_n, metric)      # C x N
+    is_metric = _metric_from_stats(is_s1, is_s2, is_n, metric)  # C x N
     oos_metric = _metric_from_stats(oos_s1, oos_s2, oos_n, metric)  # C x N
 
-    best = np.argmax(is_metric, axis=1)                              # C
+    best = np.argmax(is_metric, axis=1)  # C
     rows = np.arange(C)
     oos_best = oos_metric[rows, best]
     is_best = is_metric[rows, best]
     # relative rank of the IS-best configuration among all configs OOS (1 = worst)
-    rank = 1 + (oos_metric < oos_best[:, None]).sum(axis=1) + 0.5 * ((oos_metric == oos_best[:, None]).sum(axis=1) - 1)
+    rank = (
+        1
+        + (oos_metric < oos_best[:, None]).sum(axis=1)
+        + 0.5 * ((oos_metric == oos_best[:, None]).sum(axis=1) - 1)
+    )
     w = rank / (N + 1.0)
     logits = np.log(w / (1.0 - w))
     # strict: "IS-best is *below* the OOS median" (Bailey et al.); an exact

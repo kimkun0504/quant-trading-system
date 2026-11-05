@@ -25,6 +25,7 @@ Other exchange rebates / pass-through fees for adding or removing liquidity in
 the continuous session are not modelled; they are small and sign-ambiguous
 for a mixed auction/algo flow.
 """
+
 from __future__ import annotations
 
 import bisect
@@ -52,17 +53,20 @@ CLEARING_MAX_PCT_VALUE = 0.005
 # first row uses the first row's rate (the then-current rate is unknown here
 # but was never zero before FY2025), never 0.
 SEC_SECTION31_RATES: list[tuple[pd.Timestamp, float]] = [
-    (pd.Timestamp("2016-02-16"), 21.80),   # FY2016 (rate confirmed as the prior rate in FINRA IN 6/9/17; date unverified)
-    (pd.Timestamp("2017-07-04"), 23.10),   # FY2017 #3, FINRA IN 6/9/17
-    (pd.Timestamp("2018-05-22"), 13.00),   # FY2018 #3, FINRA IN 5/7/18
-    (pd.Timestamp("2019-04-16"), 20.70),   # FY2019 #2, FINRA IN 4/3/19
-    (pd.Timestamp("2020-02-18"), 22.10),   # FY2020 #3, FINRA IN 2/3/20
-    (pd.Timestamp("2021-02-25"), 5.10),    # FY2021 #3, FINRA IN 2/16/21
-    (pd.Timestamp("2022-05-14"), 22.90),   # FY2022 #2, SEC press release 2022-60
-    (pd.Timestamp("2023-02-27"), 8.00),    # FY2023 #3, FINRA IN 2/27/23
-    (pd.Timestamp("2024-05-22"), 27.80),   # FY2024 #2, SEC fee rate advisory 2024-2
-    (pd.Timestamp("2025-05-14"), 0.00),    # FY2025 #2, SEC fee rate advisory 2025-2
-    (pd.Timestamp("2026-04-04"), 20.60),   # FY2026 #2, SEC fee rate advisory 2026-2
+    (
+        pd.Timestamp("2016-02-16"),
+        21.80,
+    ),  # FY2016 (rate confirmed as the prior rate in FINRA IN 6/9/17; date unverified)
+    (pd.Timestamp("2017-07-04"), 23.10),  # FY2017 #3, FINRA IN 6/9/17
+    (pd.Timestamp("2018-05-22"), 13.00),  # FY2018 #3, FINRA IN 5/7/18
+    (pd.Timestamp("2019-04-16"), 20.70),  # FY2019 #2, FINRA IN 4/3/19
+    (pd.Timestamp("2020-02-18"), 22.10),  # FY2020 #3, FINRA IN 2/3/20
+    (pd.Timestamp("2021-02-25"), 5.10),  # FY2021 #3, FINRA IN 2/16/21
+    (pd.Timestamp("2022-05-14"), 22.90),  # FY2022 #2, SEC press release 2022-60
+    (pd.Timestamp("2023-02-27"), 8.00),  # FY2023 #3, FINRA IN 2/27/23
+    (pd.Timestamp("2024-05-22"), 27.80),  # FY2024 #2, SEC fee rate advisory 2024-2
+    (pd.Timestamp("2025-05-14"), 0.00),  # FY2025 #2, SEC fee rate advisory 2025-2
+    (pd.Timestamp("2026-04-04"), 20.60),  # FY2026 #2, SEC fee rate advisory 2026-2
 ]
 _SEC_DATES = [d for d, _ in SEC_SECTION31_RATES]
 
@@ -73,11 +77,11 @@ _SEC_DATES = [d for d, _ in SEC_SECTION31_RATES]
 # 2027/2028 step-ups in the 2024 schedule.  Pre-2024 rows are from memory and
 # unverified (TODO 2026-11-04: confirm against FINRA Schedule A history).
 FINRA_TAF_RATES: list[tuple[pd.Timestamp, float, float]] = [
-    (pd.Timestamp("2012-01-01"), 0.000119, 5.95),   # unverified
-    (pd.Timestamp("2022-01-01"), 0.000130, 6.49),   # unverified
-    (pd.Timestamp("2023-01-01"), 0.000145, 7.27),   # unverified
-    (pd.Timestamp("2024-01-01"), 0.000166, 8.30),   # verified (also 2025, no change)
-    (pd.Timestamp("2026-01-01"), 0.000195, 9.79),   # verified
+    (pd.Timestamp("2012-01-01"), 0.000119, 5.95),  # unverified
+    (pd.Timestamp("2022-01-01"), 0.000130, 6.49),  # unverified
+    (pd.Timestamp("2023-01-01"), 0.000145, 7.27),  # unverified
+    (pd.Timestamp("2024-01-01"), 0.000166, 8.30),  # verified (also 2025, no change)
+    (pd.Timestamp("2026-01-01"), 0.000195, 9.79),  # verified
 ]
 _TAF_DATES = [d for d, _, _ in FINRA_TAF_RATES]
 
@@ -143,19 +147,25 @@ class FeeSchedule:
         if date is None:
             return {}
         taf, cap = finra_taf_rate(date, self.cfg)
-        return {"finra_taf_per_share_sold": taf, "finra_taf_max_per_trade": cap,
-                "sec_fee_per_dollar_sold": sec_section31_rate(date, self.cfg)}
+        return {
+            "finra_taf_per_share_sold": taf,
+            "finra_taf_max_per_trade": cap,
+            "sec_fee_per_dollar_sold": sec_section31_rate(date, self.cfg),
+        }
 
     def _rates(self, date: DateLike) -> tuple[float, float, float]:
         c = self.cfg
         over = self.fee_holiday(date)
-        return (over.get("finra_taf_per_share_sold", c.finra_taf_per_share_sold),
-                over.get("finra_taf_max_per_trade", c.finra_taf_max_per_trade),
-                over.get("sec_fee_per_dollar_sold", c.sec_fee_per_dollar_sold))
+        return (
+            over.get("finra_taf_per_share_sold", c.finra_taf_per_share_sold),
+            over.get("finra_taf_max_per_trade", c.finra_taf_max_per_trade),
+            over.get("sec_fee_per_dollar_sold", c.sec_fee_per_dollar_sold),
+        )
 
     # ------------------------------------------------------------- per order
-    def explicit_cost(self, shares: float, price: float, side: str,
-                      date: DateLike = None, venue: str | None = None) -> dict[str, float]:
+    def explicit_cost(
+        self, shares: float, price: float, side: str, date: DateLike = None, venue: str | None = None
+    ) -> dict[str, float]:
         """Dollar fees for one order of ``shares`` at ``price`` on ``side``.
 
         Returns a dict with keys ``commission, clearing, sec, taf, cat, exchange,
@@ -168,8 +178,15 @@ class FeeSchedule:
         value = q * float(price)
         side = _norm_side(side)
         taf_rate, taf_cap, sec_rate = self._rates(date)
-        zero = {"commission": 0.0, "clearing": 0.0, "sec": 0.0, "taf": 0.0, "cat": 0.0,
-                "exchange": 0.0, "total": 0.0}
+        zero = {
+            "commission": 0.0,
+            "clearing": 0.0,
+            "sec": 0.0,
+            "taf": 0.0,
+            "cat": 0.0,
+            "exchange": 0.0,
+            "total": 0.0,
+        }
         if q == 0:
             return zero
 
@@ -184,11 +201,19 @@ class FeeSchedule:
             sec = value * sec_rate
             taf = min(q * taf_rate, taf_cap)
         total = commission + clearing + sec + taf + cat + exchange
-        return {"commission": commission, "clearing": clearing, "sec": sec,
-                "taf": taf, "cat": cat, "exchange": exchange, "total": total}
+        return {
+            "commission": commission,
+            "clearing": clearing,
+            "sec": sec,
+            "taf": taf,
+            "cat": cat,
+            "exchange": exchange,
+            "total": total,
+        }
 
-    def explicit_bps(self, notional: float, price: float, side: str,
-                     date: DateLike = None, venue: str | None = None) -> float:
+    def explicit_bps(
+        self, notional: float, price: float, side: str, date: DateLike = None, venue: str | None = None
+    ) -> float:
         """Explicit fees in bps of ``notional`` for a trade of ``notional`` dollars
         in a stock priced ``price``."""
         notional = abs(float(notional))
@@ -197,15 +222,18 @@ class FeeSchedule:
         shares = notional / float(price)
         return 1e4 * self.explicit_cost(shares, price, side, date, venue)["total"] / notional
 
-    def round_trip_bps(self, notional: float, price: float, date: DateLike = None,
-                       venue: str | None = None) -> float:
+    def round_trip_bps(
+        self, notional: float, price: float, date: DateLike = None, venue: str | None = None
+    ) -> float:
         """Buy + sell explicit cost in bps of one-way notional."""
-        return (self.explicit_bps(notional, price, "buy", date, venue)
-                + self.explicit_bps(notional, price, "sell", date, venue))
+        return self.explicit_bps(notional, price, "buy", date, venue) + self.explicit_bps(
+            notional, price, "sell", date, venue
+        )
 
     # ------------------------------------------------------------ vectorised
-    def explicit_cost_vec(self, shares, price, is_sell, date: DateLike = None,
-                          is_auction=False) -> np.ndarray:
+    def explicit_cost_vec(
+        self, shares, price, is_sell, date: DateLike = None, is_auction=False
+    ) -> np.ndarray:
         """Vectorised :meth:`explicit_cost` ``["total"]``: dollar fees for one
         order per element (``shares`` >= 0 or signed -- abs is used; ``is_sell``
         / ``is_auction`` boolean arrays or scalars).  Same formulas, same dated
@@ -220,8 +248,10 @@ class FeeSchedule:
         auc = np.broadcast_to(np.asarray(is_auction, dtype=bool), q.shape)
         taf_rate, taf_cap, sec_rate = self._rates(date)
         value = q * p
-        commission = np.minimum(np.maximum(q * c.commission_per_share, c.commission_min_per_order),
-                                c.commission_max_pct_value * value)
+        commission = np.minimum(
+            np.maximum(q * c.commission_per_share, c.commission_min_per_order),
+            c.commission_max_pct_value * value,
+        )
         clearing = np.minimum(q * c.clearing_per_share, CLEARING_MAX_PCT_VALUE * value)
         cat = q * c.cat_fee_per_share
         exchange = np.where(auc, q * getattr(c, "auction_exchange_fee_per_share", 0.0), 0.0)
@@ -238,8 +268,12 @@ class FeeSchedule:
         sell = np.broadcast_to(np.asarray(is_sell, dtype=bool), p.shape)
         auc = np.broadcast_to(np.asarray(is_auction, dtype=bool), p.shape)
         taf_rate, _, sec_rate = self._rates(date)
-        per_share = c.commission_per_share + c.clearing_per_share + c.cat_fee_per_share \
+        per_share = (
+            c.commission_per_share
+            + c.clearing_per_share
+            + c.cat_fee_per_share
             + np.where(auc, getattr(c, "auction_exchange_fee_per_share", 0.0), 0.0)
+        )
         per_share = per_share + np.where(sell, taf_rate, 0.0)
         ok = np.isfinite(p) & (p > 0)
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -247,8 +281,9 @@ class FeeSchedule:
         return np.where(ok, frac, 0.0)
 
     # ------------------------------------------------------- linear approx
-    def marginal_fraction(self, price: float, side: str, date: DateLike = None,
-                          venue: str | None = None) -> float:
+    def marginal_fraction(
+        self, price: float, side: str, date: DateLike = None, venue: str | None = None
+    ) -> float:
         """Marginal explicit cost per dollar traded (fraction), ignoring the
         per-order minimum and per-trade caps.  This is the linear coefficient
         used inside the convex optimizer."""

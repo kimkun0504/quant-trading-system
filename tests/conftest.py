@@ -6,6 +6,7 @@ These stand-ins exist so the portfolio/backtest layers can be tested before
 ``qts.risk`` / ``qts.alpha`` land; they honour the point-in-time rule (only
 data <= date is used for any ``as_of(date)``).
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -21,17 +22,24 @@ from qts.portfolio.alpha_scaling import grinold_alpha
 
 def pytest_addoption(parser):
     parser.addoption(
-        "--update-golden", action="store_true", default=False,
+        "--update-golden",
+        action="store_true",
+        default=False,
         help="regenerate tests/golden/*.json from the current code instead of comparing "
-             "(review the diff before committing: see tests/test_golden.py)")
+        "(review the diff before committing: see tests/test_golden.py)",
+    )
 
 
 def pytest_configure(config):
     # registered here because pyproject.toml is owned elsewhere
-    config.addinivalue_line("markers", "slow: benchmark / long-running test (timings reported, never asserted); "
-                                       "deselect with -m 'not slow'")
-    config.addinivalue_line("markers", "statistical: threshold tuned on a synthetic seed; checked over several "
-                                       "seeds with a majority rule")
+    config.addinivalue_line(
+        "markers",
+        "slow: benchmark / long-running test (timings reported, never asserted); deselect with -m 'not slow'",
+    )
+    config.addinivalue_line(
+        "markers",
+        "statistical: threshold tuned on a synthetic seed; checked over several seeds with a majority rule",
+    )
 
 
 @pytest.fixture(scope="session")
@@ -42,8 +50,14 @@ def update_golden(request) -> bool:
 class StandInRiskModel:
     """Minimal Barra-like model: factors = beta, size, industry dummies."""
 
-    def __init__(self, md: MarketData, beta_window: int = 126, cov_window: int = 252,
-                 spec_window: int = 126, min_hist: int = 60):
+    def __init__(
+        self,
+        md: MarketData,
+        beta_window: int = 126,
+        cov_window: int = 252,
+        spec_window: int = 126,
+        min_hist: int = 60,
+    ):
         self.md = md
         self.cov_window = cov_window
         self.spec_window = spec_window
@@ -52,7 +66,7 @@ class StandInRiskModel:
         cov = R.rolling(beta_window, min_periods=min_hist).cov(mkt)
         var = mkt.rolling(beta_window, min_periods=min_hist).var()
         beta = cov.div(var, axis=0)
-        beta = (0.7 * beta + 0.3).clip(0.2, 2.5).fillna(1.0)       # Blume-style shrink to 1
+        beta = (0.7 * beta + 0.3).clip(0.2, 2.5).fillna(1.0)  # Blume-style shrink to 1
         size = zscore(np.log(md.market_cap)).fillna(0.0)
         self.beta, self.size = beta, size
         inds = sorted(md.industry.unique())
@@ -89,15 +103,23 @@ class StandInRiskModel:
         F = F.reindex(index=self.factors, columns=self.factors).fillna(0.0)
         sv = self.resid.loc[:date].tail(self.spec_window).var()
         sv = sv.fillna(sv.median()).clip(lower=1e-6)
-        return RiskModelOutput(date=date, exposures=self.exposures(date), factor_cov=F,
-                               specific_var=sv, factor_returns=fr)
+        return RiskModelOutput(
+            date=date, exposures=self.exposures(date), factor_cov=F, specific_var=sv, factor_returns=fr
+        )
 
 
 class StandInAlpha:
     """Alpha from the planted latent score: Grinold-scaled with IC ``ic``."""
 
-    def __init__(self, md: MarketData, risk: StandInRiskModel, ic: float = 0.04, horizon_days: int = 20,
-                 half_life_days: float = 60.0, scale: float = 1.0):
+    def __init__(
+        self,
+        md: MarketData,
+        risk: StandInRiskModel,
+        ic: float = 0.04,
+        horizon_days: int = 20,
+        half_life_days: float = 60.0,
+        scale: float = 1.0,
+    ):
         self.md, self.risk, self.ic, self.H = md, risk, ic, horizon_days
         self.hl, self.scale = half_life_days, scale
         self.z = zscore(md.extra["true_latent_score"])
@@ -107,8 +129,14 @@ class StandInAlpha:
         sv = self.risk.resid.loc[:date].tail(self.risk.spec_window).var()
         sv = sv.fillna(sv.median()).clip(lower=1e-6)
         er = grinold_alpha(z, np.sqrt(sv * self.H), self.ic) * self.scale
-        return AlphaOutput(date=date, score=z, expected_return=er, horizon_days=self.H,
-                           half_life_days=self.hl, ic_estimate=self.ic)
+        return AlphaOutput(
+            date=date,
+            score=z,
+            expected_return=er,
+            horizon_days=self.H,
+            half_life_days=self.hl,
+            ic_estimate=self.ic,
+        )
 
 
 @pytest.fixture(scope="session")
@@ -149,7 +177,7 @@ GOLDEN_MAX_DAYS = 60
 
 def golden_config() -> SystemConfig:
     cfg = SystemConfig()
-    cfg.universe.top_n_by_mcap = GOLDEN_TOP_N        # time-varying universe inside the 100 names
+    cfg.universe.top_n_by_mcap = GOLDEN_TOP_N  # time-varying universe inside the 100 names
     return cfg
 
 
@@ -165,6 +193,7 @@ def golden_pipeline_run(golden_market):
     import warnings
 
     from qts.pipeline import ResearchPipeline
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         pipe = ResearchPipeline(golden_config(), use_ml=False)

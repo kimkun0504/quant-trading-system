@@ -1,4 +1,5 @@
 """Tests for the alpha layer (qts.alpha) on the synthetic market with planted truth."""
+
 from __future__ import annotations
 
 import warnings
@@ -114,13 +115,14 @@ def test_residualized_target_properties(md, target, raw):
     assert abs(rank_ic_series(target, lm).mean()) < 0.02
     # pooled correlation with the forward market return is ~0 (labels are demeaned per date)
     fwd_mkt = forward_returns(md, HORIZON).mean(axis=1)
-    pooled = pd.DataFrame({"t": target.stack(future_stack=True),
-                           "m": np.repeat(fwd_mkt.values, target.shape[1])}).dropna()
+    pooled = pd.DataFrame(
+        {"t": target.stack(future_stack=True), "m": np.repeat(fwd_mkt.values, target.shape[1])}
+    ).dropna()
     assert abs(pooled["t"].corr(pooled["m"])) < 0.01
     # exposures hook: an external exposures function is honoured
     ext = residualize_forward_returns(
-        md.slice_until(md.dates[80]), 10,
-        exposures_fn=lambda d: pd.DataFrame({"b": beta.loc[d]}))
+        md.slice_until(md.dates[80]), 10, exposures_fn=lambda d: pd.DataFrame({"b": beta.loc[d]})
+    )
     assert ext.dropna(how="all").shape[0] == 81 - 10
     # ... and the result is beta-neutral per date
     assert abs(rank_ic_series(ext, beta).mean()) < 0.03
@@ -162,6 +164,7 @@ def test_composite_and_dynamic_weights(md, cfg, X, target):
 @pytest.mark.slow
 def test_walk_forward_oos_ic(md, cfg, X, y_long, target):
     wf = WalkForwardTrainer(cfg)
+
     def factory():
         return EnsembleModel([RankCompositeModel(cfg), LGBMModel(n_seeds=1, n_estimators=150, n_jobs=4)])
 
@@ -170,11 +173,16 @@ def test_walk_forward_oos_ic(md, cfg, X, y_long, target):
     assert pred.loc[:first].iloc[:-1].isna().all().all()
     assert pred.loc[first:].notna().sum(axis=1).min() == md.tickers.size
     rep = ic_report(pred, target)
-    print(f"\n[walk-forward] composite+LGBM OOS mean rank IC = {rep['mean_ic']:.4f} "
-          f"(ICIR {rep['icir']:.2f}, t {rep['t_stat']:.2f}, n={rep['n']})")
+    print(
+        f"\n[walk-forward] composite+LGBM OOS mean rank IC = {rep['mean_ic']:.4f} "
+        f"(ICIR {rep['icir']:.2f}, t {rep['t_stat']:.2f}, n={rep['n']})"
+    )
     print(rep["by_year"].round(4).to_string())
     lgbm = wf.models_[-1].models[1]
-    print("[walk-forward] LGBM best iterations:", [m.best_iterations_ for m in (mm.models[1] for mm in wf.models_)])
+    print(
+        "[walk-forward] LGBM best iterations:",
+        [m.best_iterations_ for m in (mm.models[1] for mm in wf.models_)],
+    )
     print("[walk-forward] LGBM top features:\n", lgbm.feature_importance().head(6).round(3).to_string())
     # sign check only: the exact value depends on the LightGBM version and thread
     # scheduling (1 seed, n_jobs=4); typical is ~0.03-0.04 on seed 2
@@ -193,6 +201,7 @@ def test_walk_forward_oos_ic(md, cfg, X, y_long, target):
 
 class _SpyModel:
     """Records the training / prediction dates it is given."""
+
     log = []
 
     def fit(self, X, y, valid_mask=None):
@@ -202,8 +211,13 @@ class _SpyModel:
         return self
 
     def predict(self, X):
-        _SpyModel.log.append((self.train_dates.max(), self.valid_dates.min() if len(self.valid_dates) else None,
-                              X.index.get_level_values("date").min()))
+        _SpyModel.log.append(
+            (
+                self.train_dates.max(),
+                self.valid_dates.min() if len(self.valid_dates) else None,
+                X.index.get_level_values("date").min(),
+            )
+        )
         return pd.Series(0.0, index=X.index)
 
 
@@ -232,8 +246,9 @@ def test_embargo_excludes_overlapping_labels():
     m = embargoed_train_mask(np.arange(20), pred_start_pos=10, horizon=3)
     assert m.tolist() == [True] * 7 + [False] * 13
     # custom embargo overrides horizon
-    tr2 = WalkForwardTrainer(AlphaConfig(horizon_days=h, embargo_days=9, train_min_days=40,
-                                         refit_frequency_days=20), valid_days=10)
+    tr2 = WalkForwardTrainer(
+        AlphaConfig(horizon_days=h, embargo_days=9, train_min_days=40, refit_frequency_days=20), valid_days=10
+    )
     _SpyModel.log.clear()
     tr2.run(X, y, _SpyModel)
     assert all(pos[p] - pos[t] == 10 for t, _, p in _SpyModel.log)
@@ -280,8 +295,10 @@ def test_alpha_model_as_of(md, cfg):
     # ML sleeve is only available out-of-sample
     early = am.as_of(md.dates[100])
     assert "ml" not in early.components or early.components["ml"].isna().all()
-    print(f"\n[alpha_model] trailing OOS IC used at {d.date()}: {am.trailing_ic(d):.4f}; "
-          f"shrunk IC {out.ic_estimate:.4f}; half-life {out.half_life_days:.1f} d")
+    print(
+        f"\n[alpha_model] trailing OOS IC used at {d.date()}: {am.trailing_ic(d):.4f}; "
+        f"shrunk IC {out.ic_estimate:.4f}; half-life {out.half_life_days:.1f} d"
+    )
 
 
 # --------------------------------------------------------------------------- universe eligibility (audit finding 1)
@@ -299,7 +316,7 @@ def test_cross_section_uses_only_eligible_names():
     md_u = apply_mask(md_full, mask)
     assert md_u.eligible is not None
     n_in = md_u.eligible.sum(axis=1)
-    assert n_in.iloc[50:].max() < md_u.tickers.size            # names ever in > names in at t (hysteresis allows >120)
+    assert n_in.iloc[50:].max() < md_u.tickers.size  # names ever in > names in at t (hysteresis allows >120)
     acfg = AlphaConfig(train_min_days=300, refit_frequency_days=126, model_seeds=1)
     am = AlphaModel(acfg, use_ml=False).fit(md_u)
     elig_long = to_long(md_u.eligibility(), "e")
@@ -319,13 +336,14 @@ def test_cross_section_uses_only_eligible_names():
     ref = am.as_of(t)
     mask2 = mask.copy()
     fut = mask2.index > t
-    mask2.loc[fut] = ~mask2.loc[fut].to_numpy()            # flip all future membership
+    mask2.loc[fut] = ~mask2.loc[fut].to_numpy()  # flip all future membership
     mask2.loc[fut] &= md_full.close.notna().loc[fut]
     am2 = AlphaModel(acfg, use_ml=False).fit(apply_mask(md_full, mask2))
     alt = am2.as_of(t)
     pd.testing.assert_series_equal(ref.score, alt.score.reindex(ref.score.index), rtol=1e-9, atol=1e-10)
-    pd.testing.assert_series_equal(ref.expected_return, alt.expected_return.reindex(ref.score.index),
-                                   rtol=1e-9, atol=1e-10)
+    pd.testing.assert_series_equal(
+        ref.expected_return, alt.expected_return.reindex(ref.score.index), rtol=1e-9, atol=1e-10
+    )
 
 
 # --------------------------------------------------------------------------- refactor: roles (D1), D5, config knobs
@@ -334,6 +352,7 @@ def test_label_and_optimizer_sets_come_from_roles():
     from qts.alpha import targets
     from qts.core import roles
     from qts.pipeline import ResearchPipeline
+
     assert targets.DEFAULT_STYLE_EXPOSURES is roles.RISK_ONLY_FEATURES
     assert targets.ALPHA_THEME_FEATURES is roles.ALPHA_THEME_FEATURES
     assert ResearchPipeline.RISK_ONLY_STYLES is roles.RISK_ONLY_STYLES
@@ -344,7 +363,7 @@ def test_default_ic_is_shrunk_like_estimated_ic(md):
     """D5: before a trailing IC exists the pre-shrink prior default_ic is shrunk too."""
     acfg = AlphaConfig(train_min_days=504, model_seeds=1, ic_shrink=0.5, default_ic=0.03)
     am = AlphaModel(acfg, use_ml=False).fit(md)
-    early = md.dates[60]                       # < ic_min_obs realised IC dates
+    early = md.dates[60]  # < ic_min_obs realised IC dates
     assert not np.isfinite(am.trailing_ic(early))
     out = am.as_of(early)
     assert out.ic_estimate == pytest.approx(0.015)
@@ -371,12 +390,13 @@ def test_alpha_knobs_live_in_config():
     am = AlphaModel(acfg)
     assert am.composite_weight == 0.3 and am.ic_window == 100 and am.dynamic_weights is False
     assert am.trainer.valid_days == 50
-    am2 = AlphaModel(acfg, composite_weight=0.8, ic_window=10)          # kwargs override config
+    am2 = AlphaModel(acfg, composite_weight=0.8, ic_window=10)  # kwargs override config
     assert am2.composite_weight == 0.8 and am2.ic_window == 10
     m = LGBMModel(n_seeds=1, params=acfg.lgbm, n_estimators=55, min_split_gain=0.0)
     assert m.params["n_estimators"] == 55 and m.params["min_split_gain"] == 0.0
     assert m.params["num_leaves"] == acfg.lgbm.num_leaves and m.params["n_jobs"] >= 1
     from qts.alpha import default_ml_factory
+
     ens = default_ml_factory(AlphaConfig(model_seeds=1, ensemble_weights={"lgbm": 1.0, "ridge": 1.0}))()
     assert [type(x).__name__ for x in ens.models] == ["LGBMModel", "RidgeModel"]
 
@@ -394,26 +414,32 @@ def _pandas_rank_ic_metric(dates):
         rt = center(pd.Series(y_true).groupby(codes).rank().to_numpy())
         rp = center(pd.Series(y_pred).groupby(codes).rank().to_numpy())
         num = np.bincount(codes, rt * rp)
-        den = np.sqrt(np.bincount(codes, rt ** 2) * np.bincount(codes, rp ** 2))
+        den = np.sqrt(np.bincount(codes, rt**2) * np.bincount(codes, rp**2))
         with np.errstate(invalid="ignore", divide="ignore"):
             ic = num / den
         ic = ic[(n >= 20) & np.isfinite(ic)]
         return float(ic.mean()) if len(ic) else 0.0
+
     return metric
 
 
 def test_vectorised_rank_ic_metric_matches_pandas():
     from qts.alpha.models import DateGroupedRankIC, make_rank_ic_metric
+
     rng = np.random.default_rng(0)
     dates = np.repeat(pd.bdate_range("2021-01-01", periods=40).values, 50)
     dates = dates[rng.random(len(dates)) > 0.1]
-    dates = np.concatenate([dates[::-1][:30], dates[30:]])     # rows not sorted by date
-    dates = np.concatenate([dates, np.repeat(np.datetime64("2030-01-01"), 7)])   # a tiny group (< 20 rows)
+    dates = np.concatenate([dates[::-1][:30], dates[30:]])  # rows not sorted by date
+    dates = np.concatenate([dates, np.repeat(np.datetime64("2030-01-01"), 7)])  # a tiny group (< 20 rows)
     n = len(dates)
     y = rng.standard_normal(n).astype(np.float32)
     ref, new = _pandas_rank_ic_metric(dates), make_rank_ic_metric(dates)
-    for pred in (rng.standard_normal(n), np.round(rng.standard_normal(n), 1),     # heavy ties
-                 np.zeros(n), 0.2 * y + rng.standard_normal(n)):
+    for pred in (
+        rng.standard_normal(n),
+        np.round(rng.standard_normal(n), 1),  # heavy ties
+        np.zeros(n),
+        0.2 * y + rng.standard_normal(n),
+    ):
         name, val, higher_better = new(y, pred)
         assert name == "rank_ic" and higher_better
         assert val == pytest.approx(ref(y, pred), abs=1e-12)
@@ -424,6 +450,7 @@ def test_feature_helpers_delegate_to_core_stats(md):
     """Winsorisation / rolling beta come from qts.core.stats (single implementation)."""
     from qts.alpha.features import _winsorize_rows, rolling_market_beta
     from qts.core import stats
+
     w = md.returns.iloc[:300]
     pd.testing.assert_frame_equal(_winsorize_rows(w, 0.01), stats.winsorize_rows(w, 0.01))
     b, iv = rolling_market_beta(w, w.mean(axis=1), 63)
@@ -438,6 +465,7 @@ def test_industry_history_is_used_point_in_time(md):
     import dataclasses
 
     from qts.alpha.features import industry_segments
+
     d = md.dates[600]
     hist = pd.DataFrame([md.industry.reindex(md.tickers).to_numpy()], index=[d], columns=md.tickers)
     hist.iloc[0, :20] = "RECLASSIFIED"
@@ -453,12 +481,14 @@ def test_industry_history_is_used_point_in_time(md):
 # --------------------------------------------------------------------------- refactor: NW lags, typed IC report
 def test_newey_west_lag_rule_and_typed_ic_report(md, target):
     from qts.alpha import ICReport, newey_west_lags
-    assert newey_west_lags(1005, 1) == 6                 # floor(4 (T/100)^(2/9))
-    assert newey_west_lags(1000, 20) == 20               # floored at the overlap
+
+    assert newey_west_lags(1005, 1) == 6  # floor(4 (T/100)^(2/9))
+    assert newey_west_lags(1000, 20) == 20  # floored at the overlap
     assert newey_west_lags(50, 1) == 3 and newey_west_lags(1, 5) == 0
     z = md.extra["true_latent_score"]
-    rep = ic_report(z, target, overlap=HORIZON,
-                    decay_targets={5: residualize_forward_returns(md, 5), HORIZON: target})
+    rep = ic_report(
+        z, target, overlap=HORIZON, decay_targets={5: residualize_forward_returns(md, 5), HORIZON: target}
+    )
     assert isinstance(rep, ICReport)
     assert rep["mean_ic"] == rep.mean_ic and "by_year" in rep and rep.get("missing", 1) == 1
     assert rep.nw_lags >= HORIZON
@@ -480,22 +510,25 @@ def test_residualize_only_dates_matches_full(md, raw, target):
 def test_mlp_early_stopping_is_time_contiguous(X, y_long, md):
     from qts.alpha import MLPModel
     from qts.alpha.models import default_valid_mask
+
     sub = X.loc[X.index.get_level_values("date") >= md.dates[WARMUP]]
     ysub = y_long.reindex(sub.index)
     vm = default_valid_mask(sub, frac=0.1)
     vd = sub.index.get_level_values("date")[vm.to_numpy()].unique()
     td = sub.index.get_level_values("date")[~vm.to_numpy()].unique()
-    assert td.max() < vd.min()                            # contiguous trailing block, no interleaving
-    m = MLPModel(n_seeds=1, hidden=(8,), max_iter=15, n_iter_no_change=3, max_train_rows=20_000,
-                 refit_on_full=False)
+    assert td.max() < vd.min()  # contiguous trailing block, no interleaving
+    m = MLPModel(
+        n_seeds=1, hidden=(8,), max_iter=15, n_iter_no_change=3, max_train_rows=20_000, refit_on_full=False
+    )
     m.fit(sub, ysub)
     assert 1 <= m.best_epochs_[0] <= 15 and np.isfinite(m.valid_ic_[0])
-    assert not m.models_[0].early_stopping               # sklearn's random holdout is not used
+    assert not m.models_[0].early_stopping  # sklearn's random holdout is not used
     p = m.predict(sub.iloc[:500])
     assert np.isfinite(p).all()
     # deterministic
-    m2 = MLPModel(n_seeds=1, hidden=(8,), max_iter=15, n_iter_no_change=3, max_train_rows=20_000,
-                  refit_on_full=False).fit(sub, ysub)
+    m2 = MLPModel(
+        n_seeds=1, hidden=(8,), max_iter=15, n_iter_no_change=3, max_train_rows=20_000, refit_on_full=False
+    ).fit(sub, ysub)
     np.testing.assert_array_equal(m2.predict(sub.iloc[:500]).to_numpy(), p.to_numpy())
 
 
@@ -509,6 +542,7 @@ def test_benchmark_alpha_fit_composite_lgbm(capsys):
     import time
 
     import qts.alpha.models as models
+
     md_b = generate(SyntheticSpec(n_stocks=300, n_days=1512, seed=0))
     acfg = AlphaConfig()
     new_metric = models.make_rank_ic_metric
@@ -516,9 +550,11 @@ def test_benchmark_alpha_fit_composite_lgbm(capsys):
     try:
         for label, metric in (("new", new_metric), ("legacy", _pandas_rank_ic_metric)):
             if label == "legacy":
+
                 def legacy(d, f=metric):
                     g = f(d)
                     return lambda yt, yp: ("rank_ic", g(yt, yp), True)
+
                 models.make_rank_ic_metric = legacy
             am = AlphaModel(acfg, ml_factory=lambda: LGBMModel(n_seeds=acfg.model_seeds, params=acfg.lgbm))
             t0 = time.perf_counter()
@@ -527,5 +563,7 @@ def test_benchmark_alpha_fit_composite_lgbm(capsys):
     finally:
         models.make_rank_ic_metric = new_metric
     with capsys.disabled():
-        print(f"\n[benchmark] alpha fit composite+LGBM 300x1512: new {times['new']:.1f}s, "
-              f"legacy {times['legacy']:.1f}s, speed-up {times['legacy'] / times['new']:.2f}x")
+        print(
+            f"\n[benchmark] alpha fit composite+LGBM 300x1512: new {times['new']:.1f}s, "
+            f"legacy {times['legacy']:.1f}s, speed-up {times['legacy'] / times['new']:.2f}x"
+        )

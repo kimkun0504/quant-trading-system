@@ -65,6 +65,7 @@ returns ``status`` as reported by the solver, ``w_target = w_current``,
 ``expected_cost = nan`` and logs a warning.  Dropping the ADV participation
 caps on infeasibility is opt-in (``cfg.relax_participation_on_infeasible``).
 """
+
 from __future__ import annotations
 
 import logging
@@ -90,8 +91,8 @@ log = logging.getLogger(__name__)
 OK_STATUSES = ("optimal", "optimal_inaccurate")
 ExtraConstraint = Callable[[cp.Variable, cp.Expression, pd.Index], list[cp.Constraint]]
 SOLVER_TOL = 1e-6
-MAX_SCALE_UP = 5.0   # sanity cap on the vol-target projection anchor s = target / predicted
-_BIG = 10.0          # "no cap" value for the per-name no-trade / forced-exit cap parameters
+MAX_SCALE_UP = 5.0  # sanity cap on the vol-target projection anchor s = target / predicted
+_BIG = 10.0  # "no cap" value for the per-name no-trade / forced-exit cap parameters
 VOL_TARGET_MODES = ("projection", "constraint")
 
 
@@ -99,23 +100,23 @@ VOL_TARGET_MODES = ("projection", "constraint")
 class OptimizationResult:
     w_target: pd.Series
     x: pd.Series
-    expected_alpha: float          # alpha' w_target over the horizon (after any GP shrink)
-    expected_risk: float           # annualised ex-ante vol of w_target
-    expected_cost: float           # trade cost + H * holding cost (fraction of NAV); nan on failure
-    turnover: float                # sum |x| (two-sided, fraction of NAV)
+    expected_alpha: float  # alpha' w_target over the horizon (after any GP shrink)
+    expected_risk: float  # annualised ex-ante vol of w_target
+    expected_cost: float  # trade cost + H * holding cost (fraction of NAV); nan on failure
+    turnover: float  # sum |x| (two-sided, fraction of NAV)
     transfer_coefficient: float
     status: str
     solve_time: float
     binding_constraints: dict[str, int] = field(default_factory=dict)
     objective_value: float = float("nan")
-    vol_scalar: float = 1.0        # s used in the vol-target projection (1 = none / constraint mode)
+    vol_scalar: float = 1.0  # s used in the vol-target projection (1 = none / constraint mode)
     solver: str = ""
     notes: list[str] = field(default_factory=list)
     exante_var_daily: float = float("nan")
-    n_out_of_model: int = 0        # material names (alpha or position != 0) outside the risk universe
+    n_out_of_model: int = 0  # material names (alpha or position != 0) outside the risk universe
     alignment_share: float = float("nan")  # share of ex-ante variance from the alignment term
-    gp_shrink: float = 1.0         # Garleanu-Pedersen factor applied to alpha (1 = none)
-    problem_reused: bool = False   # True when the cached DPP problem was re-solved
+    gp_shrink: float = 1.0  # Garleanu-Pedersen factor applied to alpha (1 = none)
+    problem_reused: bool = False  # True when the cached DPP problem was re-solved
 
     @property
     def ok(self) -> bool:
@@ -141,6 +142,7 @@ def _snap_get(snapshot: Any, key: str):
 @dataclass
 class _ProblemData:
     """Everything the constraint builder and the solves share (numeric, one date)."""
+
     tickers: pd.Index
     a: np.ndarray
     w0: np.ndarray
@@ -166,7 +168,7 @@ class _ProblemData:
 
     def variance(self, w: np.ndarray) -> float:
         fw = self.Bv.T @ w
-        v = float(fw @ self.F @ fw + (w ** 2 * self.d).sum())
+        v = float(fw @ self.F @ fw + (w**2 * self.d).sum())
         if self.y is not None:
             v += self.nu * float(self.y @ w) ** 2
         return v
@@ -178,7 +180,7 @@ class _ProblemData:
         return self.nu * float(self.y @ w) ** 2 / v
 
     # factor layout for the parametrised problem ------------------------------
-    static_cols: list[str] = field(default_factory=list)   # market + industry dummies (constant, sparse)
+    static_cols: list[str] = field(default_factory=list)  # market + industry dummies (constant, sparse)
     dynamic_cols: list[str] = field(default_factory=list)  # styles / statistical (parameter, dense)
 
     def ordered(self) -> list[str]:
@@ -278,21 +280,39 @@ def _assign(params: Sequence[cp.Parameter], values: Sequence[np.ndarray]) -> boo
 class _Compiled:
     """One parametrised cvxpy problem (alpha solve or vol-target projection)."""
 
-    def __init__(self, kind: str, key: tuple, n: int, K: int, layout: dict[str, Any],
-                 book: str, cfg: PortfolioConfig, beta_band: float, coefs: dict[str, float],
-                 with_part: bool, vol_cap: bool, cost_model: CostTerms, cost_args: tuple,
-                 extra_fns: Sequence[ExtraConstraint] | None, tickers: pd.Index, exact_power: bool = True):
+    def __init__(
+        self,
+        kind: str,
+        key: tuple,
+        n: int,
+        K: int,
+        layout: dict[str, Any],
+        book: str,
+        cfg: PortfolioConfig,
+        beta_band: float,
+        coefs: dict[str, float],
+        with_part: bool,
+        vol_cap: bool,
+        cost_model: CostTerms,
+        cost_args: tuple,
+        extra_fns: Sequence[ExtraConstraint] | None,
+        tickers: pd.Index,
+        exact_power: bool = True,
+    ):
         self.kind, self.key = kind, key
         n_ind, n_sty, has_beta = len(layout["ind"]), len(layout["sty"]), layout["beta"] is not None
         w = cp.Variable(n, name="w")
         x = cp.Variable(n, name="x")
-        f = cp.Variable(K, name="f")                         # factor exposures B'w
+        f = cp.Variable(K, name="f")  # factor exposures B'w
         self.w, self.x, self.f = w, x, f
         Ks, Kd = len(layout["static"]), len(layout["dynamic"])
         P = {
-            "a": cp.Parameter(n, name="alpha"), "w0": cp.Parameter(n, name="w0"),
-            "L": cp.Parameter((K, K), name="L"), "sd": cp.Parameter(n, nonneg=True, name="sd"),
-            "y": cp.Parameter(n, name="y_sqrt_nu"), "part": cp.Parameter(n, nonneg=True, name="part_cap"),
+            "a": cp.Parameter(n, name="alpha"),
+            "w0": cp.Parameter(n, name="w0"),
+            "L": cp.Parameter((K, K), name="L"),
+            "sd": cp.Parameter(n, nonneg=True, name="sd"),
+            "y": cp.Parameter(n, name="y_sqrt_nu"),
+            "part": cp.Parameter(n, nonneg=True, name="part_cap"),
             "nt": cp.Parameter(n, nonneg=True, name="no_trade_cap"),
             "fz": cp.Parameter(n, nonneg=True, name="force_cap"),
             "tgt": cp.Parameter(nonneg=True, name="vol_cap_daily"),
@@ -310,6 +330,7 @@ class _Compiled:
         # values are part of the structure key), the dense style block a parameter
         if Ks:
             import scipy.sparse as sp
+
             cons["_f_static"] = f[:Ks] == sp.csc_matrix(layout["static_block"]).T @ w
         if Kd:
             cons["_f_dynamic"] = f[Ks:] == P["Bd"].T @ w
@@ -340,7 +361,7 @@ class _Compiled:
         self.participation = cp.abs(x) <= P["part"]
         self.cons = cons
         extra: list[cp.Constraint] = []
-        for fn in (extra_fns or []):
+        for fn in extra_fns or []:
             extra.extend(fn(w, x, tickers))
         clist = list(cons.values()) + extra + ([self.participation] if with_part else [])
 
@@ -352,7 +373,9 @@ class _Compiled:
         hc_p = _parametrize(hc, self.cost_params, exact_power)
         self.risk_cap = None
         if kind == "alpha":
-            risk = cp.sum_squares(P["L"].T @ f) + cp.sum_squares(cp.multiply(P["sd"], w)) + cp.square(P["y"] @ w)
+            risk = (
+                cp.sum_squares(P["L"].T @ f) + cp.sum_squares(cp.multiply(P["sd"], w)) + cp.square(P["y"] @ w)
+            )
             obj = P["a"] @ w - coefs["kappa"] * risk - coefs["trade"] * tc_p - coefs["hold"] * hc_p
             if coefs["turnover"] > 0:
                 obj = obj - coefs["turnover"] * cp.norm1(x)
@@ -374,11 +397,14 @@ class _Compiled:
     def _risk_norm(self, w: cp.Variable) -> cp.Expression:
         """``sqrt(w' Sigma w)`` (daily) as a second-order-cone expression."""
         P = self.P
-        return cp.norm(cp.hstack([P["L"].T @ self.f, cp.multiply(P["sd"], w),
-                                  cp.reshape(P["y"] @ w, (1,), order="C")]), 2)
+        return cp.norm(
+            cp.hstack([P["L"].T @ self.f, cp.multiply(P["sd"], w), cp.reshape(P["y"] @ w, (1,), order="C")]),
+            2,
+        )
 
-    def set_values(self, pdat: _ProblemData, anchor: np.ndarray | None = None,
-                   tgt: float | None = None) -> None:
+    def set_values(
+        self, pdat: _ProblemData, anchor: np.ndarray | None = None, tgt: float | None = None
+    ) -> None:
         P = self.P
         n = len(pdat.tickers)
         P["a"].value = pdat.a
@@ -400,9 +426,17 @@ class _Compiled:
 
 
 class SinglePeriodOptimizer:
-    def __init__(self, cfg: PortfolioConfig, cost_model: CostTerms, horizon_days: int = 20,
-                 beta_band: float | None = None, solver_opts: dict | None = None, verbose: bool = False,
-                 reuse_problem: bool | None = None, exact_power: bool = True):
+    def __init__(
+        self,
+        cfg: PortfolioConfig,
+        cost_model: CostTerms,
+        horizon_days: int = 20,
+        beta_band: float | None = None,
+        solver_opts: dict | None = None,
+        verbose: bool = False,
+        reuse_problem: bool | None = None,
+        exact_power: bool = True,
+    ):
         """``reuse_problem`` overrides ``cfg.reuse_problem`` (cache the DPP problem
         across solves while the ticker set / constraint structure is unchanged).
         ``exact_power`` enters the cost model's 3/2-power impact terms as exact
@@ -413,7 +447,9 @@ class SinglePeriodOptimizer:
         self.beta_band = float(getattr(cfg, "beta_band", 0.05) if beta_band is None else beta_band)
         self.solver_opts = solver_opts or {}
         self.verbose = verbose
-        self.reuse_problem = bool(getattr(cfg, "reuse_problem", False) if reuse_problem is None else reuse_problem)
+        self.reuse_problem = bool(
+            getattr(cfg, "reuse_problem", False) if reuse_problem is None else reuse_problem
+        )
         self.exact_power = bool(exact_power)
         self._chain: list[str] | None = None
         mode = getattr(cfg, "vol_target_mode", "projection")
@@ -425,7 +461,7 @@ class SinglePeriodOptimizer:
 
     # ------------------------------------------------------------------ utils
     def _solver_chain(self) -> list[str]:
-        if self._chain is None:            # cp.installed_solvers() costs ~10 ms per call
+        if self._chain is None:  # cp.installed_solvers() costs ~10 ms per call
             installed = set(cp.installed_solvers())
             out: list[str] = []
             for s in [self.cfg.solver, "CLARABEL", "SCS", "OSQP"]:
@@ -435,11 +471,15 @@ class SinglePeriodOptimizer:
         return self._chain
 
     # ------------------------------------------------------------ factor roles
-    def _resolve_factor_roles(self, risk: RiskModelOutput, factors: list[str],
-                              neutral_styles: Sequence[str] | None,
-                              industry_columns: Sequence[str] | None,
-                              notes: list[str], has_benchmark: bool = False
-                              ) -> tuple[str | None, list[str], list[str]]:
+    def _resolve_factor_roles(
+        self,
+        risk: RiskModelOutput,
+        factors: list[str],
+        neutral_styles: Sequence[str] | None,
+        industry_columns: Sequence[str] | None,
+        notes: list[str],
+        has_benchmark: bool = False,
+    ) -> tuple[str | None, list[str], list[str]]:
         """``(beta_col, industry_cols, style_band_cols)`` from
         ``risk.factor_groups``; prefix fallback only when the groups are empty.
         ``neutral_styles=None`` with ``cfg.neutralize_risk_only_styles`` means
@@ -453,8 +493,11 @@ class SinglePeriodOptimizer:
         # D1 default: only where neutrality is meaningful -- a dollar-neutral book, or
         # active weights against a benchmark (a fully invested long-only book cannot be
         # style-neutral in absolute terms)
-        defaulted = (neutral_styles is None and bool(getattr(cfg, "neutralize_risk_only_styles", False))
-                     and (cfg.book == "long_short" or has_benchmark))
+        defaulted = (
+            neutral_styles is None
+            and bool(getattr(cfg, "neutralize_risk_only_styles", False))
+            and (cfg.book == "long_short" or has_benchmark)
+        )
         if has_groups:
             style = [c for c in groups.get("style", []) if c in factors]
             industry = [c for c in groups.get("industry", []) if c in factors]
@@ -465,15 +508,19 @@ class SinglePeriodOptimizer:
                 raise ValueError(f"neutral_styles {unknown} are not in factor_groups['style'] = {style}")
             beta_col = beta_name if beta_name in style else None
             if cfg.beta_neutral and beta_col is None:
-                notes.append(f"beta_neutral requested but style '{beta_name}' not in "
-                             f"factor_groups['style']; skipped")
+                notes.append(
+                    f"beta_neutral requested but style '{beta_name}' not in factor_groups['style']; skipped"
+                )
             if industry_columns:
                 ind_cols = [c for c in industry_columns if c in factors]
             else:
                 ind_cols = industry
         else:
-            log.warning("risk model output has no factor_groups; falling back to name-based factor "
-                        "role detection (beta = exact '%s', industry = 'IND*' prefix)", beta_name)
+            log.warning(
+                "risk model output has no factor_groups; falling back to name-based factor "
+                "role detection (beta = exact '%s', industry = 'IND*' prefix)",
+                beta_name,
+            )
             notes.append("factor_groups missing: prefix fallback for factor roles")
             low = {str(c).lower(): c for c in factors}
             beta_col = low.get(beta_name.lower())
@@ -500,9 +547,20 @@ class SinglePeriodOptimizer:
         return beta_col_used, ind_cols, sty
 
     # ------------------------------------------------------------ problem data
-    def _prepare(self, alpha: pd.Series, risk: RiskModelOutput, w_current: pd.Series, nav: float,
-                 snapshot: Snapshot, neutral_styles, industry_columns, no_trade, force_to_zero,
-                 benchmark_weights, notes: list[str]) -> _ProblemData:
+    def _prepare(
+        self,
+        alpha: pd.Series,
+        risk: RiskModelOutput,
+        w_current: pd.Series,
+        nav: float,
+        snapshot: Snapshot,
+        neutral_styles,
+        industry_columns,
+        no_trade,
+        force_to_zero,
+        benchmark_weights,
+        notes: list[str],
+    ) -> _ProblemData:
         cfg = self.cfg
         tickers = pd.Index(alpha.index).union(pd.Index(w_current.index)).union(risk.tickers)
         tickers = pd.Index(sorted(tickers))
@@ -526,8 +584,10 @@ class SinglePeriodOptimizer:
         material = (~in_model) & ((a != 0) | (w0 != 0))
         n_out = int(material.sum())
         if n_out:
-            notes.append(f"{n_out} material names outside the risk model universe; "
-                         f"specific var set to 90th pct ({fill:.2e}), zero factor exposure")
+            notes.append(
+                f"{n_out} material names outside the risk model universe; "
+                f"specific var set to 90th pct ({fill:.2e}), zero factor exposure"
+            )
             log.debug("optimizer: %d names outside risk universe on %s", n_out, getattr(risk, "date", "?"))
         sd = np.sqrt(d)
         y = None
@@ -536,8 +596,14 @@ class SinglePeriodOptimizer:
             y = pd.Series(risk.alignment_vector, dtype=float).reindex(tickers).fillna(0.0).values
             nu = float(risk.alignment_var)
 
-        beta_col, ind_cols, sty = self._resolve_factor_roles(risk, factors, neutral_styles, industry_columns, notes,
-                                                             has_benchmark=benchmark_weights is not None)
+        beta_col, ind_cols, sty = self._resolve_factor_roles(
+            risk,
+            factors,
+            neutral_styles,
+            industry_columns,
+            notes,
+            has_benchmark=benchmark_weights is not None,
+        )
         wb = None
         if benchmark_weights is not None:
             wb = pd.Series(benchmark_weights, dtype=float).reindex(tickers).fillna(0.0).values
@@ -556,11 +622,32 @@ class SinglePeriodOptimizer:
             force_caps = np.where(force_mask, np.maximum(np.maximum(req, 0.0), np.abs(w0) - part_cap), 0.0)
         static_cols = self._static_columns(risk, factors, Bv)
         dynamic_cols = [c for c in factors if c not in set(static_cols)]
-        return _ProblemData(tickers=tickers, a=a, w0=w0, snap=snap, factors=factors, Bv=Bv, F=F, L=L,
-                            d=d, sd=sd, y=y, nu=nu, nav=float(nav), beta_col=beta_col, ind_cols=ind_cols,
-                            sty_cols=sty, wb=wb, no_trade_mask=no_trade_mask, force_mask=force_mask,
-                            force_caps=force_caps, part_cap=part_cap, n_out_of_model=n_out,
-                            static_cols=static_cols, dynamic_cols=dynamic_cols)
+        return _ProblemData(
+            tickers=tickers,
+            a=a,
+            w0=w0,
+            snap=snap,
+            factors=factors,
+            Bv=Bv,
+            F=F,
+            L=L,
+            d=d,
+            sd=sd,
+            y=y,
+            nu=nu,
+            nav=float(nav),
+            beta_col=beta_col,
+            ind_cols=ind_cols,
+            sty_cols=sty,
+            wb=wb,
+            no_trade_mask=no_trade_mask,
+            force_mask=force_mask,
+            force_caps=force_caps,
+            part_cap=part_cap,
+            n_out_of_model=n_out,
+            static_cols=static_cols,
+            dynamic_cols=dynamic_cols,
+        )
 
     @staticmethod
     def _static_columns(risk: RiskModelOutput, factors: list[str], Bv: np.ndarray) -> list[str]:
@@ -569,7 +656,11 @@ class SinglePeriodOptimizer:
         reclassification / universe change, which then triggers a rebuild).
         Without ``factor_groups``: any column whose values are all 0 or 1."""
         groups = getattr(risk, "factor_groups", None) or {}
-        named = set(groups.get("market", [])) | set(groups.get("industry", [])) if isinstance(groups, dict) else set()
+        named = (
+            set(groups.get("market", [])) | set(groups.get("industry", []))
+            if isinstance(groups, dict)
+            else set()
+        )
         out = []
         for j, c in enumerate(factors):
             col = Bv[:, j]
@@ -579,21 +670,55 @@ class SinglePeriodOptimizer:
         return out
 
     # ------------------------------------------------------- compiled problems
-    def _structure_key(self, kind: str, pdat: _ProblemData, H: int, with_part: bool, vol_cap: bool,
-                       venue: str) -> tuple:
+    def _structure_key(
+        self, kind: str, pdat: _ProblemData, H: int, with_part: bool, vol_cap: bool, venue: str
+    ) -> tuple:
         cfg = self.cfg
-        cfg_sig = (cfg.book, cfg.gross_leverage_max, cfg.net_exposure_target, cfg.net_exposure_band,
-                   cfg.max_position_weight, cfg.industry_band, cfg.style_band_sd, cfg.risk_aversion,
-                   cfg.trade_aversion, cfg.hold_aversion, cfg.turnover_penalty, self.beta_band,
-                   getattr(cfg, "vol_target_projection_cost_weight", 0.0))
+        cfg_sig = (
+            cfg.book,
+            cfg.gross_leverage_max,
+            cfg.net_exposure_target,
+            cfg.net_exposure_band,
+            cfg.max_position_weight,
+            cfg.industry_band,
+            cfg.style_band_sd,
+            cfg.risk_aversion,
+            cfg.trade_aversion,
+            cfg.hold_aversion,
+            cfg.turnover_penalty,
+            self.beta_band,
+            getattr(cfg, "vol_target_projection_cost_weight", 0.0),
+        )
         static = np.ascontiguousarray(pdat.static_block())
-        return (kind, with_part, vol_cap, H, venue, len(pdat.tickers), hash(tuple(pdat.tickers)),
-                tuple(pdat.static_cols), tuple(pdat.dynamic_cols), hash(static.tobytes()), pdat.beta_col,
-                tuple(pdat.ind_cols), tuple(pdat.sty_cols), bool(pdat.no_trade_mask.any()),
-                bool(pdat.force_mask.any()), cfg_sig)
+        return (
+            kind,
+            with_part,
+            vol_cap,
+            H,
+            venue,
+            len(pdat.tickers),
+            hash(tuple(pdat.tickers)),
+            tuple(pdat.static_cols),
+            tuple(pdat.dynamic_cols),
+            hash(static.tobytes()),
+            pdat.beta_col,
+            tuple(pdat.ind_cols),
+            tuple(pdat.sty_cols),
+            bool(pdat.no_trade_mask.any()),
+            bool(pdat.force_mask.any()),
+            cfg_sig,
+        )
 
-    def _compiled(self, kind: str, pdat: _ProblemData, H: int, with_part: bool, vol_cap: bool, venue: str,
-                  extra_fns: Sequence[ExtraConstraint] | None) -> tuple[_Compiled, bool]:
+    def _compiled(
+        self,
+        kind: str,
+        pdat: _ProblemData,
+        H: int,
+        with_part: bool,
+        vol_cap: bool,
+        venue: str,
+        extra_fns: Sequence[ExtraConstraint] | None,
+    ) -> tuple[_Compiled, bool]:
         """The cached problem for this structure with today's values set, or a
         fresh one.  Returns ``(compiled, reused)``."""
         cfg = self.cfg
@@ -603,30 +728,59 @@ class SinglePeriodOptimizer:
         cached = self._cache.get(slot) if (self.reuse_problem and not extra_fns) else None
         if cached is not None and cached.key == key and cached.is_dpp:
             tc, hc = self.cost_model.cvx_terms(cached.x, cached.w, *cost_args)
-            if (_leaf_sig(tc), _leaf_sig(hc)) == cached.cost_sig and \
-                    _assign(cached.cost_params, _constants(tc, []) + _constants(hc, [])):
+            if (_leaf_sig(tc), _leaf_sig(hc)) == cached.cost_sig and _assign(
+                cached.cost_params, _constants(tc, []) + _constants(hc, [])
+            ):
                 self.n_reuses += 1
                 return cached, True
-        coefs = {"kappa": cfg.risk_aversion * H, "trade": cfg.trade_aversion, "hold": cfg.hold_aversion * H,
-                 "turnover": cfg.turnover_penalty,
-                 "proj_cost": float(getattr(cfg, "vol_target_projection_cost_weight", 0.0) or 0.0)}
-        layout = {"static": list(pdat.static_cols), "dynamic": list(pdat.dynamic_cols),
-                  "static_block": pdat.static_block(), "beta": pdat.beta_col,
-                  "ind": list(pdat.ind_cols), "sty": list(pdat.sty_cols),
-                  "has_no_trade": bool(pdat.no_trade_mask.any()), "has_force": bool(pdat.force_mask.any())}
-        comp = _Compiled(kind, key, len(pdat.tickers), len(pdat.factors), layout, cfg.book, cfg, self.beta_band,
-                         coefs, with_part, vol_cap, self.cost_model, cost_args, extra_fns, pdat.tickers,
-                         exact_power=self.exact_power)
+        coefs = {
+            "kappa": cfg.risk_aversion * H,
+            "trade": cfg.trade_aversion,
+            "hold": cfg.hold_aversion * H,
+            "turnover": cfg.turnover_penalty,
+            "proj_cost": float(getattr(cfg, "vol_target_projection_cost_weight", 0.0) or 0.0),
+        }
+        layout = {
+            "static": list(pdat.static_cols),
+            "dynamic": list(pdat.dynamic_cols),
+            "static_block": pdat.static_block(),
+            "beta": pdat.beta_col,
+            "ind": list(pdat.ind_cols),
+            "sty": list(pdat.sty_cols),
+            "has_no_trade": bool(pdat.no_trade_mask.any()),
+            "has_force": bool(pdat.force_mask.any()),
+        }
+        comp = _Compiled(
+            kind,
+            key,
+            len(pdat.tickers),
+            len(pdat.factors),
+            layout,
+            cfg.book,
+            cfg,
+            self.beta_band,
+            coefs,
+            with_part,
+            vol_cap,
+            self.cost_model,
+            cost_args,
+            extra_fns,
+            pdat.tickers,
+            exact_power=self.exact_power,
+        )
         self.n_builds += 1
         if not comp.is_dpp:
-            log.debug("optimizer problem is not DPP (cost expression structure); it will be rebuilt per solve")
+            log.debug(
+                "optimizer problem is not DPP (cost expression structure); it will be rebuilt per solve"
+            )
         if self.reuse_problem and not extra_fns:
             self._cache[slot] = comp
         return comp, False
 
     # ------------------------------------------------------------------ GP
-    def _gp_factor(self, pdat: _ProblemData, H: int, half_life: float | None, venue: str,
-                   notes: list[str]) -> float:
+    def _gp_factor(
+        self, pdat: _ProblemData, H: int, half_life: float | None, venue: str, notes: list[str]
+    ) -> float:
         """Garleanu-Pedersen alpha shrink ``g = 1 / (1 + h / hl)`` with the
         cost-implied holding period ``h = round-trip cost / alpha per day``
         (:func:`qts.portfolio.alpha_scaling.cost_implied_holding_days`),
@@ -640,10 +794,12 @@ class SinglePeriodOptimizer:
         gross = float(np.abs(a).sum())
         if gross <= 0:
             return 1.0
-        w_dir = a / gross                                   # unit gross, alpha-proportional
+        w_dir = a / gross  # unit gross, alpha-proportional
         alpha_per_day = float(a @ w_dir) / max(H, 1)
         try:
-            tc, _ = self.cost_model.cvx_terms(cp.Constant(w_dir), cp.Constant(w_dir), pdat.nav, pdat.snap, venue)
+            tc, _ = self.cost_model.cvx_terms(
+                cp.Constant(w_dir), cp.Constant(w_dir), pdat.nav, pdat.snap, venue
+            )
             one_way = float(np.asarray(tc.value).ravel()[0] if np.ndim(tc.value) else tc.value)
         except Exception as e:  # pragma: no cover - diagnostic only
             notes.append(f"GP shrink skipped: cost unavailable ({e})")
@@ -683,8 +839,19 @@ class SinglePeriodOptimizer:
         H = int(horizon_days or self.horizon_days)
         t0 = time.perf_counter()
         notes: list[str] = []
-        pdat = self._prepare(alpha, risk, w_current, nav, snapshot, neutral_styles, industry_columns,
-                             no_trade, force_to_zero, benchmark_weights, notes)
+        pdat = self._prepare(
+            alpha,
+            risk,
+            w_current,
+            nav,
+            snapshot,
+            neutral_styles,
+            industry_columns,
+            no_trade,
+            force_to_zero,
+            benchmark_weights,
+            notes,
+        )
         tickers, w0 = pdat.tickers, pdat.w0
         g = self._gp_factor(pdat, H, alpha_half_life_days, venue, notes)
         if g != 1.0:
@@ -712,8 +879,10 @@ class SinglePeriodOptimizer:
                 obj_val = float(comp.problem.value)
                 if not with_part:
                     notes.append("ADV participation bounds relaxed (infeasible with them)")
-                    log.warning("optimizer: ADV participation caps dropped on %s (infeasible with them)",
-                                getattr(risk, "date", "?"))
+                    log.warning(
+                        "optimizer: ADV participation caps dropped on %s (infeasible with them)",
+                        getattr(risk, "date", "?"),
+                    )
                 break
             notes.append(f"{label}: {status}")
 
@@ -721,17 +890,33 @@ class SinglePeriodOptimizer:
         w = comp.w
         solve_time = time.perf_counter() - t0
         if status not in OK_STATUSES or w.value is None:
-            log.warning("optimizer failed on %s (status=%s, solver=%s); holding current weights",
-                        getattr(risk, "date", "?"), status, solver_used or "none")
+            log.warning(
+                "optimizer failed on %s (status=%s, solver=%s); holding current weights",
+                getattr(risk, "date", "?"),
+                status,
+                solver_used or "none",
+            )
             w_t = pd.Series(w0, index=tickers)
             var_d = pdat.variance(w0)
             return OptimizationResult(
-                w_target=w_t, x=pd.Series(0.0, index=tickers), expected_alpha=float(a @ w0),
-                expected_risk=float(np.sqrt(max(var_d, 0) * 252)), expected_cost=float("nan"), turnover=0.0,
-                transfer_coefficient=float("nan"), status=status, solve_time=solve_time,
-                binding_constraints={}, objective_value=obj_val, solver=solver_used, notes=notes,
-                exante_var_daily=var_d, n_out_of_model=pdat.n_out_of_model,
-                alignment_share=pdat.alignment_share(w0), gp_shrink=g, problem_reused=reused,
+                w_target=w_t,
+                x=pd.Series(0.0, index=tickers),
+                expected_alpha=float(a @ w0),
+                expected_risk=float(np.sqrt(max(var_d, 0) * 252)),
+                expected_cost=float("nan"),
+                turnover=0.0,
+                transfer_coefficient=float("nan"),
+                status=status,
+                solve_time=solve_time,
+                binding_constraints={},
+                objective_value=obj_val,
+                solver=solver_used,
+                notes=notes,
+                exante_var_daily=var_d,
+                n_out_of_model=pdat.n_out_of_model,
+                alignment_share=pdat.alignment_share(w0),
+                gp_shrink=g,
+                problem_reused=reused,
             )
 
         wv = self._clean(np.asarray(w.value).ravel(), w0)
@@ -745,8 +930,9 @@ class SinglePeriodOptimizer:
         # ---- vol targeting by projection onto the same feasible set
         scalar = 1.0
         if has_target and mode == "projection":
-            wv, scalar, proj_note = self._vol_target_projection(wv, pdat, H, with_part, venue, constraints_extra,
-                                                                date=getattr(risk, "date", "?"))
+            wv, scalar, proj_note = self._vol_target_projection(
+                wv, pdat, H, with_part, venue, constraints_extra, date=getattr(risk, "date", "?")
+            )
             if proj_note:
                 notes.append(proj_note)
         var_d = pdat.variance(wv)
@@ -763,25 +949,43 @@ class SinglePeriodOptimizer:
             xc = cp.Constant(x_t.values)
             wc = cp.Constant(w_t.values)
             tc, hc = self.cost_model.cvx_terms(xc, wc, nav, pdat.snap, venue)
-            exp_cost = float(np.asarray(tc.value).ravel()[0] if np.ndim(tc.value) else tc.value) \
-                + H * float(np.asarray(hc.value).ravel()[0] if np.ndim(hc.value) else hc.value)
+            exp_cost = float(np.asarray(tc.value).ravel()[0] if np.ndim(tc.value) else tc.value) + H * float(
+                np.asarray(hc.value).ravel()[0] if np.ndim(hc.value) else hc.value
+            )
         except Exception as e:  # pragma: no cover - diagnostic only
             notes.append(f"expected_cost unavailable: {e}")
 
-        tc_val = transfer_coefficient(pd.Series(a, index=tickers), w_t, risk=risk) if np.any(a != 0) else float("nan")
+        tc_val = (
+            transfer_coefficient(pd.Series(a, index=tickers), w_t, risk=risk)
+            if np.any(a != 0)
+            else float("nan")
+        )
         return OptimizationResult(
-            w_target=w_t, x=x_t, expected_alpha=float(a @ w_t.values), expected_risk=pred_vol,
-            expected_cost=exp_cost, turnover=float(np.abs(x_t.values).sum()),
-            transfer_coefficient=tc_val, status=status, solve_time=time.perf_counter() - t0,
-            binding_constraints=binding, objective_value=obj_val, vol_scalar=scalar,
-            solver=solver_used, notes=notes, exante_var_daily=var_d,
-            n_out_of_model=pdat.n_out_of_model, alignment_share=share, gp_shrink=g, problem_reused=reused,
+            w_target=w_t,
+            x=x_t,
+            expected_alpha=float(a @ w_t.values),
+            expected_risk=pred_vol,
+            expected_cost=exp_cost,
+            turnover=float(np.abs(x_t.values).sum()),
+            transfer_coefficient=tc_val,
+            status=status,
+            solve_time=time.perf_counter() - t0,
+            binding_constraints=binding,
+            objective_value=obj_val,
+            vol_scalar=scalar,
+            solver=solver_used,
+            notes=notes,
+            exante_var_daily=var_d,
+            n_out_of_model=pdat.n_out_of_model,
+            alignment_share=share,
+            gp_shrink=g,
+            problem_reused=reused,
         )
 
     def _binding(self, comp: _Compiled, pdat: _ProblemData, with_part: bool) -> dict[str, int]:
         binding: dict[str, int] = {}
         for name, c in comp.cons.items():
-            if name.startswith("_"):          # internal definitional equalities (x, f)
+            if name.startswith("_"):  # internal definitional equalities (x, f)
                 continue
             mask = None
             if name == "no_trade":
@@ -802,9 +1006,16 @@ class SinglePeriodOptimizer:
         return binding
 
     # ------------------------------------------------------------ vol target
-    def _vol_target_projection(self, wv: np.ndarray, pdat: _ProblemData, H: int, with_part: bool, venue: str,
-                               extra_fns: Sequence[ExtraConstraint] | None, date=None
-                               ) -> tuple[np.ndarray, float, str | None]:
+    def _vol_target_projection(
+        self,
+        wv: np.ndarray,
+        pdat: _ProblemData,
+        H: int,
+        with_part: bool,
+        venue: str,
+        extra_fns: Sequence[ExtraConstraint] | None,
+        date=None,
+    ) -> tuple[np.ndarray, float, str | None]:
         """Re-solve ``min ||w - s w*||^2 + c TC(w - w0)`` over the full
         constraint set plus the risk cap ``sqrt(w' Sigma w) <= target`` whenever
         the predicted vol of ``w*`` is off target (down always; up only with
@@ -838,12 +1049,17 @@ class SinglePeriodOptimizer:
         comp.set_values(pdat, anchor=s * wv, tgt=float(target) / np.sqrt(252.0) * (1.0 + 1e-7))
         status, solver = self._try_solvers(comp.problem, dpp=self.reuse_problem and comp.is_dpp)
         if status not in OK_STATUSES or comp.w.value is None:
-            log.warning("vol-target projection failed on %s (status=%s); keeping un-scaled book",
-                        date, status)
+            log.warning(
+                "vol-target projection failed on %s (status=%s); keeping un-scaled book", date, status
+            )
             return wv, 1.0, f"vol-target projection failed ({status}); book left at s=1"
         w_new = self._clean(np.asarray(comp.w.value).ravel(), pdat.w0)
         got = float(np.sqrt(max(pdat.variance(w_new), 0.0) * 252))
-        return w_new, float(s), f"vol-target projection s={s:.3f}: vol {pred:.4f} -> {got:.4f} (target {target:.4f}, {solver})"
+        return (
+            w_new,
+            float(s),
+            f"vol-target projection s={s:.3f}: vol {pred:.4f} -> {got:.4f} (target {target:.4f}, {solver})",
+        )
 
     # ----------------------------------------------------------------- helpers
     @staticmethod

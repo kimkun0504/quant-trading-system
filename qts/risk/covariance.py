@@ -16,6 +16,7 @@ Contents
 
 All variances are in **daily** units.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -56,8 +57,9 @@ def _as_array(X) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------- EWMA + Newey-West
-def ewma_cov(X, half_life: float, newey_west_lags: int = 0, demean: bool = True,
-             ensure_psd: bool = True) -> np.ndarray:
+def ewma_cov(
+    X, half_life: float, newey_west_lags: int = 0, demean: bool = True, ensure_psd: bool = True
+) -> np.ndarray:
     """Exponentially weighted covariance of the rows of ``X`` (T x K) with a
     Newey-West (1987) correction for serial correlation:
 
@@ -100,8 +102,9 @@ def combine_vol_corr(S_vol: np.ndarray, S_corr: np.ndarray) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------- VRA
-def factor_vra_multiplier(F: pd.DataFrame, vol_half_life: float, vra_half_life: float,
-                          min_periods: int = 20) -> float:
+def factor_vra_multiplier(
+    F: pd.DataFrame, vol_half_life: float, vra_half_life: float, min_periods: int = 20
+) -> float:
     """Volatility Regime Adjustment (USE4 section "Volatility regime adjustment").
 
     Daily cross-sectional bias statistic of the factors
@@ -130,8 +133,13 @@ def factor_vra_multiplier(F: pd.DataFrame, vol_half_life: float, vra_half_life: 
 
 
 # --------------------------------------------------------------------------- eigenfactor adjustment
-def eigenfactor_bias(F0: np.ndarray, estimator: Callable[[np.ndarray], np.ndarray], T: int,
-                     n_sims: int, rng: np.random.Generator) -> np.ndarray:
+def eigenfactor_bias(
+    F0: np.ndarray,
+    estimator: Callable[[np.ndarray], np.ndarray],
+    T: int,
+    n_sims: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
     """USE4 Eigenfactor Risk Adjustment, Monte-Carlo step.
 
     1. ``F0 = U D U'``; eigenfactors are uncorrelated with variances ``D``.
@@ -168,8 +176,9 @@ def eigenfactor_bias(F0: np.ndarray, estimator: Callable[[np.ndarray], np.ndarra
     return np.clip(v, 0.5, 2.0)
 
 
-def scale_eigen_bias(v: np.ndarray, a: float = 1.2, parabola: bool = False,
-                     clip: tuple[float, float] = (0.5, 2.0)) -> np.ndarray:
+def scale_eigen_bias(
+    v: np.ndarray, a: float = 1.2, parabola: bool = False, clip: tuple[float, float] = (0.5, 2.0)
+) -> np.ndarray:
     """USE4 post-processing of the simulated eigenfactor bias ``v`` (one entry
     per eigenfactor, ascending eigenvalue order):
 
@@ -196,7 +205,7 @@ def scale_eigen_bias(v: np.ndarray, a: float = 1.2, parabola: bool = False,
 
 def apply_eigen_adjustment(F0: np.ndarray, v: np.ndarray) -> np.ndarray:
     vals, U = np.linalg.eigh(F0)
-    vals = np.clip(vals, 0.0, None) * v ** 2
+    vals = np.clip(vals, 0.0, None) * v**2
     return (U * vals) @ U.T
 
 
@@ -204,14 +213,18 @@ def apply_eigen_adjustment(F0: np.ndarray, v: np.ndarray) -> np.ndarray:
 class FactorCovarianceResult:
     cov: pd.DataFrame
     vra_multiplier: float
-    eigen_bias: np.ndarray | None           # raw simulated bias (reusable across dates)
+    eigen_bias: np.ndarray | None  # raw simulated bias (reusable across dates)
     raw_cov: pd.DataFrame
     eigen_bias_scaled: np.ndarray | None = None  # after parabola / inflation (what was applied)
 
 
-def factor_covariance(factor_returns: pd.DataFrame, cfg: RiskConfig | None = None,
-                      eigen_bias: np.ndarray | None = None,
-                      seed: int = 0, return_details: bool = False):
+def factor_covariance(
+    factor_returns: pd.DataFrame,
+    cfg: RiskConfig | None = None,
+    eigen_bias: np.ndarray | None = None,
+    seed: int = 0,
+    return_details: bool = False,
+):
     """USE4 factor covariance as of the last row of ``factor_returns``.
 
     Steps: (i) EWMA+NW with ``vol_half_life`` / ``newey_west_lags_vol`` gives
@@ -239,23 +252,29 @@ def factor_covariance(factor_returns: pd.DataFrame, cfg: RiskConfig | None = Non
     v_scaled = None
     if cfg.eigenfactor_adjust:
         if eigen_bias is None:
+
             def est(Y):
-                return combine_vol_corr(ewma_cov(Y, cfg.vol_half_life, 0, demean=False, ensure_psd=False),
-                                        ewma_cov(Y, cfg.corr_half_life, 0, demean=False, ensure_psd=False))
+                return combine_vol_corr(
+                    ewma_cov(Y, cfg.vol_half_life, 0, demean=False, ensure_psd=False),
+                    ewma_cov(Y, cfg.corr_half_life, 0, demean=False, ensure_psd=False),
+                )
+
             T_sim = int(min(len(X), 4 * cfg.corr_half_life))
             v = eigenfactor_bias(F0, est, T_sim, cfg.n_eigen_sims, np.random.default_rng(seed))
         else:
             v = np.asarray(eigen_bias, dtype=float)
-        v_scaled = scale_eigen_bias(v, getattr(cfg, "eigen_inflation_a", 1.0),
-                                    getattr(cfg, "eigen_parabola_smoothing", False))
+        v_scaled = scale_eigen_bias(
+            v, getattr(cfg, "eigen_inflation_a", 1.0), getattr(cfg, "eigen_parabola_smoothing", False)
+        )
         F0 = apply_eigen_adjustment(F0, v_scaled)
 
     lam = factor_vra_multiplier(F, cfg.vol_half_life, cfg.vra_half_life)
-    Fc = nearest_psd(F0 * lam ** 2)
+    Fc = nearest_psd(F0 * lam**2)
     cov = pd.DataFrame(Fc, index=cols, columns=cols)
     if return_details:
-        return FactorCovarianceResult(cov=cov, vra_multiplier=lam, eigen_bias=v, raw_cov=raw,
-                                      eigen_bias_scaled=v_scaled)
+        return FactorCovarianceResult(
+            cov=cov, vra_multiplier=lam, eigen_bias=v, raw_cov=raw, eigen_bias_scaled=v_scaled
+        )
     return cov
 
 
@@ -286,19 +305,19 @@ def nonlinear_shrinkage(X: np.ndarray, assume_centered: bool = False) -> np.ndar
     c = p / n
     sample = (Y.T @ Y) / n
     sample = (sample + sample.T) / 2.0
-    lam, u = np.linalg.eigh(sample)           # ascending
+    lam, u = np.linalg.eigh(sample)  # ascending
     lam = np.clip(lam, 0.0, None)
-    h = min(c ** 2, 1.0 / c ** 2) ** 0.35 / p ** 0.35
-    nz = lam[max(0, p - n):]                   # non-null eigenvalues
+    h = min(c**2, 1.0 / c**2) ** 0.35 / p**0.35
+    nz = lam[max(0, p - n) :]  # non-null eigenvalues
     invlam = 1.0 / np.clip(nz, 1e-300, None)
-    Lj = np.tile(invlam, (len(invlam), 1))     # Lj[i, j] = 1/lambda_j
-    Lj_i = Lj - Lj.T                           # (1/lambda_j) - (1/lambda_i)
-    denom = Lj_i ** 2 + (h ** 2) * Lj ** 2
+    Lj = np.tile(invlam, (len(invlam), 1))  # Lj[i, j] = 1/lambda_j
+    Lj_i = Lj - Lj.T  # (1/lambda_j) - (1/lambda_i)
+    denom = Lj_i**2 + (h**2) * Lj**2
     theta = np.mean(Lj * Lj_i / denom, axis=1)
     Htheta = np.mean(Lj * (h * Lj) / denom, axis=1)
-    Atheta2 = theta ** 2 + Htheta ** 2
+    Atheta2 = theta**2 + Htheta**2
     if p <= n:
-        delta = 1.0 / ((1 - c) ** 2 * invlam + 2 * c * (1 - c) * invlam * theta + c ** 2 * invlam * Atheta2)
+        delta = 1.0 / ((1 - c) ** 2 * invlam + 2 * c * (1 - c) * invlam * theta + c**2 * invlam * Atheta2)
     else:
         delta0 = 1.0 / ((c - 1) * np.mean(invlam))
         delta = np.concatenate([np.full(p - n, delta0), 1.0 / (invlam * Atheta2)])
@@ -309,11 +328,16 @@ def nonlinear_shrinkage(X: np.ndarray, assume_centered: bool = False) -> np.ndar
 def linear_shrinkage(X: np.ndarray) -> np.ndarray:
     """Ledoit-Wolf (2004) linear shrinkage toward scaled identity via sklearn."""
     from sklearn.covariance import LedoitWolf
+
     return LedoitWolf(assume_centered=False).fit(np.asarray(X, dtype=float)).covariance_
 
 
-def shrunk_residual_covariance(specific_returns: pd.DataFrame, cfg: RiskConfig | None = None,
-                               window: int | None = None, method: str = "qis") -> pd.DataFrame:
+def shrunk_residual_covariance(
+    specific_returns: pd.DataFrame,
+    cfg: RiskConfig | None = None,
+    window: int | None = None,
+    method: str = "qis",
+) -> pd.DataFrame:
     """Full (non-diagonal) residual covariance of the last ``window`` days of
     specific returns using nonlinear (``method="qis"``, default) or linear
     (``"lw"``) shrinkage.  Missing residuals are set to 0.
@@ -349,7 +373,7 @@ def ewma_nw_variance(U: pd.DataFrame, half_life: float, newey_west_lags: int) ->
     wsum = np.where(wsum > 0, wsum, np.nan)
     mu = (w * A0).sum(axis=0) / wsum
     D = np.where(mask, A0 - mu, 0.0)
-    g0 = (w * D ** 2).sum(axis=0) / wsum
+    g0 = (w * D**2).sum(axis=0) / wsum
     var = g0.copy()
     L = int(newey_west_lags)
     for l in range(1, min(L, T - 1) + 1):
@@ -359,8 +383,9 @@ def ewma_nw_variance(U: pd.DataFrame, half_life: float, newey_west_lags: int) ->
     return (pd.Series(var, index=U.columns), pd.Series(mask.sum(axis=0), index=U.columns))
 
 
-def specific_vra_multiplier(U: pd.DataFrame, market_cap: pd.Series, half_life: float,
-                            vra_half_life: float, min_periods: int = 20) -> float:
+def specific_vra_multiplier(
+    U: pd.DataFrame, market_cap: pd.Series, half_life: float, vra_half_life: float, min_periods: int = 20
+) -> float:
     """Specific-risk VRA: cap-weighted cross-sectional bias statistic
     ``B_t^2 = sum_i w_i (u_it / sigma_{i,t-1})^2`` (USE4 uses this form with
     the structural specific risk forecasts; we use the EWMA forecast made at
@@ -369,9 +394,9 @@ def specific_vra_multiplier(U: pd.DataFrame, market_cap: pd.Series, half_life: f
     T = A.shape[0]
     if min_periods + 1 >= T:
         return 1.0
-    u2 = pd.DataFrame(A ** 2)
+    u2 = pd.DataFrame(A**2)
     s2_prev = u2.ewm(halflife=half_life, min_periods=min_periods, ignore_na=True).mean().shift(1).values
-    z2 = A ** 2 / np.where(s2_prev > 0, s2_prev, np.nan)
+    z2 = A**2 / np.where(s2_prev > 0, s2_prev, np.nan)
     w = market_cap.reindex(U.columns).fillna(0.0).clip(lower=0.0).values
     ok = np.isfinite(z2)
     wsum = (ok * w).sum(axis=1)
@@ -383,15 +408,18 @@ def specific_vra_multiplier(U: pd.DataFrame, market_cap: pd.Series, half_life: f
     return float(np.sqrt(np.clip(lam2, 1e-6, None)))
 
 
-def structural_specific_vol(sigma_ts: pd.Series, gamma: pd.Series, exposures: pd.DataFrame,
-                            market_cap: pd.Series) -> pd.Series:
+def structural_specific_vol(
+    sigma_ts: pd.Series, gamma: pd.Series, exposures: pd.DataFrame, market_cap: pd.Series
+) -> pd.Series:
     """USE4 structural model: regress ``ln sigma_TS`` on the factor exposures
     (WLS, weights ∝ sqrt(cap)) over stocks with full history (``gamma == 1``),
     then ``sigma_STR = E0 * exp(X b)`` with ``E0`` the bias correction making
     the fitted values unbiased in levels."""
     idx = sigma_ts.index
     X = exposures.reindex(idx).fillna(0.0).values
-    fit_mask = (gamma.reindex(idx).fillna(0.0).values >= 1.0) & np.isfinite(sigma_ts.values) & (sigma_ts.values > 0)
+    fit_mask = (
+        (gamma.reindex(idx).fillna(0.0).values >= 1.0) & np.isfinite(sigma_ts.values) & (sigma_ts.values > 0)
+    )
     if fit_mask.sum() < X.shape[1] + 5:
         fit_mask = np.isfinite(sigma_ts.values) & (sigma_ts.values > 0)
     if fit_mask.sum() < 5:
@@ -405,8 +433,9 @@ def structural_specific_vol(sigma_ts: pd.Series, gamma: pd.Series, exposures: pd
     return pd.Series(E0 * fitted, index=idx)
 
 
-def bayesian_shrink_specific(sigma: pd.Series, market_cap: pd.Series, q: float,
-                             n_deciles: int = 10) -> pd.Series:
+def bayesian_shrink_specific(
+    sigma: pd.Series, market_cap: pd.Series, q: float, n_deciles: int = 10
+) -> pd.Series:
     """USE4 Bayesian shrinkage of specific risk toward the cap-weighted mean of
     its size decile:
 
@@ -437,9 +466,13 @@ def bayesian_shrink_specific(sigma: pd.Series, market_cap: pd.Series, q: float,
     return pd.Series(out, index=sigma.index)
 
 
-def specific_risk(specific_returns: pd.DataFrame, exposures_latest: pd.DataFrame,
-                  market_cap: pd.Series, cfg: RiskConfig | None = None,
-                  return_details: bool = False) -> pd.Series:
+def specific_risk(
+    specific_returns: pd.DataFrame,
+    exposures_latest: pd.DataFrame,
+    market_cap: pd.Series,
+    cfg: RiskConfig | None = None,
+    return_details: bool = False,
+) -> pd.Series:
     """USE4 specific-risk forecast (daily **variance**) per ticker.
 
     1. Time-series: EWMA (``specific_half_life``) + Newey-West
@@ -479,8 +512,14 @@ def specific_risk(specific_returns: pd.DataFrame, exposures_latest: pd.DataFrame
     var = (lam * sigma_sh) ** 2
     var.name = "specific_var"
     if return_details:
-        return var, {"sigma_ts": sigma_ts, "sigma_str": sigma_str, "gamma": gamma,
-                     "sigma_shrunk": sigma_sh, "vra_multiplier": lam, "n_obs": n_obs}
+        return var, {
+            "sigma_ts": sigma_ts,
+            "sigma_str": sigma_str,
+            "gamma": gamma,
+            "sigma_shrunk": sigma_sh,
+            "vra_multiplier": lam,
+            "n_obs": n_obs,
+        }
     return var
 
 

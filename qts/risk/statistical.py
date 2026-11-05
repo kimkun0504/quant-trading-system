@@ -77,6 +77,7 @@ eigenvalues of the standardized sample covariance above the noise edge, with
 dimension taken as the number of non-zero eigenvalues, since residuals of a
 ``p``-factor cross-sectional regression live in an ``N - p`` subspace).
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -131,13 +132,13 @@ def _extract_factors(Rs: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
         vals, vecs = np.linalg.eigh(Om)
         order = np.argsort(vals)[::-1]
         F = np.sqrt(T) * vecs[:, order[:k]]
-        eig = np.clip(vals[order] * N / T, 0.0, None)      # spectrum of Rs'Rs/T
+        eig = np.clip(vals[order] * N / T, 0.0, None)  # spectrum of Rs'Rs/T
     else:
         S = Rs.T @ Rs / T
         vals, W = np.linalg.eigh(S)
         order = np.argsort(vals)[::-1]
         lam = np.clip(vals[order[:k]], 1e-30, None)
-        F = (Rs @ W[:, order[:k]]) / np.sqrt(lam)           # F'F/T = I
+        F = (Rs @ W[:, order[:k]]) / np.sqrt(lam)  # F'F/T = I
         eig = np.clip(vals[order], 0.0, None)
     # sign convention: loadings of each factor sum to a positive number
     load = Rs.T @ F
@@ -145,16 +146,17 @@ def _extract_factors(Rs: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
     return F * s, eig
 
 
-def _ts_regress(R: np.ndarray, mask: np.ndarray, F: np.ndarray, min_obs: int,
-                ridge: float = 1e-10) -> tuple[np.ndarray, np.ndarray]:
+def _ts_regress(
+    R: np.ndarray, mask: np.ndarray, F: np.ndarray, min_obs: int, ridge: float = 1e-10
+) -> tuple[np.ndarray, np.ndarray]:
     """Per-stock OLS of the (zero-filled) columns of ``R`` on ``F`` using only
     observed rows.  Returns ``(B [N x k], ok [N])`` where ``ok`` marks stocks
     with at least ``min_obs`` observations; others get zero loadings."""
     N = R.shape[1]
     k = F.shape[1]
     M = mask.astype(float)
-    G = np.einsum("ti,tj,tn->nij", F, F, M)                 # N x k x k
-    h = (R.T @ F)                                           # N x k (R is 0 where missing)
+    G = np.einsum("ti,tj,tn->nij", F, F, M)  # N x k x k
+    h = R.T @ F  # N x k (R is 0 where missing)
     n_obs = mask.sum(axis=0)
     ok = n_obs >= max(min_obs, k + 2)
     B = np.zeros((N, k))
@@ -164,12 +166,13 @@ def _ts_regress(R: np.ndarray, mask: np.ndarray, F: np.ndarray, min_obs: int,
     return B, ok
 
 
-def _weighted_resid_var(R: np.ndarray, mask: np.ndarray, F: np.ndarray, B: np.ndarray,
-                        w: np.ndarray) -> np.ndarray:
+def _weighted_resid_var(
+    R: np.ndarray, mask: np.ndarray, F: np.ndarray, B: np.ndarray, w: np.ndarray
+) -> np.ndarray:
     E = np.where(mask, R - F @ B.T, 0.0)
     wm = w[:, None] * mask
     den = wm.sum(axis=0)
-    var = (wm * E ** 2).sum(axis=0) / np.where(den > 0, den, np.nan)
+    var = (wm * E**2).sum(axis=0) / np.where(den > 0, den, np.nan)
     return var
 
 
@@ -182,17 +185,18 @@ def _procrustes(F_new: np.ndarray, F_ref: np.ndarray) -> np.ndarray:
 # --------------------------------------------------------------------------- APCA core
 @dataclass
 class APCAResult:
-    F: np.ndarray            # T x k factor returns, F'F/T = I (before rotation)
-    B: np.ndarray            # N x k loadings
+    F: np.ndarray  # T x k factor returns, F'F/T = I (before rotation)
+    B: np.ndarray  # N x k loadings
     specific_var: np.ndarray  # N
-    eigvals: np.ndarray      # spectrum of the last (rescaled) panel
-    ok: np.ndarray           # N bool: enough observations
-    mu: np.ndarray           # N column means removed
+    eigvals: np.ndarray  # spectrum of the last (rescaled) panel
+    ok: np.ndarray  # N bool: enough observations
+    mu: np.ndarray  # N column means removed
     n_iter: int = 0
 
 
-def apca(X: np.ndarray, n_factors: int, n_iter: int = 3, half_life: float | None = None,
-         min_stock_obs: int = 20) -> APCAResult:
+def apca(
+    X: np.ndarray, n_factors: int, n_iter: int = 3, half_life: float | None = None, min_stock_obs: int = 20
+) -> APCAResult:
     """Asymptotic PCA with heteroskedasticity iteration on a ``T x N`` panel
     (NaN allowed).  See the module docstring."""
     R, mask, mu = _prepare_panel(X)
@@ -215,8 +219,9 @@ def apca(X: np.ndarray, n_factors: int, n_iter: int = 3, half_life: float | None
 
 
 # --------------------------------------------------------------------------- factor count
-def marchenko_pastur_edge(eigvals: np.ndarray, N: int, T: int, max_factors: int = 20,
-                          n_rounds: int = 10) -> tuple[int, float, float]:
+def marchenko_pastur_edge(
+    eigvals: np.ndarray, N: int, T: int, max_factors: int = 20, n_rounds: int = 10
+) -> tuple[int, float, float]:
     """Count spikes above the Marchenko-Pastur edge.
 
     ``lambda_+ = sigma^2 (1 + sqrt(N/T))^2``; ``sigma^2`` is first the average
@@ -259,9 +264,14 @@ def bai_ng_ic2(eigvals: np.ndarray, N: int, T: int, max_factors: int = 20) -> tu
     return int(np.argmin(ic)), ic
 
 
-def select_n_factors(returns, method: str = "bai_ng", max_factors: int = 20,
-                     n_factors: int | None = None, standardize: bool = True,
-                     return_details: bool = False):
+def select_n_factors(
+    returns,
+    method: str = "bai_ng",
+    max_factors: int = 20,
+    n_factors: int | None = None,
+    standardize: bool = True,
+    return_details: bool = False,
+):
     """Choose the number of statistical factors for a ``T x N`` panel.
 
     ``method``: ``"bai_ng"`` (IC_p2), ``"marchenko_pastur"`` (spikes above the
@@ -277,7 +287,7 @@ def select_n_factors(returns, method: str = "bai_ng", max_factors: int = 20,
     T, N = R.shape
     if standardize:
         n = np.maximum(mask.sum(axis=0), 1)
-        sd = np.sqrt((R ** 2).sum(axis=0) / n)
+        sd = np.sqrt((R**2).sum(axis=0) / n)
         R = R / np.where(sd > 0, sd, 1.0)
     lam = _spectrum(R)
     if method == "bai_ng":
@@ -294,14 +304,14 @@ def select_n_factors(returns, method: str = "bai_ng", max_factors: int = 20,
 # --------------------------------------------------------------------------- model
 @dataclass
 class _Refit:
-    index: int                      # position in the returns index
-    k: int                          # active factor slots (the rest are zero)
-    rows: slice                     # window rows
-    F: np.ndarray                   # window x k (aligned)
-    B: np.ndarray                   # N x k (aligned)
-    ok: np.ndarray                  # N bool
-    specific_var: np.ndarray        # N
-    mu: np.ndarray                  # N
+    index: int  # position in the returns index
+    k: int  # active factor slots (the rest are zero)
+    rows: slice  # window rows
+    F: np.ndarray  # window x k (aligned)
+    B: np.ndarray  # N x k (aligned)
+    ok: np.ndarray  # N bool
+    specific_var: np.ndarray  # N
+    mu: np.ndarray  # N
     eigvals: np.ndarray
 
 
@@ -328,10 +338,18 @@ class StatisticalRiskModel:
         n_factors``; ``n_factors`` is then the number of output slots.
     """
 
-    def __init__(self, n_factors: int = 10, window: int = 252, half_life: float | None = None,
-                 min_obs: int = 200, method: str = "apca", apca_iters: int = 3,
-                 refit_every: int = 21, min_stock_obs: int | None = None,
-                 select_k: str | None = None):
+    def __init__(
+        self,
+        n_factors: int = 10,
+        window: int = 252,
+        half_life: float | None = None,
+        min_obs: int = 200,
+        method: str = "apca",
+        apca_iters: int = 3,
+        refit_every: int = 21,
+        min_stock_obs: int | None = None,
+        select_k: str | None = None,
+    ):
         if method not in ("apca", "pca"):
             raise ValueError("method must be 'apca' or 'pca'")
         if select_k not in (None, "bai_ng", "marchenko_pastur"):
@@ -349,7 +367,7 @@ class StatisticalRiskModel:
         self.factor_names: list[str] = [f"{STAT_FACTOR_PREFIX}{j + 1:02d}" for j in range(self.n_factors)]
         self._refits: dict[int, _Refit] = {}
         self._refit_positions: list[int] = []
-        self.factor_returns: pd.DataFrame | None = None   # real-time chain
+        self.factor_returns: pd.DataFrame | None = None  # real-time chain
         self._R = self._mask = None
         self._cache: dict[pd.Timestamp, RiskModelOutput] = {}
 
@@ -398,7 +416,7 @@ class StatisticalRiskModel:
         X = self.returns.values[rows]
         k = self._select_k(X)
         res = apca(X, k, self.apca_iters, self.half_life, self.min_stock_obs)
-        k = res.F.shape[1]                      # apca caps k at min(T - 1, N)
+        k = res.F.shape[1]  # apca caps k at min(T - 1, N)
         F, B = res.F, res.B
         if prev is not None:
             lo = max(rows.start, prev.rows.start)
@@ -406,8 +424,10 @@ class StatisticalRiskModel:
             # rotate the k active slots toward the previous refit's first k slots
             # (zero columns there when the previous refit had fewer factors)
             if hi - lo >= k + 5:
-                Q = _procrustes(F[lo - rows.start:hi - rows.start],
-                                prev.F[lo - prev.rows.start:hi - prev.rows.start, :k])
+                Q = _procrustes(
+                    F[lo - rows.start : hi - rows.start],
+                    prev.F[lo - prev.rows.start : hi - prev.rows.start, :k],
+                )
             else:  # no overlap: align on loadings of common stocks
                 both = res.ok & prev.ok
                 Q = _procrustes(B[both], prev.B[both][:, :k]) if both.sum() >= k + 5 else np.eye(k)
@@ -416,8 +436,17 @@ class StatisticalRiskModel:
         if pad > 0:
             F = np.hstack([F, np.zeros((F.shape[0], pad))])
             B = np.hstack([B, np.zeros((B.shape[0], pad))])
-        return _Refit(index=i, k=k, rows=rows, F=F, B=B, ok=res.ok, specific_var=res.specific_var,
-                      mu=res.mu, eigvals=res.eigvals)
+        return _Refit(
+            index=i,
+            k=k,
+            rows=rows,
+            F=F,
+            B=B,
+            ok=res.ok,
+            specific_var=res.specific_var,
+            mu=res.mu,
+            eigvals=res.eigvals,
+        )
 
     def _cs_factor_return(self, i: int, ref: _Refit) -> np.ndarray:
         """Cross-sectional OLS of day ``i`` demeaned returns on ``ref`` loadings."""
@@ -426,13 +455,15 @@ class StatisticalRiskModel:
         if avail.sum() < ref.k + 2:
             return f
         y = self._R[i, avail] - ref.mu[avail]
-        f[:ref.k], *_ = np.linalg.lstsq(ref.B[avail, :ref.k], y, rcond=None)
+        f[: ref.k], *_ = np.linalg.lstsq(ref.B[avail, : ref.k], y, rcond=None)
         return f
 
     def _last_refit(self, i: int) -> _Refit:
         pos = np.searchsorted(self._refit_positions, i, side="right") - 1
         if pos < 0:
-            raise ValueError(f"no statistical fit available at position {i} (first at {self._refit_positions[0]})")
+            raise ValueError(
+                f"no statistical fit available at position {i} (first at {self._refit_positions[0]})"
+            )
         return self._refits[self._refit_positions[pos]]
 
     def _build_realtime_chain(self, i0: int, last: int) -> None:
@@ -443,7 +474,9 @@ class StatisticalRiskModel:
         for i in range(i0, last + 1):
             ref = self._last_refit(i)
             out[i - i0] = ref.F[-1] if ref.index == i else self._cs_factor_return(i, ref)
-        self.factor_returns = pd.DataFrame(out, index=self.returns.index[i0:last + 1], columns=self.factor_names)
+        self.factor_returns = pd.DataFrame(
+            out, index=self.returns.index[i0 : last + 1], columns=self.factor_names
+        )
         self.factor_returns.index.name = "date"
 
     # ------------------------------------------------------------------ as_of
@@ -467,7 +500,7 @@ class StatisticalRiskModel:
             parts.append(self.factor_returns.iloc[: ref.rows.start - i0])
         parts.append(pd.DataFrame(ref.F, index=idx[ref.rows], columns=self.factor_names))
         if i > ref.index:
-            parts.append(self.factor_returns.loc[idx[ref.index + 1]: idx[i]])
+            parts.append(self.factor_returns.loc[idx[ref.index + 1] : idx[i]])
         hist = pd.concat(parts)
         hist.index.name = "date"
         return hist
@@ -498,13 +531,13 @@ class StatisticalRiskModel:
         hist = self.factor_history(date)
         rows = self._window_rows(i)
         idx = self.returns.index
-        Fw = hist.loc[idx[rows.start]: idx[i]].values
+        Fw = hist.loc[idx[rows.start] : idx[i]].values
         Xw = self.returns.values[rows]
         R, mask, _mu = _prepare_panel(Xw)
         # every row of the window comes from ``ref`` (its APCA window or the daily
         # cross-sections on its loadings), so only its k slots are non-zero
         B = np.zeros((R.shape[1], self.n_factors))
-        B[:, :ref.k], ok = _ts_regress(R, mask, Fw[:, :ref.k], self.min_stock_obs)
+        B[:, : ref.k], ok = _ts_regress(R, mask, Fw[:, : ref.k], self.min_stock_obs)
         w = _weights(R.shape[0], self.half_life)
         var = _weighted_resid_var(R, mask, Fw, B, w)
         med = float(np.nanmedian(var[ok])) if ok.any() else float(np.nanmedian(var))
@@ -516,12 +549,18 @@ class StatisticalRiskModel:
         exposures = pd.DataFrame(B, index=tickers, columns=self.factor_names)
         exposures.columns.name = "factor"
         out = RiskModelOutput(
-            date=idx[i], exposures=exposures,
+            date=idx[i],
+            exposures=exposures,
             factor_cov=pd.DataFrame(S, index=self.factor_names, columns=self.factor_names),
             specific_var=pd.Series(var, index=tickers, name="specific_var"),
             factor_returns=hist,
-            factor_groups={"market": [], "industry": [], "style": [],
-                           "statistical": [str(c) for c in self.factor_names], "alignment": []},
+            factor_groups={
+                "market": [],
+                "industry": [],
+                "style": [],
+                "statistical": [str(c) for c in self.factor_names],
+                "alignment": [],
+            },
         )
         self._cache[date] = out
         return out
@@ -533,8 +572,9 @@ class StatisticalRiskModel:
     def n_factors_by_refit(self) -> pd.Series:
         """Active factor count chosen at each refit date (all ``n_factors``
         without ``select_k``)."""
-        return pd.Series([self._refits[i].k for i in self._refit_positions], index=self.refit_dates(),
-                         name="n_factors")
+        return pd.Series(
+            [self._refits[i].k for i in self._refit_positions], index=self.refit_dates(), name="n_factors"
+        )
 
     def n_active_factors(self, date: pd.Timestamp) -> int:
         """Active factor count of the refit serving ``date``."""

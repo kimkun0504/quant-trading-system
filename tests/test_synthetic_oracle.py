@@ -5,6 +5,7 @@ leaked into the characteristics) must predict returns strictly *after* ``t``;
 and its realised residual rank IC must sit inside the band documented in the
 ``qts.data.synthetic`` docstring.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -32,7 +33,7 @@ def _timing_ics(md):
     z = md.extra["true_latent_score"]
     e = _innovation(z)
     r = md.returns
-    same = rank_ic_series(e, r).dropna()                      # news at t vs r_t
+    same = rank_ic_series(e, r).dropna()  # news at t vs r_t
     fwd = rank_ic_series(e, forward_returns(md, 20)).dropna()  # news at t vs r_{t+1..t+20}
     return same, fwd
 
@@ -43,8 +44,10 @@ def test_score_at_t_predicts_only_after_t(seed):
     same, fwd = _timing_ics(md)
     t_same = same.mean() / (same.std() / np.sqrt(len(same)))
     t_fwd = fwd.mean() / (fwd.std() / np.sqrt(len(fwd)))
-    print(f"\n[oracle timing seed {seed}] innovation IC same-day {same.mean():+.4f} (t {t_same:+.2f}), "
-          f"next 20d {fwd.mean():+.4f} (t {t_fwd:+.2f})")
+    print(
+        f"\n[oracle timing seed {seed}] innovation IC same-day {same.mean():+.4f} (t {t_same:+.2f}), "
+        f"next 20d {fwd.mean():+.4f} (t {t_fwd:+.2f})"
+    )
     assert abs(t_same) < 3.0 and abs(same.mean()) < 0.005
     assert fwd.mean() > 0 and t_fwd > 3.0
     # persistence alone: the level of z_t predicts the next-day return at least as
@@ -74,8 +77,11 @@ def test_planted_residual_ic_band():
         md = generate(SyntheticSpec(n_stocks=300, n_days=1512, seed=seed, ic_true=0.04))
         tgt = residualize_forward_returns(md, 20)
         ics.append(float(rank_ic_series(md.extra["true_latent_score"], tgt).mean()))
-    print("\n[planted IC] ic_true=0.04 residual 20d rank IC per seed", np.round(ics, 4),
-          f"mean {np.mean(ics):.4f}")
+    print(
+        "\n[planted IC] ic_true=0.04 residual 20d rank IC per seed",
+        np.round(ics, 4),
+        f"mean {np.mean(ics):.4f}",
+    )
     assert all(IC_BAND_PER_SEED[0] <= x <= IC_BAND_PER_SEED[1] for x in ics), ics
     assert IC_BAND_MEAN[0] <= np.mean(ics) <= IC_BAND_MEAN[1]
     assert np.mean(ics) < 0.04  # never more than the planted ic_true

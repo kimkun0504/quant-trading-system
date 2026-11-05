@@ -4,6 +4,7 @@ The winsorise / rank-gauss / rank-IC helpers here are thin wrappers kept for
 backward compatibility; the single vectorised implementations live in
 :mod:`qts.core.stats` -- new code should import from there.
 """
+
 from __future__ import annotations
 
 import numpy as np

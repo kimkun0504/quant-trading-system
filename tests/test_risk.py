@@ -1,4 +1,5 @@
 """Tests for the risk-model layer (qts.risk)."""
+
 from __future__ import annotations
 
 import time
@@ -65,9 +66,9 @@ def test_exposures_shapes_and_standardization(md, cfg):
     cap = md.market_cap.loc[date].reindex(B.index)
     w = cap / cap.sum()
     for s in styles:
-        assert abs(float((B[s] * w).sum())) < 0.05, s          # cap-weighted mean ~0
-        assert 0.85 < float(B[s].std(ddof=0)) < 1.1, s          # equal-weighted sd ~1
-        assert B[s].abs().max() <= 3.5, s                       # trimmed
+        assert abs(float((B[s] * w).sum())) < 0.05, s  # cap-weighted mean ~0
+        assert 0.85 < float(B[s].std(ddof=0)) < 1.1, s  # equal-weighted sd ~1
+        assert B[s].abs().max() <= 3.5, s  # trimmed
 
 
 def test_exposure_history_matches_single_date_and_is_point_in_time(md, cfg):
@@ -136,7 +137,7 @@ def test_ewma_cov_psd_and_scale(model, cfg):
     S = ewma_cov(X, cfg.vol_half_life, cfg.newey_west_lags_vol)
     assert S.shape == (X.shape[1], X.shape[1])
     assert _is_psd(S)
-    S0 = ewma_cov(X, 1e9, 0)   # ~equal weights, no NW -> ~sample covariance
+    S0 = ewma_cov(X, 1e9, 0)  # ~equal weights, no NW -> ~sample covariance
     assert np.allclose(S0, np.cov(X.T, ddof=0), rtol=1e-3, atol=1e-10)
 
 
@@ -163,6 +164,7 @@ def test_nonlinear_shrinkage_beats_sample_cov():
     assert S_qis.shape == (N, N)
     assert _is_psd(S_qis)
     assert np.isclose(np.trace(S_qis), np.trace(np.cov(X.T, ddof=1)), rtol=1e-6)
+
     def err(S):
         return np.linalg.norm(S - Sigma, "fro")
 
@@ -183,7 +185,9 @@ def test_nonlinear_shrinkage_singular_case():
 def test_specific_risk_pipeline(md, cfg, model):
     d = md.dates[-1]
     B = model.exposures[d]
-    var, det = specific_risk(model.specific_returns.loc[:d], B, md.market_cap.loc[d], cfg, return_details=True)
+    var, det = specific_risk(
+        model.specific_returns.loc[:d], B, md.market_cap.loc[d], cfg, return_details=True
+    )
     assert var.index.equals(B.index)
     assert not var.isna().any() and (var > 0).all()
     ann = np.sqrt(var * 252)
@@ -261,9 +265,9 @@ def test_evaluation_metrics():
     r = pd.Series(rng.standard_normal(2000)) * np.sqrt(var)
     b = bias_statistic(np.sqrt(var), r)
     assert 0.9 < b < 1.1
-    mz = mincer_zarnowitz(var, r ** 2)
+    mz = mincer_zarnowitz(var, r**2)
     assert 0.7 < mz["beta"] < 1.3
-    assert qlike(var, r ** 2) < qlike(var * 3, r ** 2)
+    assert qlike(var, r**2) < qlike(var * 3, r**2)
 
 
 def test_min_variance_oos_test():
@@ -275,7 +279,10 @@ def test_min_variance_oos_test():
     R = pd.DataFrame(X, index=pd.bdate_range("2020-01-01", periods=T))
     res = min_variance_oos_test(
         {"sample": lambda A: np.cov(A.T), "qis": nonlinear_shrinkage, "lw": linear_shrinkage},
-        R, rebalance_every=21, window=120)
+        R,
+        rebalance_every=21,
+        window=120,
+    )
     assert set(res.index) == {"sample", "qis", "lw"}
     assert res.loc["qis", "oos_daily_var"] <= res.loc["sample", "oos_daily_var"]
 
@@ -309,6 +316,7 @@ def test_factor_groups_populated(md, cfg, model):
 
 def test_vra_ignores_identically_zero_and_empty_industry_days(model, cfg):
     from qts.risk.covariance import factor_vra_multiplier
+
     F = model.factor_returns.copy()
     lam = factor_vra_multiplier(F, cfg.vol_half_life, cfg.vra_half_life)
     F2 = F.copy()
@@ -332,13 +340,13 @@ def test_thin_history_blend_use4_formula(md, cfg, model):
     rng = np.random.default_rng(0)
     U[gauss] = rng.standard_normal(len(U)) * 0.01
     U[fat] = rng.standard_normal(len(U)) * 0.01
-    U.iloc[-30, U.columns.get_loc(fat)] = 1.0          # one 100-sigma outlier
+    U.iloc[-30, U.columns.get_loc(fat)] = 1.0  # one 100-sigma outlier
     _var, det = specific_risk(U, B, md.market_cap.loc[d], cfg, return_details=True)
     g = det["gamma"]
     # Gaussian, long history: Z = |sd_eq/sd_robust - 1| ~ 0 -> gamma = 1 (time-series weight)
     assert g[gauss] == pytest.approx(1.0, abs=0.05)
     # fat-tailed name: sd_eq >> IQR/1.35 -> Z large -> exp(1 - Z) small
-    window = int(max(6 * cfg.specific_half_life, cfg.min_history_days))   # as in specific_risk
+    window = int(max(6 * cfg.specific_half_life, cfg.min_history_days))  # as in specific_risk
     Uf = U[fat].tail(window)
     Z = abs(Uf.std(ddof=0) / ((Uf.quantile(0.75) - Uf.quantile(0.25)) / 1.35) - 1.0)
     assert Z > 2.0
@@ -348,6 +356,7 @@ def test_thin_history_blend_use4_formula(md, cfg, model):
 
 def test_calibrate_alignment_nu_smoke(md, cfg, model):
     from qts.risk import calibrate_alignment_nu
+
     dates = md.dates[-40::8]
     rng = np.random.default_rng(3)
     alphas = {}
@@ -374,12 +383,13 @@ def test_exposures_follow_dated_industry_classification(cfg):
     import dataclasses
 
     from qts.core import stats
+
     md0 = generate(SyntheticSpec(n_stocks=40, n_days=560, seed=4))
     d1, d2 = md0.dates[300], md0.dates[350]
     lab0 = md0.industry.reindex(md0.tickers)
     hist = pd.DataFrame([lab0.to_numpy(), lab0.to_numpy()], index=[d1, d2], columns=md0.tickers)
-    hist.iloc[:, :5] = "NEWIND"                 # reclassified on d1 ...
-    hist.iloc[1, 5:8] = np.nan                  # ... later rows may leave names unclassified (-> carried / static)
+    hist.iloc[:, :5] = "NEWIND"  # reclassified on d1 ...
+    hist.iloc[1, 5:8] = np.nan  # ... later rows may leave names unclassified (-> carried / static)
     hist.iloc[1, :2] = lab0.iloc[:2].to_numpy()  # two names move back on d2
     md_h = dataclasses.replace(md0, industry_history=hist)
     dates = md0.dates[[250, 299, 300, 320, 350, 399]]
@@ -390,11 +400,12 @@ def test_exposures_follow_dated_industry_classification(cfg):
         f, f0 = h[d], h0[d]
         _, inds, styles = split_factor_columns(f.columns, cfg)
         expected = stats.industry_dummies(md_h.industry_as_of(d), md_h.tickers).reindex(
-            index=f.index, columns=inds, fill_value=0.0)
+            index=f.index, columns=inds, fill_value=0.0
+        )
         pd.testing.assert_frame_equal(f[inds], expected, check_names=False)
         pd.testing.assert_frame_equal(f[styles], f0[styles])
         assert (f[MARKET_FACTOR] == 1.0).all() and np.allclose(f[inds].sum(axis=1), 1.0)
-    assert (h[md0.dates[299]]["NEWIND"] == 0).all()               # nothing before d1
+    assert (h[md0.dates[299]]["NEWIND"] == 0).all()  # nothing before d1
     assert h[md0.dates[300]]["NEWIND"].sum() == 5 and h[md0.dates[350]]["NEWIND"].sum() == 3
     # the dated path also fits end to end
     BarraStyleRiskModel(cfg).fit(md_h).as_of(md0.dates[-1])

@@ -34,6 +34,7 @@ appending, so re-running an unchanged experiment on unchanged data does not
 inflate ``n_trials`` (an identical re-run is not a new trial).  Anything that
 differs in config or data is a new trial and is always appended.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -67,9 +68,19 @@ class TrialLedger:
                     out.append(json.loads(line))
         return out
 
-    def log(self, name: str, config: dict, metrics: dict, data_hash: str = "", code_version: str = "",
-            notes: str = "", family: str | None = None, config_hash: str | None = None,
-            returns_monthly: pd.Series | None = None, replace_identical: bool = False) -> dict:
+    def log(
+        self,
+        name: str,
+        config: dict,
+        metrics: dict,
+        data_hash: str = "",
+        code_version: str = "",
+        notes: str = "",
+        family: str | None = None,
+        config_hash: str | None = None,
+        returns_monthly: pd.Series | None = None,
+        replace_identical: bool = False,
+    ) -> dict:
         """Append one trial (or, with ``replace_identical=True``, update the
         record with the same ``(name, config_hash, data_hash)``).
 
@@ -81,7 +92,9 @@ class TrialLedger:
         """
         cfg_json = _jsonable_nested(config)
         if config_hash is None:
-            config_hash = hashlib.sha256(json.dumps(cfg_json, sort_keys=True, default=str).encode()).hexdigest()[:16]
+            config_hash = hashlib.sha256(
+                json.dumps(cfg_json, sort_keys=True, default=str).encode()
+            ).hexdigest()[:16]
         rec = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "name": str(name),
@@ -99,8 +112,11 @@ class TrialLedger:
         if replace_identical and data_hash:
             recs = self._records()
             for i, r in enumerate(recs):
-                if (r.get("name") == rec["name"] and r.get("config_hash") == rec["config_hash"]
-                        and r.get("data_hash") == rec["data_hash"]):
+                if (
+                    r.get("name") == rec["name"]
+                    and r.get("config_hash") == rec["config_hash"]
+                    and r.get("data_hash") == rec["data_hash"]
+                ):
                     rec["ts_first"] = r.get("ts_first", r.get("ts"))
                     rec["n_reruns"] = int(r.get("n_reruns", 0)) + 1
                     recs[i] = rec
@@ -142,11 +158,16 @@ class TrialLedger:
     def trial_sharpes_annual(self, family: str | None = None, periods_per_year: int = 252) -> pd.Series:
         return self.trial_sharpes_daily(family) * math.sqrt(periods_per_year)
 
-    def family_sharpe_variance(self, family: str | None = None, annual: bool = True,
-                               periods_per_year: int = 252) -> float:
+    def family_sharpe_variance(
+        self, family: str | None = None, annual: bool = True, periods_per_year: int = 252
+    ) -> float:
         """Sample variance (ddof=1) of the logged Sharpe ratios in ``family``
         (0.0 with fewer than two trials) — the ``V`` of Bailey & LdP's E[max SR]."""
-        srs = self.trial_sharpes_annual(family, periods_per_year) if annual else self.trial_sharpes_daily(family)
+        srs = (
+            self.trial_sharpes_annual(family, periods_per_year)
+            if annual
+            else self.trial_sharpes_daily(family)
+        )
         if len(srs) < 2:
             return 0.0
         v = float(srs.var(ddof=1))
@@ -228,7 +249,9 @@ class TrialLedger:
         fam = family if family is not None else r.get("family")
         srs = self.trial_sharpes_daily(fam)
         m = r["metrics"]
-        sr_d = float(m["sharpe_daily"]) if "sharpe_daily" in m else deannualize_sharpe(float(m["sharpe_annual"]))
+        sr_d = (
+            float(m["sharpe_daily"]) if "sharpe_daily" in m else deannualize_sharpe(float(m["sharpe_annual"]))
+        )
         n = int(m["n_obs"])
         skew = float(m.get("skew", 0.0))
         kurt = float(m.get("kurt", 3.0))
@@ -237,8 +260,15 @@ class TrialLedger:
         if not math.isfinite(var_sr):
             var_sr = 0.0
         dsr = deflated_sharpe_ratio(sr_d, max(round(N), 1), var_sr, n, skew, kurt)
-        return {"name": name, "family": fam, "n_trials": N, "var_trials_sr": var_sr,
-                "sr_daily": sr_d, "n_obs": n, "dsr": dsr}
+        return {
+            "name": name,
+            "family": fam,
+            "n_trials": N,
+            "var_trials_sr": var_sr,
+            "sr_daily": sr_d,
+            "n_obs": n,
+            "dsr": dsr,
+        }
 
 
 def _jsonable(d):

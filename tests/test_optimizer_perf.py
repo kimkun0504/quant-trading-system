@@ -17,6 +17,7 @@ problem needs O(N^2) memory (~0.9 GB at N=300, ~2.9 GB at N=600, more than a
 7 GB box at N=1000 with the vol-cap SOC), which is why ``reuse_problem`` is off
 by default (see ``PortfolioConfig.reuse_problem``).
 """
+
 from __future__ import annotations
 
 import statistics
@@ -31,8 +32,21 @@ from qts.core.roles import RISK_ONLY_STYLES
 from qts.core.types import RiskModelOutput
 from qts.portfolio import SimpleCostModel, SinglePeriodOptimizer
 
-N_IND, STYLES = 48, ["beta", "size", "momentum", "value", "residual_vol", "liquidity",
-                     "short_term_reversal", "quality", "investment", "short_interest"]
+N_IND, STYLES = (
+    48,
+    [
+        "beta",
+        "size",
+        "momentum",
+        "value",
+        "residual_vol",
+        "liquidity",
+        "short_term_reversal",
+        "quality",
+        "investment",
+        "short_interest",
+    ],
+)
 
 
 def synthetic_day(N: int, day: int, seed: int = 0):
@@ -53,20 +67,35 @@ def synthetic_day(N: int, day: int, seed: int = 0):
     F = A @ A.T / K + np.diag(np.full(K, 1e-5))
     F *= 1.0 + 0.02 * rng.standard_normal()
     F = pd.DataFrame(F, index=B.columns, columns=B.columns)
-    spec = pd.Series((0.015 * np.exp(0.3 * base.standard_normal(N)) * (1 + 0.02 * rng.standard_normal(N))) ** 2,
-                     index=tickers)
-    risk = RiskModelOutput(date=pd.Timestamp("2024-01-02") + pd.Timedelta(days=day), exposures=B, factor_cov=F,
-                           specific_var=spec, factor_returns=pd.DataFrame(columns=B.columns),
-                           factor_groups={"market": ["market"], "industry": inds, "style": STYLES,
-                                          "statistical": [], "alignment": []})
+    spec = pd.Series(
+        (0.015 * np.exp(0.3 * base.standard_normal(N)) * (1 + 0.02 * rng.standard_normal(N))) ** 2,
+        index=tickers,
+    )
+    risk = RiskModelOutput(
+        date=pd.Timestamp("2024-01-02") + pd.Timedelta(days=day),
+        exposures=B,
+        factor_cov=F,
+        specific_var=spec,
+        factor_returns=pd.DataFrame(columns=B.columns),
+        factor_groups={
+            "market": ["market"],
+            "industry": inds,
+            "style": STYLES,
+            "statistical": [],
+            "alignment": [],
+        },
+    )
     z = base.standard_normal(N) + 0.3 * rng.standard_normal(N)
     alpha = pd.Series(0.01 * z * np.sqrt(spec.values * 20) / 0.015, index=tickers)
     w0 = pd.Series(np.clip(0.004 * base.standard_normal(N), -0.01, 0.01), index=tickers)
     adv = pd.Series(np.exp(base.normal(17, 1, N)) * (1 + 0.05 * rng.standard_normal(N)), index=tickers)
-    snap = {"adv_usd": adv.clip(lower=1e5), "sigma_daily": pd.Series(np.sqrt(spec.values) * 1.3, index=tickers),
-            "half_spread": pd.Series(np.full(N, 3e-4), index=tickers),
-            "price": pd.Series(np.exp(base.normal(4, 0.6, N)), index=tickers),
-            "borrow_fee": pd.Series(np.full(N, 0.005), index=tickers)}
+    snap = {
+        "adv_usd": adv.clip(lower=1e5),
+        "sigma_daily": pd.Series(np.sqrt(spec.values) * 1.3, index=tickers),
+        "half_spread": pd.Series(np.full(N, 3e-4), index=tickers),
+        "price": pd.Series(np.exp(base.normal(4, 0.6, N)), index=tickers),
+        "borrow_fee": pd.Series(np.full(N, 0.005), index=tickers),
+    }
     return alpha, risk, w0, snap
 
 
@@ -99,10 +128,14 @@ def test_daily_solve_time(N):
         assert reused["opt"].n_reuses >= 4 and reused["opt"].n_builds == 1
         for a, b in zip(fresh["books"], reused["books"], strict=True):
             assert float((a - b).abs().max()) < 1e-5
-        line += (f"; DPP reuse first {reused['first']:.2f}s, steady {reused['steady']:.3f}s/day "
-                 f"(x{fresh['steady'] / reused['steady']:.2f})")
+        line += (
+            f"; DPP reuse first {reused['first']:.2f}s, steady {reused['steady']:.3f}s/day "
+            f"(x{fresh['steady'] / reused['steady']:.2f})"
+        )
     proj = run_days(N, reuse=False, cfg=PortfolioConfig(target_vol_annual=0.10, vol_target_mode="projection"))
     cons = run_days(N, reuse=False, cfg=PortfolioConfig(target_vol_annual=0.10, vol_target_mode="constraint"))
-    line += (f"; with vol target: projection {proj['steady']:.3f}s/day, constraint {cons['steady']:.3f}s/day "
-             f"(x{proj['steady'] / cons['steady']:.2f})")
+    line += (
+        f"; with vol target: projection {proj['steady']:.3f}s/day, constraint {cons['steady']:.3f}s/day "
+        f"(x{proj['steady'] / cons['steady']:.2f})"
+    )
     print(line)

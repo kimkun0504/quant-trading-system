@@ -1,4 +1,5 @@
 """Tests for the statistical (APCA) companion risk model and the hybrid model."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -23,9 +24,9 @@ from qts.risk import (
     select_n_factors,
 )
 
-INJECT_START = 500          # first day of the unobserved factor
-LATENT_VOL = 0.01           # daily vol of the injected factor
-N_EVAL = 150                # bias-test days at the end of the sample
+INJECT_START = 500  # first day of the unobserved factor
+LATENT_VOL = 0.01  # daily vol of the injected factor
+N_EVAL = 150  # bias-test days at the end of the sample
 
 
 def _is_psd(S, tol=1e-12):
@@ -113,7 +114,7 @@ def test_apca_handles_missing_returns():
     B = rng.standard_normal((N, 2))
     X = 0.01 * rng.standard_normal((T, 2)) @ B.T + 0.02 * rng.standard_normal((T, N))
     X[rng.random((T, N)) < 0.05] = np.nan
-    X[:100, 0] = np.nan                       # one stock with a short history
+    X[:100, 0] = np.nan  # one stock with a short history
     res = apca(X, 2, n_iter=2)
     assert np.isfinite(res.B).all() and np.isfinite(res.specific_var).all()
     assert (res.specific_var > 0).all()
@@ -125,7 +126,7 @@ def test_statistical_model_is_point_in_time(md):
     R = md.returns
     kw = {"n_factors": 4, "window": 252, "min_obs": 200, "refit_every": 21}
     full = StatisticalRiskModel(**kw).fit(R)
-    for pos in (700, 710, 899):               # a refit date, mid-cycle, last day
+    for pos in (700, 710, 899):  # a refit date, mid-cycle, last day
         d = md.dates[pos]
         a = full.as_of(d)
         b = StatisticalRiskModel(**kw).fit(R.loc[:d]).as_of(d)
@@ -136,7 +137,7 @@ def test_statistical_model_is_point_in_time(md):
         pd.testing.assert_frame_equal(a.factor_returns, b.factor_returns, atol=1e-12, rtol=0)
     assert _is_psd(a.covariance().values)
     with pytest.raises(ValueError):
-        full.as_of(md.dates[100])             # before the first eligible date
+        full.as_of(md.dates[100])  # before the first eligible date
 
 
 def test_factor_sign_and_rotation_stability(md):
@@ -162,7 +163,7 @@ def test_factor_sign_and_rotation_stability(md):
 @pytest.mark.slow
 def test_hybrid_prices_unobserved_factor(md_injected, hybrid, aligned_book, cfg):
     fund = hybrid.fundamental
-    dates = md_injected.dates[-(N_EVAL + 1):-1]
+    dates = md_injected.dates[-(N_EVAL + 1) : -1]
     assert hybrid.statistical_available(dates[0])
     assert 1 <= hybrid.n_statistical_factors <= cfg.max_statistical_factors
 
@@ -201,16 +202,16 @@ def test_hybrid_output_structure(md_injected, hybrid, cfg):
     fund_out = hybrid.fundamental.as_of(d)
     out = hybrid.as_of(d)
     k = hybrid.n_statistical_factors
-    assert list(out.exposures.columns[:fund_out.exposures.shape[1]]) == list(fund_out.exposures.columns)
+    assert list(out.exposures.columns[: fund_out.exposures.shape[1]]) == list(fund_out.exposures.columns)
     assert out.exposures.shape[1] == fund_out.exposures.shape[1] + k
     assert out.factor_cov.index.equals(out.exposures.columns)
     K1 = fund_out.factor_cov.shape[0]
     assert np.allclose(out.factor_cov.values[:K1, :K1], fund_out.factor_cov.values)
-    assert np.allclose(out.factor_cov.values[:K1, K1:], 0.0)       # block-diagonal
+    assert np.allclose(out.factor_cov.values[:K1, K1:], 0.0)  # block-diagonal
     assert _is_psd(out.factor_cov.values) and _is_psd(out.covariance().values)
     assert (out.specific_var <= fund_out.specific_var + 1e-18).all()
     assert (out.specific_var >= 0.1 * fund_out.specific_var - 1e-18).all()
-    assert (hybrid.explained_share(d) > 0.3).sum() > 10             # the latent factor is seen
+    assert (hybrid.explained_share(d) > 0.3).sum() > 10  # the latent factor is seen
     # alignment passthrough
     rng = np.random.default_rng(5)
     alpha = pd.Series(rng.standard_normal(len(out.tickers)), index=out.tickers)
@@ -232,10 +233,12 @@ def test_missing_factor_monitor_flags_injected_period(md_injected, hybrid, cfg):
     mon = missing_factor_monitor(md_injected, hybrid, lookback=252, step=5)
     assert {"pc1_share", "pck_share", "mp_edge", "flag", "n_factors_mp"} <= set(mon.columns)
     clean = mon.loc[: md_injected.dates[INJECT_START - 1]]
-    injected = mon.loc[md_injected.dates[INJECT_START + 252]:]
+    injected = mon.loc[md_injected.dates[INJECT_START + 252] :]
     assert len(clean) > 20 and len(injected) > 20
-    print(f"\nmonitor pc1 share: clean {clean['pc1_share'].mean():.3f}  injected {injected['pc1_share'].mean():.3f}"
-          f"  alarm {cfg.missing_factor_alarm_share}")
+    print(
+        f"\nmonitor pc1 share: clean {clean['pc1_share'].mean():.3f}  injected {injected['pc1_share'].mean():.3f}"
+        f"  alarm {cfg.missing_factor_alarm_share}"
+    )
     assert not clean["flag"].any()
     assert injected["flag"].all()
     assert (injected["pc1_share"] > clean["pc1_share"].max()).all()
@@ -245,7 +248,7 @@ def test_missing_factor_monitor_flags_injected_period(md_injected, hybrid, cfg):
 def test_build_risk_model_factory(cfg):
     assert isinstance(build_risk_model(RiskConfig(statistical_companion=True)), HybridRiskModel)
     assert isinstance(build_risk_model(RiskConfig(statistical_companion=False)), BarraStyleRiskModel)
-    assert isinstance(build_risk_model(cfg), HybridRiskModel)        # default on
+    assert isinstance(build_risk_model(cfg), HybridRiskModel)  # default on
     m = build_risk_model(RiskConfig(statistical_companion=True), warmup_days=300)
     assert m.fundamental.warmup_days == 300
 
@@ -265,7 +268,7 @@ def test_hybrid_factor_groups(md_injected, hybrid, cfg):
 
 
 # --------------------------------------------------------------------------- PIT factor count (finding #19)
-SECOND_START = 680          # a second unobserved factor switches on here
+SECOND_START = 680  # a second unobserved factor switches on here
 
 
 @pytest.fixture(scope="module")
@@ -312,8 +315,8 @@ def test_hybrid_factor_count_is_point_in_time(md_two_latent, cfg):
         a, b = full.as_of(d), trunc.as_of(d)
         _assert_risk_close(a, b)
         stat_cols = a.factor_groups["statistical"]
-        assert len(stat_cols) == cfg.max_statistical_factors            # stable shape
+        assert len(stat_cols) == cfg.max_statistical_factors  # stable shape
         k = full.statistical.n_active_factors(d)
-        assert np.all(a.exposures[stat_cols[k:]].values == 0.0)        # unused slots are zero
+        assert np.all(a.exposures[stat_cols[k:]].values == 0.0)  # unused slots are zero
         assert np.all(a.factor_cov.loc[stat_cols[k:], stat_cols[k:]].values == 0.0)
         assert np.abs(a.exposures[stat_cols[:k]].values).sum() > 0

@@ -19,6 +19,7 @@
       momentum sleeve is vol-managed (Cederburg et al.).
   All dynamic quantities at date ``t`` use information ``<= t`` only.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -64,8 +65,9 @@ def theme_scores_wide(processed: Long, themes=THEMES) -> dict[str, Wide]:
     return {th: zscore(_long_to_wide(tl[th])) for th in tl.columns}
 
 
-def theme_portfolio_returns(processed: Long, md: MarketData, n_deciles: int = 10,
-                            themes=THEMES) -> pd.DataFrame:
+def theme_portfolio_returns(
+    processed: Long, md: MarketData, n_deciles: int = 10, themes=THEMES
+) -> pd.DataFrame:
     """Realised daily long-short (top minus bottom decile, equal-weight) return of
     each theme.  Portfolios are formed on the score at ``t`` and earn the return
     of ``t+1``; the series is indexed at the *realisation* date ``t+1`` so that
@@ -90,8 +92,9 @@ def theme_portfolio_returns(processed: Long, md: MarketData, n_deciles: int = 10
 
 
 # ----------------------------------------------------------------------------- dynamic weights
-def factor_momentum_tilt_series(theme_returns: pd.DataFrame, lookback_months: int,
-                                max_tilt: float, scale_window: int = 252) -> pd.DataFrame:
+def factor_momentum_tilt_series(
+    theme_returns: pd.DataFrame, lookback_months: int, max_tilt: float, scale_window: int = 252
+) -> pd.DataFrame:
     """Date x theme multiplier ``1 + tilt`` with
     ``tilt = clip(max_tilt * trailing_sum / (sd * sqrt(L)), -max_tilt, +max_tilt)``.
     The standardisation turns the trailing return into a ~t-statistic so the
@@ -104,21 +107,22 @@ def factor_momentum_tilt_series(theme_returns: pd.DataFrame, lookback_months: in
     return 1.0 + tilt
 
 
-def factor_momentum_tilt(theme_returns_history: pd.DataFrame, lookback_months: int,
-                         max_tilt: float) -> pd.Series:
+def factor_momentum_tilt(
+    theme_returns_history: pd.DataFrame, lookback_months: int, max_tilt: float
+) -> pd.Series:
     """Multiplier per theme as of the last date in ``theme_returns_history``."""
     if len(theme_returns_history) == 0:
         return pd.Series(dtype=float)
     return factor_momentum_tilt_series(theme_returns_history, lookback_months, max_tilt).iloc[-1]
 
 
-def momentum_crash_scalar_series(md: MarketData, lookback_days: int = 504,
-                                 vol_window: int = 21, vol_pct: float = 0.80,
-                                 floor: float = 0.25) -> pd.Series:
+def momentum_crash_scalar_series(
+    md: MarketData, lookback_days: int = 504, vol_window: int = 21, vol_pct: float = 0.80, floor: float = 0.25
+) -> pd.Series:
     """Per-date scalar in [floor, 1]: 1 normally; in a bear + high-vol state
     (trailing ``lookback_days`` EW market return < 0 and trailing 21d market vol
     above its expanding 80th percentile) ``clip(0.5 * vol_p80 / vol_21, floor, 1)``."""
-    mkt = md.returns.where(md.eligibility()).mean(axis=1)     # EW market over eligible names
+    mkt = md.returns.where(md.eligibility()).mean(axis=1)  # EW market over eligible names
     cum = np.exp(np.log1p(mkt).rolling(lookback_days, min_periods=min(252, lookback_days)).sum()) - 1.0
     vol = mkt.rolling(vol_window, min_periods=vol_window).std()
     p80 = vol.expanding(min_periods=126).quantile(vol_pct)
@@ -135,8 +139,9 @@ def momentum_crash_scalar(md: MarketData, date: pd.Timestamp, lookback_days: int
     return float(s.iloc[-1]) if len(s) else 1.0
 
 
-def momentum_vol_scalar_series(theme_returns: pd.DataFrame, target_vol_annual: float,
-                               window: int = 63, lo: float = 0.5, hi: float = 1.5) -> pd.Series:
+def momentum_vol_scalar_series(
+    theme_returns: pd.DataFrame, target_vol_annual: float, window: int = 63, lo: float = 0.5, hi: float = 1.5
+) -> pd.Series:
     """Bounded vol scaling of the momentum sleeve's *weight*:
     ``clip(target_vol_annual / sigma_63d_annualised, lo, hi)`` (Barroso &
     Santa-Clara 2015 style).  This is **not** full vol targeting: the clip
@@ -165,29 +170,42 @@ class ThemeComposite:
         w = pd.Series({th: self.cfg.theme_weights.get(th, 0.0) for th in available}, dtype=float)
         return w
 
-    def dynamic_weights(self, theme_returns: pd.DataFrame, md: MarketData,
-                        available: list[str]) -> pd.DataFrame:
+    def dynamic_weights(
+        self, theme_returns: pd.DataFrame, md: MarketData, available: list[str]
+    ) -> pd.DataFrame:
         """Date x theme weights = static x factor-momentum tilt x (momentum only:
         crash scalar x vol scalar).  All point-in-time."""
         base = self.static_weights(available)
         idx = theme_returns.index
         W = pd.DataFrame(np.tile(base.values, (len(idx), 1)), index=idx, columns=available)
-        tilt = factor_momentum_tilt_series(theme_returns.reindex(columns=available).fillna(0.0),
-                                           self.cfg.factor_momentum_lookback_months,
-                                           self.cfg.factor_momentum_max_tilt)
+        tilt = factor_momentum_tilt_series(
+            theme_returns.reindex(columns=available).fillna(0.0),
+            self.cfg.factor_momentum_lookback_months,
+            self.cfg.factor_momentum_max_tilt,
+        )
         W = W * tilt.reindex(index=idx, columns=available).fillna(1.0)
         if "momentum" in available:
             crash = momentum_crash_scalar_series(md, self.cfg.momentum_crash_market_lookback_days)
             lo, hi = self.cfg.momentum_vol_scalar_bounds
-            volsc = momentum_vol_scalar_series(theme_returns, self.cfg.momentum_vol_target_annual,
-                                               window=self.cfg.momentum_vol_window, lo=lo, hi=hi)
+            volsc = momentum_vol_scalar_series(
+                theme_returns,
+                self.cfg.momentum_vol_target_annual,
+                window=self.cfg.momentum_vol_window,
+                lo=lo,
+                hi=hi,
+            )
             W["momentum"] = W["momentum"] * crash.reindex(idx).fillna(1.0) * volsc.reindex(idx).fillna(1.0)
         return W
 
     # -- scoring -------------------------------------------------------------
-    def score_all(self, processed: Long, md: MarketData | None = None,
-                  dynamic: bool = False, theme_returns: pd.DataFrame | None = None,
-                  return_components: bool = False):
+    def score_all(
+        self,
+        processed: Long,
+        md: MarketData | None = None,
+        dynamic: bool = False,
+        theme_returns: pd.DataFrame | None = None,
+        return_components: bool = False,
+    ):
         """Composite z-score panel for every date in ``processed``.
 
         ``dynamic=True`` requires ``md`` (and optionally precomputed
@@ -198,7 +216,9 @@ class ThemeComposite:
         themes = theme_scores_wide(processed, self.themes)
         if md is not None:
             elig = md.eligibility()
-            themes = {th: s.where(elig.reindex_like(s).fillna(False).astype(bool)) for th, s in themes.items()}
+            themes = {
+                th: s.where(elig.reindex_like(s).fillna(False).astype(bool)) for th, s in themes.items()
+            }
         available = list(themes.keys())
         if dynamic:
             if md is None:
@@ -220,13 +240,23 @@ class ThemeComposite:
             return comp, themes
         return comp
 
-    def score(self, processed: Long, date: pd.Timestamp, md: MarketData | None = None,
-              dynamic: bool = False, theme_returns: pd.DataFrame | None = None) -> pd.Series:
+    def score(
+        self,
+        processed: Long,
+        date: pd.Timestamp,
+        md: MarketData | None = None,
+        dynamic: bool = False,
+        theme_returns: pd.DataFrame | None = None,
+    ) -> pd.Series:
         """Composite z-score Series (ticker index) for one date — AlphaOutput-ready."""
-        sub = processed.loc[processed.index.get_level_values("date") <= date] if dynamic else \
-            processed.loc[[date]]
+        sub = (
+            processed.loc[processed.index.get_level_values("date") <= date]
+            if dynamic
+            else processed.loc[[date]]
+        )
         if dynamic and theme_returns is not None:
             theme_returns = theme_returns.loc[:date]
-        comp = self.score_all(sub, md=None if md is None else md.slice_until(date),
-                              dynamic=dynamic, theme_returns=theme_returns)
+        comp = self.score_all(
+            sub, md=None if md is None else md.slice_until(date), dynamic=dynamic, theme_returns=theme_returns
+        )
         return comp.loc[date].dropna()

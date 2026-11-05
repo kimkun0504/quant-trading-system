@@ -19,6 +19,7 @@ On real data replace ``generate(...)`` by the loaded ``MarketData`` (same code
 path from ``ResearchPipeline.fit`` on) and use the median calibrated value as
 ``RiskConfig.alignment_nu_scale``.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -40,8 +41,17 @@ from qts.risk.evaluation import bias_statistic
 GRID = (0.0, 0.25, 0.5, 1.0, 2.0, 4.0)
 
 
-def calibrate_seed(seed: int, n_stocks: int, n_days: int, n_dates: int, burn_in: int, nav: float,
-                   n_iter: int, tol: float, md=None) -> dict[str, object]:
+def calibrate_seed(
+    seed: int,
+    n_stocks: int,
+    n_days: int,
+    n_dates: int,
+    burn_in: int,
+    nav: float,
+    n_iter: int,
+    tol: float,
+    md=None,
+) -> dict[str, object]:
     t0 = time.time()
     md = md if md is not None else generate(SyntheticSpec(n_stocks=n_stocks, n_days=n_days, seed=seed))
     cfg = SystemConfig()
@@ -55,13 +65,13 @@ def calibrate_seed(seed: int, n_stocks: int, n_days: int, n_dates: int, burn_in:
     if len(oos) < n_dates + burn_in:
         raise ValueError(f"only {len(oos)} out-of-sample dates; need {n_dates + burn_in}")
     dates = oos[-n_dates:]
-    burn = oos[-(n_dates + burn_in):-n_dates]
+    burn = oos[-(n_dates + burn_in) : -n_dates]
     tickers = md_u.tickers
     alive_px = md_u.close.notna()
     elig = md_u.eligibility()
     alpha_fn = pipe._eligible_alpha_fn()
     sim = DailyBarSimulator(cfg, pipe.cost)
-    neutral = pipe.neutral_styles()          # D1: qts.core.roles.RISK_ONLY_STYLES
+    neutral = pipe.neutral_styles()  # D1: qts.core.roles.RISK_ONLY_STYLES
 
     alpha_cache: dict[pd.Timestamp, pd.Series] = {}
     snap_cache: dict[pd.Timestamp, dict] = {}
@@ -87,8 +97,16 @@ def calibrate_seed(seed: int, n_stocks: int, n_days: int, n_dates: int, burn_in:
         # unwinds them over cfg.portfolio.exit_ineligible_days; immediate here)
         inel = alive & ~elig.loc[d].to_numpy() & (w_prev.abs().to_numpy() > 1e-12)
         force = dict.fromkeys(tickers[inel], 0.0)
-        res = opt.solve(alpha=a, risk=rm, w_current=w_prev, nav=nav, snapshot=snap_at(d),
-                        neutral_styles=neutral, no_trade=dead or None, force_to_zero=force or None)
+        res = opt.solve(
+            alpha=a,
+            risk=rm,
+            w_current=w_prev,
+            nav=nav,
+            snapshot=snap_at(d),
+            neutral_styles=neutral,
+            no_trade=dead or None,
+            force_to_zero=force or None,
+        )
         if res.status not in ("optimal", "optimal_inaccurate"):
             return w_prev.copy(), res
         return res.w_target.reindex(tickers).fillna(0.0), res
@@ -110,7 +128,7 @@ def calibrate_seed(seed: int, n_stocks: int, n_days: int, n_dates: int, burn_in:
         d = pd.Timestamp(d)
         if state["last"] is None or d <= state["last"]:
             state["w"] = w_init.copy()
-        if d not in base_var:      # first call per date is the nu_scale=1 model (alignment_var unscaled)
+        if d not in base_var:  # first call per date is the nu_scale=1 model (alignment_var unscaled)
             base_var[d] = float(risk_nu1[d].alignment_var)
         nu_s = round(float(rm.alignment_var) / base_var[d], 8) if base_var[d] > 0 else 0.0
         w_new, res = solve_once(d, rm, a, state["w"])
@@ -131,8 +149,9 @@ def calibrate_seed(seed: int, n_stocks: int, n_days: int, n_dates: int, burn_in:
             return risk_nu1[d]
 
     t1 = time.time()
-    res = calibrate_alignment_nu(_CachedRisk(), md_u, alpha_at, dates, solve_fn=solve_fn,
-                                 n_iter=n_iter, tol=tol, grid=GRID)
+    res = calibrate_alignment_nu(
+        _CachedRisk(), md_u, alpha_at, dates, solve_fn=solve_fn, n_iter=n_iter, tol=tol, grid=GRID
+    )
     t_cal = time.time() - t1
 
     # ---- diagnostics per evaluated nu_scale
@@ -159,11 +178,20 @@ def calibrate_seed(seed: int, n_stocks: int, n_days: int, n_dates: int, burn_in:
             "gross": float(np.mean(gross)),
             "mean_abs_y_w": float(np.mean(np.abs(yw))),
             "alignment_share": float(np.nanmean(shares.get(nu_s, [np.nan]))),
-            "realised_sharpe": float(np.mean(real) / np.std(real) * np.sqrt(252)) if np.std(real) > 0 else np.nan,
+            "realised_sharpe": float(np.mean(real) / np.std(real) * np.sqrt(252))
+            if np.std(real) > 0
+            else np.nan,
         }
-    return {"seed": seed, "calibration": res, "diagnostics": diag, "n_dates": len(dates),
-            "window": [str(dates[0].date()), str(dates[-1].date())], "fit_seconds": t_fit,
-            "calibration_seconds": t_cal, "default_nu_formula": "nu = nu_scale * N * median style variance"}
+    return {
+        "seed": seed,
+        "calibration": res,
+        "diagnostics": diag,
+        "n_dates": len(dates),
+        "window": [str(dates[0].date()), str(dates[-1].date())],
+        "fit_seconds": t_fit,
+        "calibration_seconds": t_cal,
+        "default_nu_formula": "nu = nu_scale * N * median style variance",
+    }
 
 
 def main():
@@ -185,21 +213,30 @@ def main():
         r = calibrate_seed(s, a.stocks, a.days, a.n_dates, a.burn_in, a.nav, a.n_iter, a.tol)
         out.append(r)
         c = r["calibration"]
-        print(f"\nseed {s}: window {r['window'][0]}..{r['window'][1]} ({r['n_dates']} dates), "
-              f"fit {r['fit_seconds']:.0f}s, calibration {r['calibration_seconds']:.0f}s")
+        print(
+            f"\nseed {s}: window {r['window'][0]}..{r['window'][1]} ({r['n_dates']} dates), "
+            f"fit {r['fit_seconds']:.0f}s, calibration {r['calibration_seconds']:.0f}s"
+        )
         print("  grid (nu_scale -> bias):", ", ".join(f"{g:g}: {b:.3f}" for g, b in c["grid"]))
-        print(f"  calibrated nu_scale = {c['nu_scale']:.3f} (bias {c['bias']:.3f}, band "
-              f"[{c['lower']:.3f}, {c['upper']:.3f}], converged {c['converged']})")
+        print(
+            f"  calibrated nu_scale = {c['nu_scale']:.3f} (bias {c['bias']:.3f}, band "
+            f"[{c['lower']:.3f}, {c['upper']:.3f}], converged {c['converged']})"
+        )
         print("  history:", ", ".join(f"{n:.3g}:{b:.3f}" for n, b in c["history"]))
-        print(f"  {'nu_scale':>9} {'bias':>6} {'bias_noal':>9} {'exante':>7} {'realised':>8} "
-              f"{'|y.w|':>7} {'al_share':>8} {'SR':>6}")
+        print(
+            f"  {'nu_scale':>9} {'bias':>6} {'bias_noal':>9} {'exante':>7} {'realised':>8} "
+            f"{'|y.w|':>7} {'al_share':>8} {'SR':>6}"
+        )
         for nu_s, dg in r["diagnostics"].items():
-            print(f"  {nu_s:9.3f} {dg['bias_aligned']:6.3f} {dg['bias_unaligned_forecast']:9.3f} "
-                  f"{dg['exante_vol_ann']:7.3f} {dg['realised_vol_ann']:8.3f} {dg['mean_abs_y_w']:7.4f} "
-                  f"{dg['alignment_share']:8.3f} {dg['realised_sharpe']:6.2f}")
+            print(
+                f"  {nu_s:9.3f} {dg['bias_aligned']:6.3f} {dg['bias_unaligned_forecast']:9.3f} "
+                f"{dg['exante_vol_ann']:7.3f} {dg['realised_vol_ann']:8.3f} {dg['mean_abs_y_w']:7.4f} "
+                f"{dg['alignment_share']:8.3f} {dg['realised_sharpe']:6.2f}"
+            )
     cal = [r["calibration"]["nu_scale"] for r in out]
     print(f"\ncalibrated nu_scale per seed: {np.round(cal, 3).tolist()}  median {np.median(cal):.3f}")
     if a.json:
+
         def conv(o):
             if isinstance(o, dict):
                 return {str(k): conv(v) for k, v in o.items()}
@@ -208,6 +245,7 @@ def main():
             if isinstance(o, (np.floating, np.integer)):
                 return o.item()
             return o
+
         with open(a.json, "w") as f:
             json.dump(conv(out), f, indent=1)
 

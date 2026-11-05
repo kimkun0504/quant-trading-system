@@ -23,6 +23,7 @@ Simulator semantics pinned here (``qts/backtest/simulator.py``, read 2026-11-04)
   A name with no price on ``t`` goes on ``no_trade`` and its ``w_post`` is
   forced to ``w_pre`` (here 0) whatever the optimizer returns.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -36,21 +37,27 @@ from qts.core.config import SystemConfig
 from qts.core.types import AlphaOutput, MarketData, RiskModelOutput
 
 TICKERS = pd.Index(["A", "B", "C"], name="ticker")
-DATES = pd.bdate_range("2024-01-01", periods=5)          # d0..d4 (Mon..Fri)
+DATES = pd.bdate_range("2024-01-01", periods=5)  # d0..d4 (Mon..Fri)
 NAV0 = 1_000_000.0
 
 # Closes chosen so every daily return is a round number:
 #   A: 100 -> 110 -> 99  -> 99   -> 108.9   r = +10%, -10%,   0%, +10%
 #   B:  50 ->  50 -> 55  -> 49.5 ->  49.5   r =   0%, +10%, -10%,   0%
 #   C:  20 ->  21 -> 21  -> 23.1 ->  23.1   r =  +5%,   0%, +10%,   0%
-CLOSE = {"A": [100.0, 110.0, 99.0, 99.0, 108.9],
-         "B": [50.0, 50.0, 55.0, 49.5, 49.5],
-         "C": [20.0, 21.0, 21.0, 23.1, 23.1]}
-R1, R2, R3, R4 = (np.array([0.10, 0.00, 0.05]), np.array([-0.10, 0.10, 0.00]),
-                  np.array([0.00, -0.10, 0.10]), np.array([0.10, 0.00, 0.00]))
+CLOSE = {
+    "A": [100.0, 110.0, 99.0, 99.0, 108.9],
+    "B": [50.0, 50.0, 55.0, 49.5, 49.5],
+    "C": [20.0, 21.0, 21.0, 23.1, 23.1],
+}
+R1, R2, R3, R4 = (
+    np.array([0.10, 0.00, 0.05]),
+    np.array([-0.10, 0.10, 0.00]),
+    np.array([0.00, -0.10, 0.10]),
+    np.array([0.10, 0.00, 0.00]),
+)
 
-ATOL = 1e-10          # weights, returns, turnover (fractions of NAV)
-NAV_RTOL = 1e-12      # NAV / USD (1e6 scale: 1e-12 rel = 1e-6 USD)
+ATOL = 1e-10  # weights, returns, turnover (fractions of NAV)
+NAV_RTOL = 1e-12  # NAV / USD (1e6 scale: 1e-12 rel = 1e-6 USD)
 
 
 def make_md(close: dict | None = None) -> MarketData:
@@ -58,8 +65,9 @@ def make_md(close: dict | None = None) -> MarketData:
     close_df.columns = TICKERS
     vol = pd.DataFrame(1e6, index=DATES, columns=TICKERS)
     cap = close_df * 1e8
-    md = MarketData(close=close_df, volume=vol, market_cap=cap,
-                    industry=pd.Series(["X", "Y", "X"], index=TICKERS))
+    md = MarketData(
+        close=close_df, volume=vol, market_cap=cap, industry=pd.Series(["X", "Y", "X"], index=TICKERS)
+    )
     md.validate()
     return md
 
@@ -78,10 +86,20 @@ class PresetOptimizer:
         self.calls.append(kw)
         t = kw["risk"].date
         w = pd.Series(self.targets[t], index=TICKERS, dtype=float)
-        return SimpleNamespace(w_target=w, x=w - kw["w_current"], status="optimal", solve_time=0.0,
-                               transfer_coefficient=1.0, binding_constraints={}, vol_scalar=1.0,
-                               expected_alpha=0.0, expected_risk=0.0, expected_cost=0.0, notes=[],
-                               n_out_of_model=0)
+        return SimpleNamespace(
+            w_target=w,
+            x=w - kw["w_current"],
+            status="optimal",
+            solve_time=0.0,
+            transfer_coefficient=1.0,
+            binding_constraints={},
+            vol_scalar=1.0,
+            expected_alpha=0.0,
+            expected_risk=0.0,
+            expected_cost=0.0,
+            notes=[],
+            n_out_of_model=0,
+        )
 
 
 class ConstantBpsCost:
@@ -96,8 +114,13 @@ class ConstantBpsCost:
 
     def snapshot_from_market(self, md, t):
         ones = pd.Series(1.0, index=md.tickers)
-        return {"adv_usd": ones * 1e9, "sigma_daily": ones * 0.02, "half_spread": ones * self.s,
-                "price": md.close.loc[:t].iloc[-1], "borrow_fee": ones * self.borrow}
+        return {
+            "adv_usd": ones * 1e9,
+            "sigma_daily": ones * 0.02,
+            "half_spread": ones * self.s,
+            "price": md.close.loc[:t].iloc[-1],
+            "borrow_fee": ones * self.borrow,
+        }
 
     def cvx_terms(self, *a, **k):  # pragma: no cover - the optimizer double never calls it
         raise NotImplementedError
@@ -112,8 +135,13 @@ def risk_fn(t, alpha=None) -> RiskModelOutput:
     # one zero-variance factor + specific variance 1e-4/day: ex-ante var = 1e-4 * sum w^2
     B = pd.DataFrame(0.0, index=TICKERS, columns=["mkt"])
     F = pd.DataFrame([[0.0]], index=["mkt"], columns=["mkt"])
-    return RiskModelOutput(date=t, exposures=B, factor_cov=F, specific_var=pd.Series(1e-4, index=TICKERS),
-                           factor_returns=pd.DataFrame(columns=["mkt"]))
+    return RiskModelOutput(
+        date=t,
+        exposures=B,
+        factor_cov=F,
+        specific_var=pd.Series(1e-4, index=TICKERS),
+        factor_returns=pd.DataFrame(columns=["mkt"]),
+    )
 
 
 def alpha_fn(t) -> AlphaOutput:
@@ -130,8 +158,8 @@ def run(cost, targets, md=None):
 
 
 # targets used by the zero-cost and constant-bps cases
-W_LS = [0.50, -0.25, 0.25]          # d0, d1
-W_LO = [0.25, 0.00, 0.50]           # d2, d3
+W_LS = [0.50, -0.25, 0.25]  # d0, d1
+W_LO = [0.25, 0.00, 0.50]  # d2, d3
 TARGETS = {DATES[0]: W_LS, DATES[1]: W_LS, DATES[2]: W_LO, DATES[3]: W_LO}
 
 
@@ -166,8 +194,12 @@ def test_zero_cost_nav_path_returns_turnover():
     np.testing.assert_allclose(res.weights.to_numpy(), [w_ls, w_ls, w_lo, w_lo], atol=ATOL, rtol=0)
     np.testing.assert_allclose(res.trades.to_numpy(), [w_ls, x1, x2, x3], atol=ATOL, rtol=0)
     # turnover d1 = |.5-.517647| + |-.25+.235294| + |.25-.247059| = 2*.25*(1/1.0625 - ... ) etc.
-    np.testing.assert_allclose(res.turnover.to_numpy(),
-                               [1.0, np.abs(x1).sum(), np.abs(x2).sum(), np.abs(x3).sum()], atol=ATOL, rtol=0)
+    np.testing.assert_allclose(
+        res.turnover.to_numpy(),
+        [1.0, np.abs(x1).sum(), np.abs(x2).sum(), np.abs(x3).sum()],
+        atol=ATOL,
+        rtol=0,
+    )
     # d1 turnover by hand: |.5 - .55/1.0625| + |-.25 + .25/1.0625| + |.25 - .2625/1.0625|
     #                    = .0176470588 + .0147058824 + .0029411765 = .0352941176 (= .0375/1.0625)
     assert res.turnover.iloc[1] == pytest.approx(0.0375 / 1.0625, abs=ATOL)
@@ -175,8 +207,9 @@ def test_zero_cost_nav_path_returns_turnover():
     # indices: decision dates d0..d3, realisation dates d1..d4
     assert list(res.weights.index) == list(DATES[:4]) and list(res.returns.index) == list(DATES[1:])
     # ex-ante variance from the stand-in risk: 1e-4 * sum w^2  (d0: 1e-4*(.25+.0625+.0625))
-    np.testing.assert_allclose(res.exante_var.to_numpy(),
-                               [1e-4 * 0.375, 1e-4 * 0.375, 1e-4 * 0.3125, 1e-4 * 0.3125], atol=1e-16)
+    np.testing.assert_allclose(
+        res.exante_var.to_numpy(), [1e-4 * 0.375, 1e-4 * 0.375, 1e-4 * 0.3125, 1e-4 * 0.3125], atol=1e-16
+    )
     # the optimizer saw the drifted book and the pre-trade NAV
     np.testing.assert_allclose(opt.calls[1]["w_current"].to_numpy(), w_pre1, atol=ATOL)
     assert opt.calls[2]["nav"] == pytest.approx(nav2, rel=NAV_RTOL)
@@ -184,8 +217,8 @@ def test_zero_cost_nav_path_returns_turnover():
 
 
 # ----------------------------------------------------------------------------- (b) constant bps
-SPREAD, IMPACT, FEES = 5.0, 2.0, 1.0      # bps of |USD traded|  -> 8 bps per side in total
-BORROW = 0.0252                            # annual -> 0.0252 / 252 = 1e-4 per day on short notional
+SPREAD, IMPACT, FEES = 5.0, 2.0, 1.0  # bps of |USD traded|  -> 8 bps per side in total
+BORROW = 0.0252  # annual -> 0.0252 / 252 = 1e-4 per day on short notional
 
 
 def bps_model():
@@ -200,16 +233,16 @@ def test_constant_bps_costs_and_borrow():
 
     # d0: x = [.5,-.25,.25]; traded 1.0 * 1e6 = 1e6 USD -> 800 USD trading cost
     #     (spread 500, impact 200, fees 100); borrow on the .25 short: .25*1e6*1e-4 = 25 USD
-    c0 = k_trade * 1.0 * NAV0 + k_borrow * 0.25 * NAV0            # 825
+    c0 = k_trade * 1.0 * NAV0 + k_borrow * 0.25 * NAV0  # 825
     assert c0 == pytest.approx(825.0)
-    nav1 = NAV0 * 1.0625 - c0                                     # 1,062,500 - 825 = 1,061,675
+    nav1 = NAV0 * 1.0625 - c0  # 1,062,500 - 825 = 1,061,675
     # drift re-based to the post-cost NAV: [.55, -.25, .2625] * 1e6 / 1,061,675
     w_pre1 = np.array([0.55, -0.25, 0.2625]) * NAV0 / nav1
     x1 = w_ls - w_pre1
     c1 = k_trade * np.abs(x1).sum() * nav1 + k_borrow * 0.25 * nav1
     nav2 = nav1 * (1 - 0.075) - c1
     w_pre2 = np.array([0.45, -0.275, 0.25]) * nav1 / nav2
-    x2 = w_lo - w_pre2                                            # covers the short: no borrow on d2
+    x2 = w_lo - w_pre2  # covers the short: no borrow on d2
     c2 = k_trade * np.abs(x2).sum() * nav2
     nav3 = nav2 * 1.05 - c2
     w_pre3 = np.array([0.25, 0.0, 0.55]) * nav2 / nav3
@@ -218,7 +251,7 @@ def test_constant_bps_costs_and_borrow():
     nav4 = nav3 * 1.025 - c3
 
     np.testing.assert_allclose(res.nav.to_numpy(), [NAV0, nav1, nav2, nav3, nav4], rtol=NAV_RTOL, atol=0)
-    gross = np.array([0.0625, -0.075, 0.05, 0.025])               # unaffected by costs
+    gross = np.array([0.0625, -0.075, 0.05, 0.025])  # unaffected by costs
     np.testing.assert_allclose(res.returns["gross"].to_numpy(), gross, atol=ATOL, rtol=0)
     net = np.array([nav1 / NAV0, nav2 / nav1, nav3 / nav2, nav4 / nav3]) - 1
     np.testing.assert_allclose(res.returns["net"].to_numpy(), net, atol=ATOL, rtol=0)
@@ -233,8 +266,9 @@ def test_constant_bps_costs_and_borrow():
     np.testing.assert_allclose(C["spread"].to_numpy(), 5e-4 * to * navs, rtol=NAV_RTOL, atol=1e-9)
     np.testing.assert_allclose(C["impact"].to_numpy(), 2e-4 * to * navs, rtol=NAV_RTOL, atol=1e-9)
     np.testing.assert_allclose(C["fees"].to_numpy(), 1e-4 * to * navs, rtol=NAV_RTOL, atol=1e-9)
-    np.testing.assert_allclose(C["borrow"].to_numpy(), [25.0, 0.25 * nav1 * 1e-4, 0.0, 0.0],
-                               rtol=NAV_RTOL, atol=1e-9)
+    np.testing.assert_allclose(
+        C["borrow"].to_numpy(), [25.0, 0.25 * nav1 * 1e-4, 0.0, 0.0], rtol=NAV_RTOL, atol=1e-9
+    )
     np.testing.assert_allclose(C["total"].to_numpy(), [c0, c1, c2, c3], rtol=NAV_RTOL, atol=1e-9)
 
     s = res.summary()
@@ -244,8 +278,9 @@ def test_constant_bps_costs_and_borrow():
     assert s["avg_daily_turnover"] == pytest.approx(to.mean(), abs=ATOL)
     assert s["final_nav"] == pytest.approx(nav4, rel=NAV_RTOL)
     assert s["n_days"] == 4 and s["n_delistings"] == 0 and s["n_failed_solves"] == 0
-    np.testing.assert_allclose(res.cost_bps_of_nav.to_numpy(), np.array([c0, c1, c2, c3]) / navs * 1e4,
-                               rtol=1e-12)
+    np.testing.assert_allclose(
+        res.cost_bps_of_nav.to_numpy(), np.array([c0, c1, c2, c3]) / navs * 1e4, rtol=1e-12
+    )
 
 
 # ----------------------------------------------------------------------------- delisting
@@ -286,17 +321,19 @@ def test_delisting_long_haircut_and_liquidation_cost():
     w3 = np.array([0.5, -0.25, 0.0])
     x3 = w3 - w_pre3
     c3 = 8e-4 * np.abs(x3).sum() * nav3 + 1e-4 * 0.25 * nav3
-    nav4 = nav3 * (1 + 0.5 * 0.10) - c3       # d4: A +10%, B 0, C NaN but not held -> 0
+    nav4 = nav3 * (1 + 0.5 * 0.10) - c3  # d4: A +10%, B 0, C NaN but not held -> 0
 
     np.testing.assert_allclose(res.nav.to_numpy(), [NAV0, nav1, nav2, nav3, nav4], rtol=NAV_RTOL, atol=0)
-    np.testing.assert_allclose(res.returns["gross"].to_numpy(), [0.0625, -0.075, -0.05, 0.05], atol=ATOL, rtol=0)
+    np.testing.assert_allclose(
+        res.returns["gross"].to_numpy(), [0.0625, -0.075, -0.05, 0.05], atol=ATOL, rtol=0
+    )
     np.testing.assert_allclose(res.weights.to_numpy(), [w, w, w, w3], atol=ATOL, rtol=0)
     # the liquidation is recorded as a trade on decision row d2 and counted in turnover
     np.testing.assert_allclose(res.trades.to_numpy(), [w, x1, x2 + x_liq, x3], atol=ATOL, rtol=0)
     assert res.turnover.iloc[2] == pytest.approx(np.abs(x2 + x_liq).sum(), abs=ATOL)
     C = res.costs.iloc[2]
     assert C["spread"] == pytest.approx(5e-4 * np.abs(x2).sum() * nav2 + 5e-4 * 0.175 * nav2, rel=NAV_RTOL)
-    assert C["impact"] == pytest.approx(2e-4 * np.abs(x2).sum() * nav2, rel=NAV_RTOL)   # no liq impact
+    assert C["impact"] == pytest.approx(2e-4 * np.abs(x2).sum() * nav2, rel=NAV_RTOL)  # no liq impact
     assert C["fees"] == pytest.approx(1e-4 * np.abs(x2).sum() * nav2 + 1e-4 * 0.175 * nav2, rel=NAV_RTOL)
     assert C["total"] == pytest.approx(c2_trade + c2_borrow + c2_liq, rel=NAV_RTOL)
     # liquidation priced on the continuous venue; regular trades on the simulator's
@@ -333,7 +370,7 @@ def test_delisting_short_haircut_is_a_loss():
     w_pre3 = np.array([0.5, 0.0, 0.25 * 1.1]) * nav2 / nav3
     w3 = np.array([0.5, 0.0, 0.25])
     x3 = w3 - w_pre3
-    c3 = 8e-4 * np.abs(x3).sum() * nav3          # no short left -> no borrow on d3
+    c3 = 8e-4 * np.abs(x3).sum() * nav3  # no short left -> no borrow on d3
     nav4 = nav3 * (1 + 0.5 * 0.10) - c3
 
     assert res.returns["gross"].iloc[2] == pytest.approx(-0.05, abs=ATOL)
@@ -350,7 +387,7 @@ def test_nav_nonpositive_stops_early():
     """A 3x levered long in A loses 10% on d2 after costs -> NAV <= 0 halts the run."""
     targets = {d: [3.0, 0.0, 0.0] for d in DATES[:4]}
     close = {k: list(v) for k, v in CLOSE.items()}
-    close["A"] = [100.0, 100.0, 60.0, 60.0, 60.0]     # -40% on d2: nav2 = nav1 * (1 - 1.2) < 0
+    close["A"] = [100.0, 100.0, 60.0, 60.0, 60.0]  # -40% on d2: nav2 = nav1 * (1 - 1.2) < 0
     res, _, _ = run(ConstantBpsCost(), targets, make_md(close))
     # d0: gross 0, nav1 = 1e6; d1: gross = 3 * -.4 = -1.2 -> nav2 = -200,000 -> stop
     np.testing.assert_allclose(res.nav.to_numpy(), [NAV0, NAV0, -0.2 * NAV0], rtol=NAV_RTOL)
@@ -372,6 +409,6 @@ def test_half_life_forwarded_only_when_solve_accepts_it():
     aware = HalfLifeAwareOptimizer(TARGETS)
     sim.run(md, DATES, alpha_fn, risk_fn, aware, nav0=NAV0)
     assert aware.calls and all(c["alpha_half_life_days"] == 60.0 for c in aware.calls)
-    plain = PresetOptimizer(TARGETS)                 # solve(**kw): no named parameter -> not passed
+    plain = PresetOptimizer(TARGETS)  # solve(**kw): no named parameter -> not passed
     sim.run(md, DATES, alpha_fn, risk_fn, plain, nav0=NAV0)
     assert plain.calls and all("alpha_half_life_days" not in c for c in plain.calls)

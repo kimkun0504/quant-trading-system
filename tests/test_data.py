@@ -1,4 +1,5 @@
 """Fast offline tests for qts.data (store, universe, loaders)."""
+
 from __future__ import annotations
 
 import io
@@ -45,7 +46,9 @@ def test_store_wide_round_trip_and_duckdb(tmp_path, md):
     assert any(p.name.startswith("year=") for p in (tmp_path / "store" / "prices_close").iterdir())
     sub = st.read_wide("prices_close", start="2018-06-01", end="2018-09-30")
     assert sub.index.min() >= pd.Timestamp("2018-06-01") and sub.index.max() <= pd.Timestamp("2018-09-30")
-    rows = st.duckdb_query("SELECT ticker, count(*) AS n FROM prices_close GROUP BY ticker ORDER BY ticker LIMIT 3")
+    rows = st.duckdb_query(
+        "SELECT ticker, count(*) AS n FROM prices_close GROUP BY ticker ORDER BY ticker LIMIT 3"
+    )
     assert len(rows) == 3 and rows["n"].iloc[0] == len(close)
     h1 = st.snapshot_hash("prices_close")
     st.write_wide("prices_close", close * 1.01)
@@ -72,8 +75,9 @@ def test_store_as_market_data(tmp_path, md):
 
 # --------------------------------------------------------------------------- universe
 def test_universe_mask_shapes_and_bottom_quantile(md):
-    cfg = UniverseConfig(top_n_by_mcap=50, min_price=1.0, min_adv_usd=0.0, adv_window=20,
-                         exclude_bottom_size_quantile=0.2)
+    cfg = UniverseConfig(
+        top_n_by_mcap=50, min_price=1.0, min_adv_usd=0.0, adv_window=20, exclude_bottom_size_quantile=0.2
+    )
     mask = build_universe_mask(md, cfg)
     assert mask.shape == md.close.shape and mask.dtypes.eq(bool).all()
     assert mask.index.equals(md.dates)
@@ -105,10 +109,10 @@ def test_universe_hysteresis_constructed():
     close.loc[dates[42:], "B"] = 1.0
     # C delisted (NaN) from day 100 -> leaves immediately regardless of hysteresis
     close.loc[dates[100:], "C"] = np.nan
-    md = MarketData(close=close, volume=volume, market_cap=mcap,
-                    industry=pd.Series("X", index=tick))
-    cfg = UniverseConfig(top_n_by_mcap=10, min_price=5.0, min_adv_usd=0.0, adv_window=5,
-                         exclude_bottom_size_quantile=0.0)
+    md = MarketData(close=close, volume=volume, market_cap=mcap, industry=pd.Series("X", index=tick))
+    cfg = UniverseConfig(
+        top_n_by_mcap=10, min_price=5.0, min_adv_usd=0.0, adv_window=5, exclude_bottom_size_quantile=0.0
+    )
     mask = build_universe_mask(md, cfg, refresh_days=21, exit_after_n_fails=3)
     assert not mask.iloc[:21].any().any()
     live = mask.loc[dates[21:]]
@@ -184,17 +188,23 @@ FINRA_TEXT = """accountingYearMonthNumber|symbolCode|issueName|issuerServicesGro
 
 def test_parse_finra_and_pit_lag():
     si = parse_finra_short_interest(FINRA_TEXT.encode())
-    assert list(si.columns[:5]) == ["settlement_date", "symbol", "short_interest", "avg_daily_volume", "days_to_cover"]
+    assert list(si.columns[:5]) == [
+        "settlement_date",
+        "symbol",
+        "short_interest",
+        "avg_daily_volume",
+        "days_to_cover",
+    ]
     assert len(si) == 3 and si["short_interest"].iloc[0] == 120_000_000
     assert si["settlement_date"].iloc[0] == pd.Timestamp("2024-01-12")
     assert si["days_to_cover"].iloc[1] == pytest.approx(1.6)
     dates = pd.bdate_range("2024-01-02", "2024-03-01")
     shares = pd.DataFrame(1.0e9, index=dates, columns=["AAPL", "MSFT", "OTHER"])
     ratio = to_short_interest_ratio(si, shares, lag_business_days=8)
-    pub1 = pd.Timestamp("2024-01-12") + pd.offsets.BDay(8)   # 2024-01-24
+    pub1 = pd.Timestamp("2024-01-12") + pd.offsets.BDay(8)  # 2024-01-24
     assert pub1 == pd.Timestamp("2024-01-24")
-    assert np.isnan(ratio.loc["2024-01-12", "AAPL"])          # settlement date: not yet public
-    assert np.isnan(ratio.loc["2024-01-23", "AAPL"])          # day before publication
+    assert np.isnan(ratio.loc["2024-01-12", "AAPL"])  # settlement date: not yet public
+    assert np.isnan(ratio.loc["2024-01-23", "AAPL"])  # day before publication
     assert ratio.loc["2024-01-24", "AAPL"] == pytest.approx(0.12)
     pub2 = pd.Timestamp("2024-01-31") + pd.offsets.BDay(8)
     assert ratio.loc[pub2 - pd.offsets.BDay(1), "AAPL"] == pytest.approx(0.12)
@@ -223,27 +233,37 @@ def test_sic_to_ff48_spot_checks():
     s = ff48_from_sic_series(pd.Series([2834, 6020, np.nan, "7372", 3674]))
     assert list(s) == ["Drugs", "Banks", "Other", "BusSv", "Chips"]
     from qts.data.loaders import FF48_NAMES
+
     assert len(FF48_NAMES) == 48 and len(set(FF48_NAMES)) == 48
 
 
 # --------------------------------------------------------------------------- Sharadar
 def test_sharadar_sf1_pit_uses_datekey():
-    sf1 = pd.DataFrame({
-        "ticker": ["ABC", "ABC", "ABC", "ABC", "ABC", "XYZ"],
-        "dimension": ["ARQ"] * 5 + ["MRQ"],
-        "calendardate": ["2022-12-31", "2023-03-31", "2023-06-30", "2023-09-30", "2023-12-31", "2023-03-31"],
-        "datekey": ["2023-02-15", "2023-05-10", "2023-08-09", "2023-11-08", "2024-02-20", "2023-05-01"],
-        "bvps": [10.0, 11.0, 12.0, 13.0, 14.0, 99.0],
-        "pb": [2.0, 2.2, 2.4, 2.6, 2.8, 9.0],
-        "eps": [1.0, 1.1, 1.2, 1.3, 1.4, 9.0],
-        "gp": [50.0, 55.0, 60.0, 65.0, 70.0, 9.0],
-        "assets": [1000.0, 1050.0, 1100.0, 1150.0, 1200.0, 9.0],
-    })
+    sf1 = pd.DataFrame(
+        {
+            "ticker": ["ABC", "ABC", "ABC", "ABC", "ABC", "XYZ"],
+            "dimension": ["ARQ"] * 5 + ["MRQ"],
+            "calendardate": [
+                "2022-12-31",
+                "2023-03-31",
+                "2023-06-30",
+                "2023-09-30",
+                "2023-12-31",
+                "2023-03-31",
+            ],
+            "datekey": ["2023-02-15", "2023-05-10", "2023-08-09", "2023-11-08", "2024-02-20", "2023-05-01"],
+            "bvps": [10.0, 11.0, 12.0, 13.0, 14.0, 99.0],
+            "pb": [2.0, 2.2, 2.4, 2.6, 2.8, 9.0],
+            "eps": [1.0, 1.1, 1.2, 1.3, 1.4, 9.0],
+            "gp": [50.0, 55.0, 60.0, 65.0, 70.0, 9.0],
+            "assets": [1000.0, 1050.0, 1100.0, 1150.0, 1200.0, 9.0],
+        }
+    )
     dates = pd.bdate_range("2023-01-02", "2024-03-29")
     out = sharadar_sf1_to_pit_fundamentals(sf1, dimension="ARQ", dates=dates, lag_days=0)
     bvps = out["bvps"]
-    assert "XYZ" not in bvps.columns                      # MRQ rows filtered
-    assert np.isnan(bvps.loc["2023-01-31", "ABC"])        # before first filing
+    assert "XYZ" not in bvps.columns  # MRQ rows filtered
+    assert np.isnan(bvps.loc["2023-01-31", "ABC"])  # before first filing
     assert bvps.loc["2023-02-15", "ABC"] == 10.0
     # Q1-2023 (calendardate 2023-03-31) must NOT be visible until datekey 2023-05-10
     assert bvps.loc["2023-03-31", "ABC"] == 10.0
@@ -265,28 +285,39 @@ def test_sharadar_sf1_pit_uses_datekey():
     assert out_d["bvps"].loc["2023-05-11", "ABC"] == 11.0
     # price-based ratios use the as-traded close
     close_raw = pd.DataFrame(20.0, index=dates, columns=["ABC"])
-    out_p = sharadar_sf1_to_pit_fundamentals(sf1, dimension="ARQ", dates=dates, lag_days=0, close_raw=close_raw)
+    out_p = sharadar_sf1_to_pit_fundamentals(
+        sf1, dimension="ARQ", dates=dates, lag_days=0, close_raw=close_raw
+    )
     assert out_p["book_to_price"].loc["2023-05-10", "ABC"] == pytest.approx(11.0 / 20.0)
     assert out_p["earnings_yield"].loc["2023-05-10", "ABC"] == pytest.approx(1.1 / 20.0)
     # an adjusted close is refused unless the caller asserts it is raw
     with pytest.raises(ValueError, match="unadjusted"):
         sharadar_sf1_to_pit_fundamentals(sf1, dimension="ARQ", dates=dates, close=close_raw)
-    out_c = sharadar_sf1_to_pit_fundamentals(sf1, dimension="ARQ", dates=dates, lag_days=0, close=close_raw,
-                                             price_is_adjusted=False)
+    out_c = sharadar_sf1_to_pit_fundamentals(
+        sf1, dimension="ARQ", dates=dates, lag_days=0, close=close_raw, price_is_adjusted=False
+    )
     pd.testing.assert_frame_equal(out_c["book_to_price"], out_p["book_to_price"])
 
 
 def test_sharadar_ratios_use_raw_close_across_split():
     """A 2:1 split after the filing: the adjusted close halves the pre-split
     price, so bvps / adjusted close would double B/P; the raw close does not."""
-    sf1 = pd.DataFrame({"ticker": ["ABC"], "dimension": ["ART"], "calendardate": ["2023-03-31"],
-                        "datekey": ["2023-05-10"], "bvps": [10.0], "eps": [2.0]})
+    sf1 = pd.DataFrame(
+        {
+            "ticker": ["ABC"],
+            "dimension": ["ART"],
+            "calendardate": ["2023-03-31"],
+            "datekey": ["2023-05-10"],
+            "bvps": [10.0],
+            "eps": [2.0],
+        }
+    )
     dates = pd.bdate_range("2023-05-01", "2023-07-31")
     split = pd.Timestamp("2023-06-15")
     raw = pd.DataFrame(40.0, index=dates, columns=["ABC"])
     raw.loc[split:, "ABC"] = 20.0
     adjusted = pd.DataFrame(20.0, index=dates, columns=["ABC"])
-    out = sharadar_sf1_to_pit_fundamentals(sf1, dates=dates, close_raw=raw)   # default ART, lag 1
+    out = sharadar_sf1_to_pit_fundamentals(sf1, dates=dates, close_raw=raw)  # default ART, lag 1
     bp = out["book_to_price"]["ABC"]
     assert np.isnan(bp.loc["2023-05-10"]) and bp.loc["2023-05-11"] == pytest.approx(10.0 / 40.0)
     # after the split the as-reported bvps is on the old share basis (until the next filing)
@@ -299,16 +330,18 @@ def test_sharadar_ratios_use_raw_close_across_split():
 def test_sharadar_asset_growth_ignores_later_restatements():
     """A restated prior-year row filed *after* the current row's datekey must not
     change the asset growth visible at that datekey (audit finding 6)."""
-    sf1 = pd.DataFrame({
-        "ticker": ["ABC"] * 3,
-        "dimension": ["ARQ"] * 3,
-        "calendardate": ["2019-12-31", "2020-12-31", "2019-12-31"],
-        "datekey": ["2020-02-14", "2021-02-16", "2021-06-01"],     # last row: 10-K/A restating FY2019
-        "assets": [1000.0, 1200.0, 1500.0],
-    })
+    sf1 = pd.DataFrame(
+        {
+            "ticker": ["ABC"] * 3,
+            "dimension": ["ARQ"] * 3,
+            "calendardate": ["2019-12-31", "2020-12-31", "2019-12-31"],
+            "datekey": ["2020-02-14", "2021-02-16", "2021-06-01"],  # last row: 10-K/A restating FY2019
+            "assets": [1000.0, 1200.0, 1500.0],
+        }
+    )
     dates = pd.bdate_range("2020-01-01", "2021-12-31")
     ag = sharadar_sf1_to_pit_fundamentals(sf1, dimension="ARQ", dates=dates, lag_days=0)["asset_growth"]
-    assert ag.loc["2021-02-16", "ABC"] == pytest.approx(0.2)        # 1200/1000 - 1 with the original filing
+    assert ag.loc["2021-02-16", "ABC"] == pytest.approx(0.2)  # 1200/1000 - 1 with the original filing
     assert ag.loc["2021-05-28", "ABC"] == pytest.approx(0.2)
     # the restated FY2019 row has no FY2018 row of its own, so it contributes no growth value
     # (pit_forward_fill carries the last *valid* value); the leaked -0.2 must never appear
@@ -325,8 +358,11 @@ def test_pit_forward_fill_never_leaks():
 
 # --------------------------------------------------------------------------- store upsert (#33)
 def _panel(dates, tickers, base):
-    return pd.DataFrame(base + np.arange(len(dates) * len(tickers), dtype=float).reshape(len(dates), -1),
-                        index=dates, columns=pd.Index(tickers, name="ticker"))
+    return pd.DataFrame(
+        base + np.arange(len(dates) * len(tickers), dtype=float).reshape(len(dates), -1),
+        index=dates,
+        columns=pd.Index(tickers, name="ticker"),
+    )
 
 
 def test_store_append_one_day_keeps_rest_of_year(tmp_path):
@@ -334,8 +370,8 @@ def test_store_append_one_day_keeps_rest_of_year(tmp_path):
     dates = pd.bdate_range("2021-01-04", "2021-03-31")
     tick = ["A", "B", "C"]
     full = _panel(dates, tick, 100.0)
-    st.write_wide("px", full.iloc[:-1])                     # everything but the last day
-    st.write_wide("px", full.iloc[-1:])                     # append one day
+    st.write_wide("px", full.iloc[:-1])  # everything but the last day
+    st.write_wide("px", full.iloc[-1:])  # append one day
     back = st.read_wide("px")
     pd.testing.assert_frame_equal(back, full, check_names=False, check_freq=False)
     # long tables upsert too
@@ -347,12 +383,12 @@ def test_store_append_one_day_keeps_rest_of_year(tmp_path):
 
 def test_store_rewrite_day_overwrites_values_and_nan_deletes(tmp_path):
     st = ParquetStore(tmp_path / "s")
-    dates = pd.bdate_range("2021-12-27", "2022-01-07")       # spans two year partitions
+    dates = pd.bdate_range("2021-12-27", "2022-01-07")  # spans two year partitions
     full = _panel(dates, ["A", "B"], 1.0)
     st.write_wide("px", full)
     fix = full.loc[["2021-12-30", "2022-01-03"]].copy()
     fix.loc[:, "A"] = -1.0
-    fix.loc["2022-01-03", "B"] = np.nan                     # NaN deletes the stored cell
+    fix.loc["2022-01-03", "B"] = np.nan  # NaN deletes the stored cell
     st.write_wide("px", fix)
     back = st.read_wide("px")
     assert back.shape == full.shape
@@ -360,13 +396,14 @@ def test_store_rewrite_day_overwrites_values_and_nan_deletes(tmp_path):
     assert back.loc["2021-12-30", "B"] == full.loc["2021-12-30", "B"]
     assert np.isnan(back.loc["2022-01-03", "B"])
     fixed = pd.DatetimeIndex(["2021-12-30", "2022-01-03"])
-    pd.testing.assert_frame_equal(back.drop(index=fixed), full.drop(index=fixed), check_names=False,
-                                  check_freq=False)
+    pd.testing.assert_frame_equal(
+        back.drop(index=fixed), full.drop(index=fixed), check_names=False, check_freq=False
+    )
     # explicit partition rewrite keeps only the new rows of the touched year(s)
     st.write_wide("px", full.loc[["2022-01-04"]], mode="replace_partition")
     back2 = st.read_wide("px")
     assert list(back2.loc["2022"].index) == [pd.Timestamp("2022-01-04")]
-    assert len(back2.loc["2021"]) == 5                      # 2021 partition untouched
+    assert len(back2.loc["2021"]) == 5  # 2021 partition untouched
     with pytest.warns(DeprecationWarning):
         st.write_wide("px", full.loc[["2022-01-05"]], mode="overwrite_partitions")
     with pytest.raises(ValueError):
@@ -375,6 +412,7 @@ def test_store_rewrite_day_overwrites_values_and_nan_deletes(tmp_path):
 
 def test_store_write_is_atomic(tmp_path, monkeypatch):
     import qts.data.store as store_mod
+
     st = ParquetStore(tmp_path / "s")
     dates = pd.bdate_range("2021-01-04", periods=5)
     full = _panel(dates, ["A"], 1.0)
@@ -384,8 +422,8 @@ def test_store_write_is_atomic(tmp_path, monkeypatch):
     real = store_mod.pq.write_table
 
     def boom(table, where, **kw):
-        real(table, where, **kw)               # temp file is fully written ...
-        raise OSError("disk full")             # ... then the process "dies" before os.replace
+        real(table, where, **kw)  # temp file is fully written ...
+        raise OSError("disk full")  # ... then the process "dies" before os.replace
 
     monkeypatch.setattr(store_mod.pq, "write_table", boom)
     with pytest.raises(OSError):
@@ -437,8 +475,9 @@ def test_synthetic_splits_raw_vs_adjusted():
         assert abs(md.returns[t].iloc[pos]) < 0.3
     # dollar volume and market cap are invariant to the share basis
     np.testing.assert_allclose(md.dollar_volume.to_numpy(), (base.close * base.volume).to_numpy(), rtol=1e-12)
-    np.testing.assert_allclose((md.close_raw * md.shares_outstanding).to_numpy(), md.market_cap.to_numpy(),
-                               rtol=1e-12)
+    np.testing.assert_allclose(
+        (md.close_raw * md.shares_outstanding).to_numpy(), md.market_cap.to_numpy(), rtol=1e-12
+    )
     # style factor returns: all four, date x factor
     fr = md.extra["true_style_factor_returns"]
     assert list(fr.columns) == ["size", "value", "quality", "investment"] and fr.index.equals(md.dates)
@@ -453,14 +492,21 @@ def test_market_data_trade_price_and_slice():
     vol = pd.DataFrame(100.0, index=dates, columns=tick)
     md = MarketData(close=adj, volume=vol, market_cap=adj * 1e6, industry=pd.Series("X", index=tick))
     assert md.trade_price() is md.close
-    md2 = MarketData(close=adj, volume=vol, market_cap=adj * 1e6, industry=pd.Series("X", index=tick),
-                     close_raw=raw, shares_outstanding=vol * 5)
+    md2 = MarketData(
+        close=adj,
+        volume=vol,
+        market_cap=adj * 1e6,
+        industry=pd.Series("X", index=tick),
+        close_raw=raw,
+        shares_outstanding=vol * 5,
+    )
     md2.validate()
     assert (md2.dollar_volume == 2000.0).all().all()
     s = md2.slice_until(dates[4])
     assert len(s.close_raw) == 5 and len(s.shares_outstanding) == 5 and s.industry is md2.industry
-    bad = MarketData(close=adj, volume=vol, market_cap=adj, industry=pd.Series("X", index=tick),
-                     close_raw=raw.iloc[:-1])
+    bad = MarketData(
+        close=adj, volume=vol, market_cap=adj, industry=pd.Series("X", index=tick), close_raw=raw.iloc[:-1]
+    )
     with pytest.raises(ValueError, match="close_raw"):
         bad.validate()
 
@@ -472,44 +518,61 @@ def test_price_screen_uses_raw_price():
     tick = pd.Index(["A", "B"], name="ticker")
     adj = pd.DataFrame(4.0, index=dates, columns=tick)
     raw = adj.copy()
-    raw["A"] = 12.0                              # 3:1 split after the sample
+    raw["A"] = 12.0  # 3:1 split after the sample
     vol = pd.DataFrame(1e6, index=dates, columns=tick)
-    cfg = UniverseConfig(top_n_by_mcap=10, min_price=5.0, min_adv_usd=5e6, adv_window=5,
-                         exclude_bottom_size_quantile=0.0)
+    cfg = UniverseConfig(
+        top_n_by_mcap=10, min_price=5.0, min_adv_usd=5e6, adv_window=5, exclude_bottom_size_quantile=0.0
+    )
     md_adj = MarketData(close=adj, volume=vol, market_cap=adj * 1e8, industry=pd.Series("X", index=tick))
     assert not raw_eligibility(md_adj, cfg).any().any()
-    md_raw = MarketData(close=adj, volume=vol, market_cap=adj * 1e8, industry=pd.Series("X", index=tick),
-                        close_raw=raw)
+    md_raw = MarketData(
+        close=adj, volume=vol, market_cap=adj * 1e8, industry=pd.Series("X", index=tick), close_raw=raw
+    )
     el = raw_eligibility(md_raw, cfg)
-    assert el["A"].iloc[10:].all() and not el["B"].any()   # A: $12 x 1e6 sh = $12M ADV; B: $4 < $5
+    assert el["A"].iloc[10:].all() and not el["B"].any()  # A: $12 x 1e6 sh = $12M ADV; B: $4 < $5
 
 
 def test_universe_refresh_settings_from_config(md):
-    cfg = UniverseConfig(top_n_by_mcap=30, min_price=1.0, min_adv_usd=0.0, adv_window=20,
-                         exclude_bottom_size_quantile=0.0, refresh_days=5, exit_after_n_fails=1)
+    cfg = UniverseConfig(
+        top_n_by_mcap=30,
+        min_price=1.0,
+        min_adv_usd=0.0,
+        adv_window=20,
+        exclude_bottom_size_quantile=0.0,
+        refresh_days=5,
+        exit_after_n_fails=1,
+    )
     m_cfg = build_universe_mask(md, cfg)
-    m_kw = build_universe_mask(md, UniverseConfig(top_n_by_mcap=30, min_price=1.0, min_adv_usd=0.0, adv_window=20,
-                                                  exclude_bottom_size_quantile=0.0), refresh_days=5,
-                               exit_after_n_fails=1)
+    m_kw = build_universe_mask(
+        md,
+        UniverseConfig(
+            top_n_by_mcap=30, min_price=1.0, min_adv_usd=0.0, adv_window=20, exclude_bottom_size_quantile=0.0
+        ),
+        refresh_days=5,
+        exit_after_n_fails=1,
+    )
     pd.testing.assert_frame_equal(m_cfg, m_kw)
-    assert not m_cfg.equals(build_universe_mask(md, cfg, refresh_days=21))   # kwargs override cfg
+    assert not m_cfg.equals(build_universe_mask(md, cfg, refresh_days=21))  # kwargs override cfg
     assert UniverseConfig().refresh_days == 21 and UniverseConfig().exit_after_n_fails == 3
 
 
 def test_apply_mask_handles_new_fields():
     md = generate(SyntheticSpec(n_stocks=30, n_days=120, seed=2, n_splits=2))
-    md.industry_history = pd.DataFrame([md.industry.reindex(md.tickers).to_numpy()], index=md.dates[:1],
-                                       columns=md.tickers)
+    md.industry_history = pd.DataFrame(
+        [md.industry.reindex(md.tickers).to_numpy()], index=md.dates[:1], columns=md.tickers
+    )
     mask = pd.DataFrame(True, index=md.dates, columns=md.tickers)
     mask.iloc[:, :5] = False
     mask.iloc[:60, 5] = False
     m2 = apply_mask(md, mask)
     keep = md.tickers[5:]
     assert list(m2.tickers) == list(keep)
-    pd.testing.assert_frame_equal(m2.close_raw, md.close_raw[keep])               # prices intact
-    assert m2.shares_outstanding.iloc[:60, 0].isna().all() and m2.shares_outstanding.iloc[60:, 0].notna().all()
+    pd.testing.assert_frame_equal(m2.close_raw, md.close_raw[keep])  # prices intact
+    assert (
+        m2.shares_outstanding.iloc[:60, 0].isna().all() and m2.shares_outstanding.iloc[60:, 0].notna().all()
+    )
     assert list(m2.industry_history.columns) == list(keep)
-    fr = m2.extra["true_style_factor_returns"]                                     # not a ticker panel
+    fr = m2.extra["true_style_factor_returns"]  # not a ticker panel
     pd.testing.assert_frame_equal(fr, md.extra["true_style_factor_returns"])
 
 
@@ -519,13 +582,15 @@ def test_industry_as_of_is_point_in_time():
     tick = pd.Index(["A", "B", "C"], name="ticker")
     px = pd.DataFrame(10.0, index=dates, columns=tick)
     static = pd.Series({"A": "Tech", "B": "Banks", "C": "Oil"})
-    hist = pd.DataFrame({"A": ["Tech", "Comms"], "B": ["Banks", np.nan], "C": [np.nan, np.nan]},
-                        index=pd.DatetimeIndex([dates[0], dates[20]]))
+    hist = pd.DataFrame(
+        {"A": ["Tech", "Comms"], "B": ["Banks", np.nan], "C": [np.nan, np.nan]},
+        index=pd.DatetimeIndex([dates[0], dates[20]]),
+    )
     md = MarketData(close=px, volume=px, market_cap=px, industry=static, industry_history=hist)
     md.validate()
     assert md.industry_as_of(dates[19]).to_dict() == {"A": "Tech", "B": "Banks", "C": "Oil"}
     assert md.industry_as_of(dates[20])["A"] == "Comms"
-    assert md.industry_as_of(dates[25])["B"] == "Banks"                 # NaN later row -> carried forward
+    assert md.industry_as_of(dates[25])["B"] == "Banks"  # NaN later row -> carried forward
     assert np.isnan(md.industry_as_of(dates[25], fallback=False)["C"])  # never classified
     cut = md.slice_until(dates[10])
     assert len(cut.industry_history) == 1 and cut.industry_as_of(dates[29])["A"] == "Tech"
@@ -536,17 +601,27 @@ def test_industry_as_of_is_point_in_time():
 # --------------------------------------------------------------------------- shares outstanding (#44)
 def test_shares_outstanding_panel_refuses_adjusted_close():
     from qts.data import shares_outstanding_panel
+
     md = generate(SyntheticSpec(n_stocks=10, n_days=40, seed=1, n_splits=1))
     assert shares_outstanding_panel(md) is md.shares_outstanding
-    md_raw_only = MarketData(close=md.close, volume=md.volume, market_cap=md.market_cap, industry=md.industry,
-                             close_raw=md.close_raw)
-    np.testing.assert_allclose(shares_outstanding_panel(md_raw_only).to_numpy(), md.shares_outstanding.to_numpy())
+    md_raw_only = MarketData(
+        close=md.close,
+        volume=md.volume,
+        market_cap=md.market_cap,
+        industry=md.industry,
+        close_raw=md.close_raw,
+    )
+    np.testing.assert_allclose(
+        shares_outstanding_panel(md_raw_only).to_numpy(), md.shares_outstanding.to_numpy()
+    )
     md_adj = MarketData(close=md.close, volume=md.volume, market_cap=md.market_cap, industry=md.industry)
     with pytest.raises(ValueError, match="split-adjusted"):
         shares_outstanding_panel(md_adj)
     with pytest.raises(TypeError):
-        to_short_interest_ratio(pd.DataFrame(columns=["settlement_date", "symbol", "short_interest"]),
-                                md.shares_outstanding.iloc[0])
+        to_short_interest_ratio(
+            pd.DataFrame(columns=["settlement_date", "symbol", "short_interest"]),
+            md.shares_outstanding.iloc[0],
+        )
 
 
 def test_universe_price_screen_uses_as_traded_price_across_split():
@@ -559,22 +634,29 @@ def test_universe_price_screen_uses_as_traded_price_across_split():
     adj = pd.DataFrame({"SPLT": 2.0, "BIG": 50.0}, index=dates)
     adj.columns = tick
     raw = adj.copy()
-    raw.iloc[:split_pos, 0] = 8.0                       # 4:1 split on dates[split_pos]
+    raw.iloc[:split_pos, 0] = 8.0  # 4:1 split on dates[split_pos]
     shares_traded = pd.DataFrame({"SPLT": 1e6, "BIG": 1e6}, index=dates)
     shares_traded.columns = tick
-    shares_traded.iloc[split_pos:, 0] = 4e6             # actual shares x4 after the split
+    shares_traded.iloc[split_pos:, 0] = 4e6  # actual shares x4 after the split
     so = pd.DataFrame(1e8, index=dates, columns=tick)
     so.iloc[split_pos:, 0] = 4e8
     mcap = raw * so
-    md = MarketData(close=adj, volume=shares_traded, market_cap=mcap, industry=pd.Series("X", index=tick),
-                    close_raw=raw, shares_outstanding=so)
+    md = MarketData(
+        close=adj,
+        volume=shares_traded,
+        market_cap=mcap,
+        industry=pd.Series("X", index=tick),
+        close_raw=raw,
+        shares_outstanding=so,
+    )
     md.validate()
-    cfg = UniverseConfig(top_n_by_mcap=10, min_price=5.0, min_adv_usd=1e6, adv_window=10,
-                         exclude_bottom_size_quantile=0.0)
+    cfg = UniverseConfig(
+        top_n_by_mcap=10, min_price=5.0, min_adv_usd=1e6, adv_window=10, exclude_bottom_size_quantile=0.0
+    )
     el = raw_eligibility(md, cfg)
-    warm = 5                                            # min_periods of the ADV window
-    assert el["SPLT"].iloc[warm:split_pos].all()        # $8 as traded >= $5
-    assert not el["SPLT"].iloc[split_pos:].any()        # $2 as traded < $5
+    warm = 5  # min_periods of the ADV window
+    assert el["SPLT"].iloc[warm:split_pos].all()  # $8 as traded >= $5
+    assert not el["SPLT"].iloc[split_pos:].any()  # $2 as traded < $5
     assert el["BIG"].iloc[warm:].all()
     # dollar ADV is unchanged by the split ($8 x 1m = $2 x 4m)
     assert (md.dollar_volume["SPLT"] == 8e6).all()

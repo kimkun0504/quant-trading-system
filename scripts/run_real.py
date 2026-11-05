@@ -13,6 +13,7 @@ Example (after loading Norgate/Sharadar panels into ./data/store):
 Prototype with yfinance (survivorship-biased; for plumbing only):
     python scripts/run_real.py --yfinance AAPL MSFT ... --start 2015-01-01
 """
+
 import sys
 
 from qts.cli import main

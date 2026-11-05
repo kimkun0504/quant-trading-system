@@ -1,5 +1,6 @@
 """Portfolio construction layer: alpha scaling, single-period convex
 optimizer on a factor risk model, vol targeting and diagnostics."""
+
 from qts.portfolio.alpha_scaling import (
     combine_in_forecast_space,
     cost_implied_holding_days,

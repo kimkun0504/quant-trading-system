@@ -42,6 +42,7 @@ at +-3 standard deviations.  We apply: cap-weighted z-score -> clip to [-3, 3]
 -> re-standardize (so the sd is ~1 after trimming) -> fill missing with 0
 (a missing style exposure is treated as "average", the USE4 convention).
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -65,8 +66,16 @@ BETA_SHRINK = 1.0 / 3.0
 WINSOR_SD = 3.0
 
 SUPPORTED_STYLES = [
-    "beta", "size", "momentum", "value", "residual_vol", "liquidity",
-    "short_term_reversal", "quality", "investment", "short_interest",
+    "beta",
+    "size",
+    "momentum",
+    "value",
+    "residual_vol",
+    "liquidity",
+    "short_term_reversal",
+    "quality",
+    "investment",
+    "short_interest",
 ]
 
 
@@ -108,20 +117,32 @@ def raw_style_panels(md: MarketData, styles: Iterable[str]) -> dict[str, pd.Data
             assert resid_var is not None
             out[s] = np.sqrt(resid_var)
         elif s == "liquidity":
-            turnover = (md.dollar_volume / md.market_cap.replace(0.0, np.nan))
-            out[s] = np.log(turnover.rolling(LIQUIDITY_WINDOW, min_periods=LIQUIDITY_WINDOW // 3)
-                            .mean().where(lambda x: x > 0))
+            turnover = md.dollar_volume / md.market_cap.replace(0.0, np.nan)
+            out[s] = np.log(
+                turnover.rolling(LIQUIDITY_WINDOW, min_periods=LIQUIDITY_WINDOW // 3)
+                .mean()
+                .where(lambda x: x > 0)
+            )
         elif s == "short_term_reversal":
             out[s] = md.close / md.close.shift(REVERSAL_WINDOW) - 1.0
         elif s == "quality":
-            out[s] = (md.gross_profitability.copy() if md.gross_profitability is not None
-                      else pd.DataFrame(np.nan, index=md.dates, columns=md.tickers))
+            out[s] = (
+                md.gross_profitability.copy()
+                if md.gross_profitability is not None
+                else pd.DataFrame(np.nan, index=md.dates, columns=md.tickers)
+            )
         elif s == "investment":
-            out[s] = (-md.asset_growth if md.asset_growth is not None
-                      else pd.DataFrame(np.nan, index=md.dates, columns=md.tickers))
+            out[s] = (
+                -md.asset_growth
+                if md.asset_growth is not None
+                else pd.DataFrame(np.nan, index=md.dates, columns=md.tickers)
+            )
         elif s == "short_interest":
-            out[s] = (md.short_interest_ratio.copy() if md.short_interest_ratio is not None
-                      else pd.DataFrame(np.nan, index=md.dates, columns=md.tickers))
+            out[s] = (
+                md.short_interest_ratio.copy()
+                if md.short_interest_ratio is not None
+                else pd.DataFrame(np.nan, index=md.dates, columns=md.tickers)
+            )
     return out
 
 
@@ -161,8 +182,9 @@ def industry_panel(md: MarketData, dates: pd.DatetimeIndex | None = None) -> pd.
     grid = ih.index.union(dates)
     lab = ih.reindex(grid).ffill().reindex(dates)
     static = md.industry.reindex(md.tickers)
-    lab = lab.where(lab.notna(), pd.DataFrame([static.to_numpy()] * len(dates), index=dates,
-                                              columns=md.tickers))
+    lab = lab.where(
+        lab.notna(), pd.DataFrame([static.to_numpy()] * len(dates), index=dates, columns=md.tickers)
+    )
     lab.columns = md.tickers
     return lab
 
@@ -207,9 +229,17 @@ class ExposureHistory(dict):
     ~0.25 GB (float32) against ~2.7 GB for the frames (``memory_report``).
     """
 
-    def __init__(self, dates: pd.DatetimeIndex, tickers: pd.Index, factors: pd.Index,
-                 static: np.ndarray, styles: np.ndarray, valid: np.ndarray,
-                 industry_codes: np.ndarray | None = None, n_industries: int = 0):
+    def __init__(
+        self,
+        dates: pd.DatetimeIndex,
+        tickers: pd.Index,
+        factors: pd.Index,
+        static: np.ndarray,
+        styles: np.ndarray,
+        valid: np.ndarray,
+        industry_codes: np.ndarray | None = None,
+        n_industries: int = 0,
+    ):
         super().__init__()
         self.dates = pd.DatetimeIndex(dates)
         self.tickers = pd.Index(tickers)
@@ -275,8 +305,10 @@ class ExposureHistory(dict):
     __hash__ = None  # type: ignore[assignment]
 
     def __repr__(self) -> str:
-        return (f"ExposureHistory(T={len(self.dates)}, N={len(self.tickers)}, K={len(self.factors)}, "
-                f"styles dtype={self.styles.dtype}, {self.nbytes / 1e6:.1f} MB)")
+        return (
+            f"ExposureHistory(T={len(self.dates)}, N={len(self.tickers)}, K={len(self.factors)}, "
+            f"styles dtype={self.styles.dtype}, {self.nbytes / 1e6:.1f} MB)"
+        )
 
     # ---------------------------------------------------------------- extras
     def as_of(self, date) -> pd.DataFrame:
@@ -303,12 +335,19 @@ class ExposureHistory(dict):
         frames_values = n_valid * K * 8
         # per-frame overhead: ticker index (object, ~8 B pointer + shared strings) + BlockManager
         frames_index = n_valid * 8 + len(self.dates) * 2_000
-        return {"tensor_bytes": float(self.nbytes), "frames_bytes_est": float(frames_values + frames_index),
-                "ratio": float((frames_values + frames_index) / max(self.nbytes, 1))}
+        return {
+            "tensor_bytes": float(self.nbytes),
+            "frames_bytes_est": float(frames_values + frames_index),
+            "ratio": float((frames_values + frames_index) / max(self.nbytes, 1)),
+        }
 
 
-def exposure_history(md: MarketData, dates: Iterable[pd.Timestamp] | None = None,
-                     cfg: RiskConfig | None = None, dtype=np.float64) -> ExposureHistory:
+def exposure_history(
+    md: MarketData,
+    dates: Iterable[pd.Timestamp] | None = None,
+    cfg: RiskConfig | None = None,
+    dtype=np.float64,
+) -> ExposureHistory:
     """Exposure matrices for many dates, as an :class:`ExposureHistory`.
 
     All rolling statistics are computed *once* on the wide panels (vectorized),
@@ -330,16 +369,19 @@ def exposure_history(md: MarketData, dates: Iterable[pd.Timestamp] | None = None
     rows = rows[keep]
     sel_dates = dates[keep]
     codes: np.ndarray | None = None
-    if md.industry_history is None:                      # static classification: fast path
+    if md.industry_history is None:  # static classification: fast path
         dummies = industry_dummies(md.industry, md.tickers)
         inds = list(dummies.columns)
         static = np.column_stack([np.ones(N)] + [dummies[c].values for c in dummies.columns])
-    else:                                                # dated classification (finding #43)
+    else:  # dated classification (finding #43)
         inds = _industry_labels(md)
         panel = industry_panel(md, sel_dates)
         assert panel is not None
-        codes = (pd.Categorical(panel.to_numpy().ravel(), categories=inds).codes
-                 .reshape(len(sel_dates), N).astype(np.int32))
+        codes = (
+            pd.Categorical(panel.to_numpy().ravel(), categories=inds)
+            .codes.reshape(len(sel_dates), N)
+            .astype(np.int32)
+        )
         static = np.ones((N, 1))
     cols = pd.Index([MARKET_FACTOR, *inds, *styles], name="factor")
     if styles:
@@ -349,8 +391,9 @@ def exposure_history(md: MarketData, dates: Iterable[pd.Timestamp] | None = None
     else:
         style_arr = np.zeros((len(rows), N, 0), dtype=dtype)
     valid = (md.close.notna() & (md.market_cap > 0)).values[rows]
-    return ExposureHistory(sel_dates, tickers_all, cols, static, style_arr, valid,
-                           industry_codes=codes, n_industries=len(inds))
+    return ExposureHistory(
+        sel_dates, tickers_all, cols, static, style_arr, valid, industry_codes=codes, n_industries=len(inds)
+    )
 
 
 def build_exposures(md: MarketData, date: pd.Timestamp, cfg: RiskConfig | None = None) -> pd.DataFrame:

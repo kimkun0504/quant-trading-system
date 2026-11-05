@@ -11,6 +11,7 @@
     surrogate (``qts.tcost.model`` docstring) stays within a measured relative
     error of the exact routed estimate -- printed and bounded below.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -24,16 +25,23 @@ from qts.tcost import TransactionCostModel
 cp = pytest.importorskip("cvxpy")
 
 NAV = 1e7
-DATE = pd.Timestamp("2026-06-15")          # SEC and TAF both non-zero (no fee holiday)
+DATE = pd.Timestamp("2026-06-15")  # SEC and TAF both non-zero (no fee holiday)
 
 
 def _snapshot(n: int, seed: int, auction_share: float = 0.09) -> LiquiditySnapshot:
     rng = np.random.default_rng(seed)
     idx = pd.Index([f"T{i:03d}" for i in range(n)])
-    return LiquiditySnapshot(date=DATE, tickers=idx, price=rng.uniform(5, 300, n),
-                             adv_usd=np.exp(rng.uniform(np.log(5e6), np.log(5e8), n)), adv_shares=None,
-                             sigma_daily=rng.uniform(0.008, 0.045, n), half_spread=rng.uniform(0.5e-4, 15e-4, n),
-                             borrow_fee=rng.uniform(0.003, 0.2, n), auction_share=auction_share)
+    return LiquiditySnapshot(
+        date=DATE,
+        tickers=idx,
+        price=rng.uniform(5, 300, n),
+        adv_usd=np.exp(rng.uniform(np.log(5e6), np.log(5e8), n)),
+        adv_shares=None,
+        sigma_daily=rng.uniform(0.008, 0.045, n),
+        half_spread=rng.uniform(0.5e-4, 15e-4, n),
+        borrow_fee=rng.uniform(0.003, 0.2, n),
+        auction_share=auction_share,
+    )
 
 
 def _trades_no_min_no_cap(snap: LiquiditySnapshot, seed: int) -> pd.Series:
@@ -64,14 +72,17 @@ def test_cvx_terms_equal_estimate(venue, seed):
     assert _cvx_value(tcm, trades, snap, venue) == pytest.approx(exact, rel=1e-10, abs=0)
     # spread + impact alone (no fees) also match, and per name
     no_fee = float((est["spread_usd"] + est["impact_usd"]).sum()) / NAV
-    assert _cvx_value(tcm, trades, snap, venue, include_explicit=False) == pytest.approx(no_fee, rel=1e-10, abs=0)
+    assert _cvx_value(tcm, trades, snap, venue, include_explicit=False) == pytest.approx(
+        no_fee, rel=1e-10, abs=0
+    )
     # the optimizer passes an old dict snapshot today: same numbers
     assert _cvx_value(tcm, trades, snap.to_dict(), venue) == pytest.approx(exact, rel=1e-10, abs=0)
     for j in np.flatnonzero(trades.to_numpy())[:5]:
         one = trades.iloc[[j]]
         one_snap = snap.reindex(one.index)
         assert _cvx_value(tcm, one, one_snap, venue) == pytest.approx(
-            float(tcm.estimate(one, one_snap, venue)["total_usd"].iloc[0]) / NAV, rel=1e-10, abs=0)
+            float(tcm.estimate(one, one_snap, venue)["total_usd"].iloc[0]) / NAV, rel=1e-10, abs=0
+        )
 
 
 def test_cvx_terms_equal_estimate_non_default_exponent_and_heavy_day():
@@ -102,9 +113,10 @@ def test_routed_small_trades_cheaper_and_surrogate_error_bounded():
     n = len(snap)
     # (b1) trades inside the auction cap (<= 2% of auction volume): routed <= continuous
     cap = tcm.auction_cap_usd(snap)
-    min_usd = 150 * snap.price.to_numpy()                       # >= 150 shares: one commission minimum at most
-    small = pd.Series(np.maximum(rng.uniform(0.05, 1.0, n) * cap, min_usd) * np.sign(rng.normal(size=n)),
-                      index=snap.tickers)
+    min_usd = 150 * snap.price.to_numpy()  # >= 150 shares: one commission minimum at most
+    small = pd.Series(
+        np.maximum(rng.uniform(0.05, 1.0, n) * cap, min_usd) * np.sign(rng.normal(size=n)), index=snap.tickers
+    )
     inside = np.abs(small.to_numpy()) <= cap
     r = tcm.estimate(small, snap, "routed")["total_usd"].to_numpy()
     c = tcm.estimate(small, snap, "continuous")["total_usd"].to_numpy()
@@ -118,9 +130,11 @@ def test_routed_small_trades_cheaper_and_surrogate_error_bounded():
     trades = pd.Series(q * np.sign(rng.normal(size=n)), index=snap.tickers)
     errs, est = _routed_errors(tcm, snap, trades)
     split = est.auction_fraction.to_numpy()[np.flatnonzero(trades.to_numpy())] < 1.0
-    print(f"\n[routed surrogate, D2 defaults, normal day] relative error (cvx*nav - estimate)/estimate over "
-          f"{len(errs)} trades: max {errs.max():+.3%}, min {errs.min():+.3%}, "
-          f"max |err| on split trades {np.abs(errs[split]).max():.3%}, on auction-only {np.abs(errs[~split]).max():.2e}")
+    print(
+        f"\n[routed surrogate, D2 defaults, normal day] relative error (cvx*nav - estimate)/estimate over "
+        f"{len(errs)} trades: max {errs.max():+.3%}, min {errs.min():+.3%}, "
+        f"max |err| on split trades {np.abs(errs[split]).max():.3%}, on auction-only {np.abs(errs[~split]).max():.2e}"
+    )
     # auction-only trades: the surrogate is exact (spread kink inactive, impact equal at D2)
     assert np.abs(errs[~split]).max() < 1e-9
     # split trades: only fee approximations differ (auction fee on the continuous remainder,
@@ -135,7 +149,9 @@ def test_routed_small_trades_cheaper_and_surrogate_error_bounded():
     # beta_a > b_c (auction prior raised): convex fallback prices the whole trade at beta_a -> upper bound
     hi = TransactionCostModel(CostConfig(impact_b_auction=0.6))
     errs_hi, _ = _routed_errors(hi, snap, trades)
-    print(f"[routed surrogate, b_auction=0.6 (beta_a=2.0 > b_c)] max {errs_hi.max():+.3%}, min {errs_hi.min():+.3%}")
+    print(
+        f"[routed surrogate, b_auction=0.6 (beta_a=2.0 > b_c)] max {errs_hi.max():+.3%}, min {errs_hi.min():+.3%}"
+    )
     assert errs_hi.min() > -0.02
 
 
@@ -149,9 +165,11 @@ def test_routed_spread_and_impact_exact_when_beta_a_le_b_c(share):
     q = np.exp(rng.uniform(np.log(1e-5), np.log(0.05), 80)) * snap.adv_usd.to_numpy()
     trades = pd.Series(q * np.sign(rng.normal(size=80)), index=snap.tickers)
     est = tcm.estimate(trades, snap, "routed")
-    assert 0 < (est.auction_fraction < 1).sum() < 80                       # both regimes present
+    assert 0 < (est.auction_fraction < 1).sum() < 80  # both regimes present
     exact = float((est["spread_usd"] + est["impact_usd"]).sum()) / NAV
-    assert _cvx_value(tcm, trades, snap, "routed", include_explicit=False) == pytest.approx(exact, rel=1e-10, abs=0)
+    assert _cvx_value(tcm, trades, snap, "routed", include_explicit=False) == pytest.approx(
+        exact, rel=1e-10, abs=0
+    )
 
 
 def test_routed_surrogate_is_convex_and_solves():

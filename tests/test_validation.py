@@ -1,4 +1,5 @@
 """Fast offline tests for qts.validation."""
+
 from __future__ import annotations
 
 import math
@@ -49,11 +50,14 @@ def _explicit_overlap(train, test, h):
     return False
 
 
-@pytest.mark.parametrize("splitter", [
-    PurgedWalkForward(n_splits=5, embargo_days=20, label_horizon=20, min_train_days=300),
-    PurgedKFold(n_splits=5, embargo_days=20, label_horizon=20),
-    CombinatorialPurgedCV(n_groups=6, k_test=2, embargo=20, label_horizon=20),
-])
+@pytest.mark.parametrize(
+    "splitter",
+    [
+        PurgedWalkForward(n_splits=5, embargo_days=20, label_horizon=20, min_train_days=300),
+        PurgedKFold(n_splits=5, embargo_days=20, label_horizon=20),
+        CombinatorialPurgedCV(n_groups=6, k_test=2, embargo=20, label_horizon=20),
+    ],
+)
 def test_no_train_label_overlaps_test(splitter):
     n_folds = 0
     for train, test in splitter.split(DATES):
@@ -176,8 +180,14 @@ def test_ledger_round_trip(tmp_path):
     for i in range(10):
         r = rng.standard_normal(1000) * 0.01
         sr_d = r.mean() / r.std()
-        led.log(f"mom:lb={i}", {"lb": i, "arr": np.arange(2)}, {"sharpe_daily": sr_d, "n_obs": 1000},
-                data_hash="abc", code_version="v0", notes="test")
+        led.log(
+            f"mom:lb={i}",
+            {"lb": i, "arr": np.arange(2)},
+            {"sharpe_daily": sr_d, "n_obs": 1000},
+            data_hash="abc",
+            code_version="v0",
+            notes="test",
+        )
     led.log("value:raw", {"x": 1}, {"sharpe_annual": 0.8, "n_obs": 1500})
     assert led.n_trials() == 11
     assert led.n_trials("mom") == 10
@@ -202,22 +212,43 @@ def test_ledger_dedupes_identical_reruns_and_family_stats(tmp_path):
     base = rng.standard_normal(36) * 0.02
     for k, sr in enumerate([0.5, 0.8, 1.1]):
         rm = pd.Series(base + rng.standard_normal(36) * 0.005, index=months.to_timestamp())
-        led.log("pipeline_phase1", {"portfolio": {"risk_aversion": 5 + k}}, {"sharpe_annual": sr, "n_obs": 750},
-                data_hash="d1", config_hash=f"c{k}", returns_monthly=rm, replace_identical=True)
+        led.log(
+            "pipeline_phase1",
+            {"portfolio": {"risk_aversion": 5 + k}},
+            {"sharpe_annual": sr, "n_obs": 750},
+            data_hash="d1",
+            config_hash=f"c{k}",
+            returns_monthly=rm,
+            replace_identical=True,
+        )
     assert led.n_trials("pipeline_phase1") == 3
     # identical config + data: updated in place, not appended
-    rec = led.log("pipeline_phase1", {"portfolio": {"risk_aversion": 7}}, {"sharpe_annual": 1.2, "n_obs": 750},
-                  data_hash="d1", config_hash="c2", returns_monthly=rm, replace_identical=True)
+    rec = led.log(
+        "pipeline_phase1",
+        {"portfolio": {"risk_aversion": 7}},
+        {"sharpe_annual": 1.2, "n_obs": 750},
+        data_hash="d1",
+        config_hash="c2",
+        returns_monthly=rm,
+        replace_identical=True,
+    )
     assert led.n_trials("pipeline_phase1") == 3 and rec["n_reruns"] == 1
     assert led.trial_sharpes_annual("pipeline_phase1").round(6).tolist() == [0.5, 0.8, 1.2]
     # different data hash: a new trial
-    led.log("pipeline_phase1", {"portfolio": {"risk_aversion": 7}}, {"sharpe_annual": 1.0, "n_obs": 750},
-            data_hash="d2", config_hash="c2", returns_monthly=rm, replace_identical=True)
+    led.log(
+        "pipeline_phase1",
+        {"portfolio": {"risk_aversion": 7}},
+        {"sharpe_annual": 1.0, "n_obs": 750},
+        data_hash="d2",
+        config_hash="c2",
+        returns_monthly=rm,
+        replace_identical=True,
+    )
     assert led.n_trials("pipeline_phase1") == 4
     v = led.family_sharpe_variance("pipeline_phase1")
     assert v == pytest.approx(pd.Series([0.5, 0.8, 1.2, 1.0]).var(ddof=1))
     n_eff = led.effective_trials_for("pipeline_phase1")
-    assert 1.0 <= n_eff <= 4.0        # highly correlated streams -> well below 4
+    assert 1.0 <= n_eff <= 4.0  # highly correlated streams -> well below 4
     assert n_eff < 3.5
 
 
@@ -226,27 +257,59 @@ def test_hurdles_pass_and_fail():
     hr = HurdleReport(ValidationConfig())
     folds = pd.Series([0.01, 0.012, 0.008, 0.02, 0.006, 0.011])
     good = hr.evaluate_signal(
-        ic_by_fold=pd.Series([0.03, 0.02, 0.04, 0.03, 0.02, 0.03]), decile_tstat=3.5,
-        incremental_ic_by_fold=folds, net_sharpe_delta_by_fold=pd.Series([0.1, 0.08, 0.06, 0.2, 0.04, 0.07]),
-        breakeven_cost_bps=40.0, modeled_cost_bps=15.0, dsr=0.97, pbo=0.2, phase=1, net_sharpe=0.6)
+        ic_by_fold=pd.Series([0.03, 0.02, 0.04, 0.03, 0.02, 0.03]),
+        decile_tstat=3.5,
+        incremental_ic_by_fold=folds,
+        net_sharpe_delta_by_fold=pd.Series([0.1, 0.08, 0.06, 0.2, 0.04, 0.07]),
+        breakeven_cost_bps=40.0,
+        modeled_cost_bps=15.0,
+        dsr=0.97,
+        pbo=0.2,
+        phase=1,
+        net_sharpe=0.6,
+    )
     assert good["overall"], good["reasons"]
     bad = hr.evaluate_signal(
-        ic_by_fold=pd.Series([0.03, -0.02, 0.04, -0.03, 0.02, 0.03]), decile_tstat=2.0,
+        ic_by_fold=pd.Series([0.03, -0.02, 0.04, -0.03, 0.02, 0.03]),
+        decile_tstat=2.0,
         incremental_ic_by_fold=pd.Series([0.001, 0.0, 0.002, 0.01, -0.01, 0.0]),
         net_sharpe_delta_by_fold=pd.Series([0.01, 0.0, -0.1, 0.2, 0.0, 0.0]),
-        breakeven_cost_bps=20.0, modeled_cost_bps=15.0, dsr=0.5, pbo=0.7, phase=2, net_sharpe=0.4)
+        breakeven_cost_bps=20.0,
+        modeled_cost_bps=15.0,
+        dsr=0.5,
+        pbo=0.7,
+        phase=2,
+        net_sharpe=0.4,
+    )
     assert not bad["overall"]
     for g in ("t_stat", "incremental_ic", "net_sharpe_delta", "breakeven_cost", "dsr", "pbo", "phase_sharpe"):
         assert bad["gates"][g] is False, g
     # suspect: too-good Sharpe fails even when everything else passes
-    sus = hr.evaluate_signal(decile_tstat=5.0, incremental_ic_by_fold=folds,
-                             net_sharpe_delta_by_fold=folds + 0.1, breakeven_cost_bps=100, modeled_cost_bps=10,
-                             dsr=1.0, pbo=0.0, phase=2, net_sharpe=2.5)
+    sus = hr.evaluate_signal(
+        decile_tstat=5.0,
+        incremental_ic_by_fold=folds,
+        net_sharpe_delta_by_fold=folds + 0.1,
+        breakeven_cost_bps=100,
+        modeled_cost_bps=10,
+        dsr=1.0,
+        pbo=0.0,
+        phase=2,
+        net_sharpe=2.5,
+    )
     assert not sus["overall"] and sus["gates"]["suspect"] is False
     # t-stat gate not applied to incremental features
-    inc = hr.evaluate_signal(decile_tstat=1.0, incremental_ic_by_fold=folds, net_sharpe_delta_by_fold=folds + 0.1,
-                             breakeven_cost_bps=100, modeled_cost_bps=10, dsr=0.99, pbo=0.1, phase=1,
-                             net_sharpe=0.5, standalone=False)
+    inc = hr.evaluate_signal(
+        decile_tstat=1.0,
+        incremental_ic_by_fold=folds,
+        net_sharpe_delta_by_fold=folds + 0.1,
+        breakeven_cost_bps=100,
+        modeled_cost_bps=10,
+        dsr=0.99,
+        pbo=0.1,
+        phase=1,
+        net_sharpe=0.5,
+        standalone=False,
+    )
     assert inc["overall"]
     assert "OVERALL" in HurdleReport.format(inc)
 
@@ -254,19 +317,34 @@ def test_hurdles_pass_and_fail():
 def test_hurdles_missing_inputs_are_skipped_unless_required():
     hr = HurdleReport(ValidationConfig())
     # standalone run without PBO / fold inputs: those gates are skipped, overall can still PASS
-    r = hr.evaluate_signal(decile_tstat=4.0, breakeven_cost_bps=50.0, modeled_cost_bps=10.0, dsr=0.98,
-                           pbo=None, phase=1, net_sharpe=0.8)
+    r = hr.evaluate_signal(
+        decile_tstat=4.0,
+        breakeven_cost_bps=50.0,
+        modeled_cost_bps=10.0,
+        dsr=0.98,
+        pbo=None,
+        phase=1,
+        net_sharpe=0.8,
+    )
     assert r["status"]["pbo"] == "skipped" and r["gates"]["pbo"] is None
     assert r["status"]["net_sharpe_delta"] == "skipped"
     assert r["overall"], r["reasons"]
     assert set(r["status"].values()) <= {"PASS", "FAIL", "skipped"}
     # a required gate (dsr) with a missing input fails overall
-    r2 = hr.evaluate_signal(decile_tstat=4.0, breakeven_cost_bps=50.0, modeled_cost_bps=10.0, dsr=None,
-                            phase=1, net_sharpe=0.8)
+    r2 = hr.evaluate_signal(
+        decile_tstat=4.0, breakeven_cost_bps=50.0, modeled_cost_bps=10.0, dsr=None, phase=1, net_sharpe=0.8
+    )
     assert r2["status"]["dsr"] == "FAIL" and not r2["overall"] and "dsr" in r2["failed"]
     # the required set is configurable
-    r3 = hr.evaluate_signal(decile_tstat=4.0, breakeven_cost_bps=50.0, modeled_cost_bps=10.0, dsr=None,
-                            phase=1, net_sharpe=0.8, required=["phase_sharpe"])
+    r3 = hr.evaluate_signal(
+        decile_tstat=4.0,
+        breakeven_cost_bps=50.0,
+        modeled_cost_bps=10.0,
+        dsr=None,
+        phase=1,
+        net_sharpe=0.8,
+        required=["phase_sharpe"],
+    )
     assert r3["status"]["dsr"] == "skipped" and r3["overall"]
 
 
@@ -322,11 +400,13 @@ def test_feature_registry_refuses_negative_shift():
     assert set(FEATURE_REGISTRY["mom_feature"]["reads"]) >= {"close", "volume"}
 
     with pytest.raises(LeakageError):
+
         @feature_registry
         def leaky(md):
             return md.close.shift(-1) / md.close
 
     with pytest.raises(LeakageError):
+
         @feature_registry
         def leaky_kw(md):
             return md.close.shift(periods=-5)
@@ -335,15 +415,29 @@ def test_feature_registry_refuses_negative_shift():
 # --------------------------------------------------------------------------- Nagel audit
 def test_nagel_collapse_test_runs_and_sane():
     from sklearn.linear_model import Ridge
+
     est = Ridge(alpha=1.0)
-    res = nagel_collapse_test(lambda Xtr, ytr, Xte: est.fit(Xtr, ytr).predict(Xte),
-                              n_assets=40, n_days=600, seed=0, n_lags=20, horizon=10)
+    res = nagel_collapse_test(
+        lambda Xtr, ytr, Xte: est.fit(Xtr, ytr).predict(Xte),
+        n_assets=40,
+        n_days=600,
+        seed=0,
+        n_lags=20,
+        horizon=10,
+    )
     assert set(res) >= {"ic_mean", "ic_tstat", "corr_with_recency_mean", "passed", "collapsed"}
     assert abs(res["ic_tstat"]) < 4.0
     # a model that literally is the recency-weighted mean must be flagged as collapsed
     from qts.validation.synthetic_audit import recency_weighted_mean
-    res2 = nagel_collapse_test(lambda Xtr, ytr, Xte: recency_weighted_mean(Xte, 10.0),
-                               n_assets=40, n_days=600, seed=0, n_lags=20, horizon=10)
+
+    res2 = nagel_collapse_test(
+        lambda Xtr, ytr, Xte: recency_weighted_mean(Xte, 10.0),
+        n_assets=40,
+        n_days=600,
+        seed=0,
+        n_lags=20,
+        horizon=10,
+    )
     assert res2["collapsed"] and res2["corr_with_recency_mean"] > 0.99
 
 
@@ -352,15 +446,23 @@ def test_hurdle_result_is_typed_and_round_trips():
     import json
 
     from qts.validation import GateResult, HurdleResult
+
     hr = HurdleReport(ValidationConfig())
-    r = hr.evaluate_signal(decile_tstat=4.0, breakeven_cost_bps=50.0, modeled_cost_bps=10.0, dsr=0.98,
-                           phase=1, net_sharpe=0.8, net_sharpe_delta_by_fold=pd.Series([0.1, 0.2, -0.1]))
+    r = hr.evaluate_signal(
+        decile_tstat=4.0,
+        breakeven_cost_bps=50.0,
+        modeled_cost_bps=10.0,
+        dsr=0.98,
+        phase=1,
+        net_sharpe=0.8,
+        net_sharpe_delta_by_fold=pd.Series([0.1, 0.2, -0.1]),
+    )
     assert isinstance(r, HurdleResult) and all(isinstance(g, GateResult) for g in r.gates)
     assert r.overall is True and r.gate("dsr").status == "PASS" and r.status["pbo"] == "skipped"
     # legacy dict access
     assert r["status"] == r.status and r["gates"]["dsr"] is True and r["skipped"] == r.skipped
     assert set(r.keys()) >= {"overall", "phase", "gates", "status", "details", "reasons", "failed", "skipped"}
-    d = json.loads(json.dumps(r.to_dict()))                 # JSON-safe
+    d = json.loads(json.dumps(r.to_dict()))  # JSON-safe
     back = HurdleResult.from_dict(d)
     assert back.status == r.status and back.overall == r.overall and back.reasons == r.reasons
     assert r.format() == HurdleReport.format(r)
@@ -369,12 +471,16 @@ def test_hurdle_result_is_typed_and_round_trips():
 def test_hurdle_operators_match_plan_text():
     """#26: incremental IC strictly > 0.005, net Sharpe delta >= +0.05, IC sign strictly > 0."""
     hr = HurdleReport(ValidationConfig())
-    at = hr.evaluate_signal(incremental_ic_by_fold=pd.Series([0.005] * 3),
-                            net_sharpe_delta_by_fold=pd.Series([0.05] * 3),
-                            ic_by_fold=pd.Series([0.0] * 3), standalone=False, required=[])
-    assert at.gate("incremental_ic").passed is False             # 0.005 is not > 0.005
-    assert at.gate("net_sharpe_delta").passed is True            # 0.05 >= 0.05
-    assert at.gate("ic_sign").passed is False                    # 0 is not > 0
+    at = hr.evaluate_signal(
+        incremental_ic_by_fold=pd.Series([0.005] * 3),
+        net_sharpe_delta_by_fold=pd.Series([0.05] * 3),
+        ic_by_fold=pd.Series([0.0] * 3),
+        standalone=False,
+        required=[],
+    )
+    assert at.gate("incremental_ic").passed is False  # 0.005 is not > 0.005
+    assert at.gate("net_sharpe_delta").passed is True  # 0.05 >= 0.05
+    assert at.gate("ic_sign").passed is False  # 0 is not > 0
     for g in at.gates:
         if g.applied:
             assert ">" in g.reason or "<" in g.reason or "skipped" in g.reason, g.reason
@@ -382,10 +488,11 @@ def test_hurdle_operators_match_plan_text():
 
 def test_purged_fold_blocks():
     from qts.pipeline import purged_fold_blocks
+
     d = pd.bdate_range("2020-01-01", periods=130)
     b = purged_fold_blocks(d, n_splits=6, embargo_days=20, label_horizon=20, min_fold_days=20)
     assert len(b) == 6 and sum(len(x) for x in b) == 130
-    assert all(b[i][-1] < b[i + 1][0] for i in range(5))           # contiguous, ordered, disjoint
+    assert all(b[i][-1] < b[i + 1][0] for i in range(5))  # contiguous, ordered, disjoint
     b2 = purged_fold_blocks(d[:70], n_splits=6, embargo_days=20, label_horizon=20, min_fold_days=20)
-    assert len(b2) == 3 and min(len(x) for x in b2) >= 20          # splits reduced to keep blocks >= 20 days
+    assert len(b2) == 3 and min(len(x) for x in b2) >= 20  # splits reduced to keep blocks >= 20 days
     assert purged_fold_blocks(d[:10], 6, 20, 20, 20) == []

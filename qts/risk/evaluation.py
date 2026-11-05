@@ -13,6 +13,7 @@
   ``w ∝ Sigma^{-1} 1`` rebalanced every ``rebalance_every`` days (Ledoit &
   Wolf 2017/2022; Reis, Serra & Gama 2025).
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
@@ -54,9 +55,14 @@ def mean_rolling_absolute_deviation(rolling_bias: pd.Series) -> float:
 PortfolioSpec = pd.Series | Callable[[pd.Timestamp, pd.Index], pd.Series]
 
 
-def portfolio_bias_test(model, md: MarketData, portfolios: dict[str, PortfolioSpec],
-                        dates: Iterable[pd.Timestamp], include_alignment: bool = True,
-                        alpha_fn: Callable[[pd.Timestamp], pd.Series] | None = None) -> pd.DataFrame:
+def portfolio_bias_test(
+    model,
+    md: MarketData,
+    portfolios: dict[str, PortfolioSpec],
+    dates: Iterable[pd.Timestamp],
+    include_alignment: bool = True,
+    alpha_fn: Callable[[pd.Timestamp], pd.Series] | None = None,
+) -> pd.DataFrame:
     """Bias statistics of several portfolios through time.
 
     For each ``t`` in ``dates`` the model is evaluated ``as_of(t)``, the
@@ -93,18 +99,21 @@ def portfolio_bias_test(model, md: MarketData, portfolios: dict[str, PortfolioSp
         T = len(p)
         lo, hi = bias_band(T)
         b = bias_statistic(p, r)
-        rows.append({"portfolio": name, "bias": b, "lower": lo, "upper": hi,
-                     "in_band": bool(lo <= b <= hi), "T": T})
+        rows.append(
+            {"portfolio": name, "bias": b, "lower": lo, "upper": hi, "in_band": bool(lo <= b <= hi), "T": T}
+        )
     return pd.DataFrame(rows).set_index("portfolio")
 
 
 def random_long_short_weights(rng: np.random.Generator, gross: float = 2.0) -> Callable:
     """Weight generator: random dollar-neutral portfolio with given gross."""
+
     def gen(date: pd.Timestamp, tickers: pd.Index) -> pd.Series:
         x = rng.standard_normal(len(tickers))
         x = x - x.mean()
         x = x / np.abs(x).sum() * gross
         return pd.Series(x, index=tickers)
+
     return gen
 
 
@@ -153,9 +162,13 @@ def gmv_weights(S: np.ndarray, ridge: float = 1e-10) -> np.ndarray:
     return x / x.sum()
 
 
-def min_variance_oos_test(cov_estimators: dict[str, Callable[[np.ndarray], np.ndarray]],
-                          returns: pd.DataFrame, rebalance_every: int = 21,
-                          window: int = 252, min_window: int | None = None) -> pd.DataFrame:
+def min_variance_oos_test(
+    cov_estimators: dict[str, Callable[[np.ndarray], np.ndarray]],
+    returns: pd.DataFrame,
+    rebalance_every: int = 21,
+    window: int = 252,
+    min_window: int | None = None,
+) -> pd.DataFrame:
     """Compare covariance estimators by realized out-of-sample variance (and
     turnover) of the GMV portfolio.
 
@@ -172,7 +185,7 @@ def min_variance_oos_test(cov_estimators: dict[str, Callable[[np.ndarray], np.nd
     t = min_window
     while t < T:
         end = min(t + rebalance_every, T)
-        hist = X[max(0, t - window):t]
+        hist = X[max(0, t - window) : t]
         for name, est in cov_estimators.items():
             w = gmv_weights(est(hist))
             if prev_w[name] is not None:
@@ -183,8 +196,13 @@ def min_variance_oos_test(cov_estimators: dict[str, Callable[[np.ndarray], np.nd
     rows = []
     for name, d in out.items():
         r = np.array(d["ret"])
-        rows.append({"estimator": name, "oos_daily_var": float(r.var(ddof=1)),
-                     "oos_vol_annual": float(r.std(ddof=1) * np.sqrt(252)),
-                     "avg_turnover": float(np.mean(d["turn"])) if d["turn"] else np.nan,
-                     "n_days": len(r)})
+        rows.append(
+            {
+                "estimator": name,
+                "oos_daily_var": float(r.var(ddof=1)),
+                "oos_vol_annual": float(r.std(ddof=1) * np.sqrt(252)),
+                "avg_turnover": float(np.mean(d["turn"])) if d["turn"] else np.nan,
+                "n_days": len(r),
+            }
+        )
     return pd.DataFrame(rows).set_index("estimator").sort_values("oos_daily_var")

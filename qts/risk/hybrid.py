@@ -91,6 +91,7 @@ share exceeds ``cfg.missing_factor_alarm_share`` *and* its eigenvalue sits
 above the MP edge -- "there is a common factor in the residuals that the
 fundamental model does not price".
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -114,9 +115,15 @@ SPECIFIC_FLOOR = 0.10
 
 
 class HybridRiskModel:
-    def __init__(self, fundamental: BarraStyleRiskModel | None = None, cfg: RiskConfig | None = None,
-                 half_life: float | None = None, loadings: str = "total", cross_block: bool = False,
-                 **fundamental_kwargs):
+    def __init__(
+        self,
+        fundamental: BarraStyleRiskModel | None = None,
+        cfg: RiskConfig | None = None,
+        half_life: float | None = None,
+        loadings: str = "total",
+        cross_block: bool = False,
+        **fundamental_kwargs,
+    ):
         """``fundamental`` defaults to ``BarraStyleRiskModel(cfg, **fundamental_kwargs)``.
         ``half_life`` is the EWMA half-life of the statistical block (``None`` =
         equal weights over ``cfg.statistical_window``); ``loadings`` is
@@ -127,7 +134,9 @@ class HybridRiskModel:
         if loadings not in ("total", "residual"):
             raise ValueError("loadings must be 'total' or 'residual'")
         self.cfg = cfg or (fundamental.cfg if fundamental is not None else RiskConfig())
-        self.fundamental = fundamental if fundamental is not None else BarraStyleRiskModel(self.cfg, **fundamental_kwargs)
+        self.fundamental = (
+            fundamental if fundamental is not None else BarraStyleRiskModel(self.cfg, **fundamental_kwargs)
+        )
         self.half_life = half_life
         self.loadings = loadings
         self.cross_block = bool(cross_block)
@@ -160,8 +169,9 @@ class HybridRiskModel:
         """Fundamental exposures (labels are residualised on these)."""
         return self.fundamental.exposures_as_of(date)
 
-    def residual_covariance_as_of(self, date: pd.Timestamp, window: int | None = None,
-                                  method: str = "qis") -> pd.DataFrame:
+    def residual_covariance_as_of(
+        self, date: pd.Timestamp, window: int | None = None, method: str = "qis"
+    ) -> pd.DataFrame:
         return self.fundamental.residual_covariance_as_of(date, window, method)
 
     # ------------------------------------------------------------------ fit
@@ -180,19 +190,29 @@ class HybridRiskModel:
         self.n_statistical_factors = k
         min_obs = min(cfg.statistical_window, max(60, int(0.8 * cfg.statistical_window)))
         self.statistical = StatisticalRiskModel(
-            n_factors=k, window=cfg.statistical_window, half_life=self.half_life, min_obs=min_obs,
-            method="apca", apca_iters=3, refit_every=cfg.statistical_refit_every, select_k=select_k,
+            n_factors=k,
+            window=cfg.statistical_window,
+            half_life=self.half_life,
+            min_obs=min_obs,
+            method="apca",
+            apca_iters=3,
+            refit_every=cfg.statistical_refit_every,
+            select_k=select_k,
         ).fit(U)
-        self.factor_count_details = {"method": "fixed" if select_k is None else "bai_ng_per_refit",
-                                     "n_slots": k, "by_refit": self.statistical.n_factors_by_refit()}
+        self.factor_count_details = {
+            "method": "fixed" if select_k is None else "bai_ng_per_refit",
+            "n_slots": k,
+            "by_refit": self.statistical.n_factors_by_refit(),
+        }
         return self
 
     # ------------------------------------------------------------------ as_of
     def statistical_available(self, date: pd.Timestamp) -> bool:
         return self.statistical is not None and self.statistical.available(date)
 
-    def as_of(self, date: pd.Timestamp, alpha: pd.Series | None = None,
-              nu_scale: float | None = None) -> RiskModelOutput:
+    def as_of(
+        self, date: pd.Timestamp, alpha: pd.Series | None = None, nu_scale: float | None = None
+    ) -> RiskModelOutput:
         """Hybrid risk model as of ``date``.  Before the statistical block has
         enough residual history the fundamental output is returned unchanged
         (documented fallback; check :meth:`statistical_available`)."""
@@ -223,12 +243,15 @@ class HybridRiskModel:
         # express the statistical block in the fundamental specific-variance units so
         # that (B~ F B~')_ii = (1 - keep_i) D_fund_i: the hybrid diagonal equals the
         # fundamental's stock by stock, only the off-diagonal structure is added
-        scale = np.where(sys_var > 0, np.sqrt((1.0 - keep) * D_fund / np.where(sys_var > 0, sys_var, 1.0)), 0.0)
+        scale = np.where(
+            sys_var > 0, np.sqrt((1.0 - keep) * D_fund / np.where(sys_var > 0, sys_var, 1.0)), 0.0
+        )
         Bs_scaled = B_use * scale[:, None]
 
         stat_cols = list(st.factor_cov.columns)
-        exposures = pd.concat([fund.exposures,
-                               pd.DataFrame(Bs_scaled, index=tickers, columns=stat_cols)], axis=1)
+        exposures = pd.concat(
+            [fund.exposures, pd.DataFrame(Bs_scaled, index=tickers, columns=stat_cols)], axis=1
+        )
         exposures.columns.name = "factor"
         K1, K2 = fund.factor_cov.shape[0], len(stat_cols)
         F = np.zeros((K1 + K2, K1 + K2))
@@ -245,24 +268,32 @@ class HybridRiskModel:
         y: pd.Series | None = None
         nu = 0.0
         if alpha is not None and cfg.alignment:
-            y, nu = alpha_alignment(alpha.reindex(tickers), exposures, spec, nu_scale=nu_scale,
-                                    factor_cov=factor_cov, cfg=cfg)
-        return RiskModelOutput(date=fund.date, exposures=exposures, factor_cov=factor_cov,
-                               specific_var=spec, factor_returns=fr,
-                               alignment_vector=y, alignment_var=float(nu),
-                               factor_groups=factor_groups_for(exposures.columns, cfg, statistical=stat_cols))
+            y, nu = alpha_alignment(
+                alpha.reindex(tickers), exposures, spec, nu_scale=nu_scale, factor_cov=factor_cov, cfg=cfg
+            )
+        return RiskModelOutput(
+            date=fund.date,
+            exposures=exposures,
+            factor_cov=factor_cov,
+            specific_var=spec,
+            factor_returns=fr,
+            alignment_vector=y,
+            alignment_var=float(nu),
+            factor_groups=factor_groups_for(exposures.columns, cfg, statistical=stat_cols),
+        )
 
     def _total_return_loadings(self, st: RiskModelOutput, tickers: pd.Index) -> np.ndarray:
         """Per-stock OLS of trailing-window *total* returns on the residual
         factor returns (observed days only; stocks with too few observations
         get zero loadings)."""
         from qts.risk.statistical import _prepare_panel, _ts_regress
+
         assert self.md is not None and self.statistical is not None
         Fh = st.factor_returns.tail(self.cfg.statistical_window)
         Rw = self.md.returns.reindex(index=Fh.index, columns=tickers)
         R, mask, _ = _prepare_panel(Rw.values)
         Fv = Fh.values
-        active = np.any(Fv != 0, axis=0)          # unused slots (k < n_slots) stay at zero loading
+        active = np.any(Fv != 0, axis=0)  # unused slots (k < n_slots) stay at zero loading
         B = np.zeros((R.shape[1], Fv.shape[1]))
         if active.any():
             B[:, active], _ = _ts_regress(R, mask, Fv[:, active], self.statistical.min_stock_obs)
@@ -273,6 +304,7 @@ class HybridRiskModel:
         correlation of the two factor-return blocks over the trailing
         statistical window (same weights as the statistical block)."""
         from qts.risk.statistical import _weights
+
         X = fr.tail(self.cfg.statistical_window).dropna(how="any")
         K1, K2 = F_fund.shape[0], F_stat.shape[0]
         if len(X) < 20:
@@ -293,10 +325,17 @@ class HybridRiskModel:
 
 
 # --------------------------------------------------------------------------- monitor
-def missing_factor_monitor(md: MarketData, model, lookback: int = 252, n_pcs: int | None = None,
-                           alarm_share: float | None = None, step: int = 1,
-                           min_coverage: float = 0.8, standardize: bool = True,
-                           dates: Iterable[pd.Timestamp] | None = None) -> pd.DataFrame:
+def missing_factor_monitor(
+    md: MarketData,
+    model,
+    lookback: int = 252,
+    n_pcs: int | None = None,
+    alarm_share: float | None = None,
+    step: int = 1,
+    min_coverage: float = 0.8,
+    standardize: bool = True,
+    dates: Iterable[pd.Timestamp] | None = None,
+) -> pd.DataFrame:
     """Per-date "unmodelled common factor" alarm on the fundamental residuals.
 
     For every ``step``-th date ``t`` (with at least ``lookback // 2`` residual
@@ -321,7 +360,7 @@ def missing_factor_monitor(md: MarketData, model, lookback: int = 252, n_pcs: in
         n_pcs = getattr(model, "n_statistical_factors", 0) or 3
     U_all = fundamental.specific_returns.dropna(how="all")
     if dates is None:
-        cand = U_all.index[lookback // 2 - 1::step] if len(U_all) >= lookback // 2 else U_all.index[:0]
+        cand = U_all.index[lookback // 2 - 1 :: step] if len(U_all) >= lookback // 2 else U_all.index[:0]
     else:
         cand = pd.DatetimeIndex(list(dates))
     rows = []
@@ -337,15 +376,26 @@ def missing_factor_monitor(md: MarketData, model, lookback: int = 252, n_pcs: in
         R, mask, _ = _prepare_panel(U.values)
         if standardize:
             n = np.maximum(mask.sum(axis=0), 1)
-            sd = np.sqrt((R ** 2).sum(axis=0) / n)
+            sd = np.sqrt((R**2).sum(axis=0) / n)
             R = R / np.where(sd > 0, sd, 1.0)
         lam = _spectrum(R)
         total = float(lam.sum())
         k_mp, edge, _ = marchenko_pastur_edge(lam, N, T, max_factors=20)
         pc1 = float(lam[0] / total) if total > 0 else np.nan
         pck = float(lam[:n_pcs].sum() / total) if total > 0 else np.nan
-        rows.append({"date": d, "n_stocks": N, "n_days": T, "pc1_share": pc1, "pck_share": pck,
-                     "lambda1": float(lam[0]), "mp_edge": edge, "mp_edge_share": edge / total if total > 0 else np.nan,
-                     "n_factors_mp": k_mp, "flag": bool(pc1 > alarm_share and lam[0] > edge)})
+        rows.append(
+            {
+                "date": d,
+                "n_stocks": N,
+                "n_days": T,
+                "pc1_share": pc1,
+                "pck_share": pck,
+                "lambda1": float(lam[0]),
+                "mp_edge": edge,
+                "mp_edge_share": edge / total if total > 0 else np.nan,
+                "n_factors_mp": k_mp,
+                "flag": bool(pc1 > alarm_share and lam[0] > edge),
+            }
+        )
     out = pd.DataFrame(rows)
     return out.set_index("date") if len(out) else out

@@ -17,6 +17,7 @@ exactly produced these numbers?":
 
 Nothing here imports the heavy layers, so the manifest can be read without them.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -39,7 +40,17 @@ MANIFEST_FILE = "manifest.json"
 MANIFEST_VERSION = 1
 
 #: Libraries whose versions change numerical results.
-TRACKED_LIBRARIES = ("numpy", "pandas", "scipy", "sklearn", "lightgbm", "cvxpy", "clarabel", "pyarrow", "yaml")
+TRACKED_LIBRARIES = (
+    "numpy",
+    "pandas",
+    "scipy",
+    "sklearn",
+    "lightgbm",
+    "cvxpy",
+    "clarabel",
+    "pyarrow",
+    "yaml",
+)
 
 
 # ----------------------------------------------------------------------------- hashing
@@ -53,7 +64,7 @@ def _hash_frame(h: Any, name: str, obj: Any) -> None:
         vals = obj.to_numpy()
     if vals.dtype.kind in "biuf":
         h.update(np.ascontiguousarray(vals.astype(float)).tobytes())
-    else:                                            # object / string / categorical panels
+    else:  # object / string / categorical panels
         h.update("|".join(map(str, vals.ravel().tolist())).encode())
 
 
@@ -99,10 +110,17 @@ def git_info(cwd: str | Path | None = None) -> dict[str, Any]:
     ``None``) when git or a repository is unavailable."""
     cwd = str(cwd or _repo_root())
     try:
-        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True,
-                             timeout=10, check=True).stdout.strip()
-        st = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=cwd,
-                            capture_output=True, text=True, timeout=30, check=True).stdout
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True, timeout=10, check=True
+        ).stdout.strip()
+        st = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        ).stdout
         return {"git_sha": sha or "unknown", "git_dirty": bool(st.strip())}
     except (OSError, subprocess.SubprocessError):
         return {"git_sha": "unknown", "git_dirty": None}
@@ -129,7 +147,7 @@ def new_run_id(config_hash: str, when: datetime | None = None) -> str:
 @dataclass
 class RunManifest:
     run_id: str
-    created_at: str                                   # ISO-8601 UTC
+    created_at: str  # ISO-8601 UTC
     config_hash: str
     data_hash: str
     git_sha: str = "unknown"
@@ -144,16 +162,33 @@ class RunManifest:
     manifest_version: int = MANIFEST_VERSION
 
     @classmethod
-    def create(cls, config_hash: str, data_hash: str, run_id: str | None = None,
-               timings: dict[str, float] | None = None, seeds: dict[str, int] | None = None,
-               command: str | None = None, notes: str = "") -> RunManifest:
+    def create(
+        cls,
+        config_hash: str,
+        data_hash: str,
+        run_id: str | None = None,
+        timings: dict[str, float] | None = None,
+        seeds: dict[str, int] | None = None,
+        command: str | None = None,
+        notes: str = "",
+    ) -> RunManifest:
         now = datetime.now(timezone.utc)
         g = git_info()
-        return cls(run_id=run_id or new_run_id(config_hash, now), created_at=now.isoformat(),
-                   config_hash=config_hash, data_hash=data_hash, git_sha=g["git_sha"], git_dirty=g["git_dirty"],
-                   versions=library_versions(), python_version=sys.version.split()[0],
-                   platform=platform.platform(), timings=dict(timings or {}), seeds=dict(seeds or {}),
-                   command=command if command is not None else " ".join(sys.argv), notes=notes)
+        return cls(
+            run_id=run_id or new_run_id(config_hash, now),
+            created_at=now.isoformat(),
+            config_hash=config_hash,
+            data_hash=data_hash,
+            git_sha=g["git_sha"],
+            git_dirty=g["git_dirty"],
+            versions=library_versions(),
+            python_version=sys.version.split()[0],
+            platform=platform.platform(),
+            timings=dict(timings or {}),
+            seeds=dict(seeds or {}),
+            command=command if command is not None else " ".join(sys.argv),
+            notes=notes,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -31,6 +31,7 @@ then commit the JSON together with the change that explains it (say why in
 the commit message).  The data hash is checked first: if the synthetic
 generator itself changed, every other number moves too and the message says so.
 """
+
 from __future__ import annotations
 
 import json
@@ -46,12 +47,35 @@ GOLDEN = Path(__file__).parent / "golden" / "pipeline_summary.json"
 RTOL, ATOL = 1e-6, 1e-9
 
 SUMMARY_KEYS = (
-    "start", "end", "n_days", "final_nav", "cagr_gross", "cagr_net", "ann_vol_gross", "ann_vol_net",
-    "sharpe_gross", "sharpe_net", "sharpe_net_lo", "sharpe_t_stat_net", "newey_west_t_net",
-    "max_drawdown_net", "calmar_net", "sortino_net", "hit_rate_net", "avg_gross_exposure",
-    "avg_net_exposure", "avg_daily_turnover", "effective_holding_days", "avg_cost_bps_per_side",
-    "avg_daily_cost_bps_of_nav", "total_costs_usd", "transfer_coefficient_mean",
-    "realized_vs_exante_vol_ratio", "breakeven_cost_bps", "n_delistings", "n_failed_solves",
+    "start",
+    "end",
+    "n_days",
+    "final_nav",
+    "cagr_gross",
+    "cagr_net",
+    "ann_vol_gross",
+    "ann_vol_net",
+    "sharpe_gross",
+    "sharpe_net",
+    "sharpe_net_lo",
+    "sharpe_t_stat_net",
+    "newey_west_t_net",
+    "max_drawdown_net",
+    "calmar_net",
+    "sortino_net",
+    "hit_rate_net",
+    "avg_gross_exposure",
+    "avg_net_exposure",
+    "avg_daily_turnover",
+    "effective_holding_days",
+    "avg_cost_bps_per_side",
+    "avg_daily_cost_bps_of_nav",
+    "total_costs_usd",
+    "transfer_coefficient_mean",
+    "realized_vs_exante_vol_ratio",
+    "breakeven_cost_bps",
+    "n_delistings",
+    "n_failed_solves",
 )
 IC_KEYS = ("n", "mean_ic", "ic_sd", "icir", "t_stat", "hit_rate", "periods_per_year")
 
@@ -76,11 +100,16 @@ def curated(pipe, res) -> dict:
         "data_hash": res.data_hash,
         "summary": {k: _enc(s[k]) for k in SUMMARY_KEYS},
         "ic_report": {k: _enc(icr[k]) for k in IC_KEYS},
-        "decile": {"mean": _enc(res.decile.mean), "sharpe": _enc(res.decile.sharpe),
-                   "t_stat": _enc(res.decile.t_stat)},
+        "decile": {
+            "mean": _enc(res.decile.mean),
+            "sharpe": _enc(res.decile.sharpe),
+            "t_stat": _enc(res.decile.t_stat),
+        },
         "dsr": _enc(res.dsr),
-        "hurdles": {"overall": _enc(res.hurdles["overall"]),
-                    "status": {k: res.hurdles["status"][k] for k in sorted(res.hurdles["status"])}},
+        "hurdles": {
+            "overall": _enc(res.hurdles["overall"]),
+            "status": {k: res.hurdles["status"][k] for k in sorted(res.hurdles["status"])},
+        },
         "backtest": {
             "n_nav": len(nav),
             "nav_quartiles": [_enc(nav[int(q * (len(nav) - 1))]) for q in (0.25, 0.5, 0.75)],
@@ -104,7 +133,9 @@ def _compare(path: str, got, exp, errors: list) -> None:
             _compare(f"{path}[{i}]", g, e, errors)
     elif isinstance(exp, float) and not isinstance(exp, bool) and isinstance(got, (int, float)):
         if not math.isclose(got, exp, rel_tol=RTOL, abs_tol=ATOL):
-            errors.append(f"{path}: {got!r} != golden {exp!r} (rel diff {abs(got - exp) / max(abs(exp), 1e-300):.2e})")
+            errors.append(
+                f"{path}: {got!r} != golden {exp!r} (rel diff {abs(got - exp) / max(abs(exp), 1e-300):.2e})"
+            )
     elif got != exp:
         errors.append(f"{path}: {got!r} != golden {exp!r}")
 
@@ -114,10 +145,18 @@ def test_pipeline_matches_golden(golden_pipeline_run, update_golden):
     got = curated(pipe, res)
     if update_golden or not GOLDEN.exists():
         GOLDEN.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"_meta": {"spec": GOLDEN_SPEC, "top_n_by_mcap": GOLDEN_TOP_N, "max_days": GOLDEN_MAX_DAYS,
-                             "use_ml": False, "rtol": RTOL, "atol": ATOL,
-                             "regenerate": "python -m pytest tests/test_golden.py --update-golden"},
-                   **got}
+        payload = {
+            "_meta": {
+                "spec": GOLDEN_SPEC,
+                "top_n_by_mcap": GOLDEN_TOP_N,
+                "max_days": GOLDEN_MAX_DAYS,
+                "use_ml": False,
+                "rtol": RTOL,
+                "atol": ATOL,
+                "regenerate": "python -m pytest tests/test_golden.py --update-golden",
+            },
+            **got,
+        }
         GOLDEN.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n")
         if not update_golden:
             pytest.fail(f"golden file was missing and has been written to {GOLDEN}; review and commit it")
@@ -125,13 +164,17 @@ def test_pipeline_matches_golden(golden_pipeline_run, update_golden):
     exp = json.loads(GOLDEN.read_text())
     exp.pop("_meta", None)
     if got["data_hash"] != exp["data_hash"]:
-        pytest.fail("synthetic market changed (data_hash "
-                    f"{got['data_hash']} != golden {exp['data_hash']}): qts.data.synthetic.generate output moved; "
-                    "every golden number will differ. If intended, regenerate with --update-golden.")
+        pytest.fail(
+            "synthetic market changed (data_hash "
+            f"{got['data_hash']} != golden {exp['data_hash']}): qts.data.synthetic.generate output moved; "
+            "every golden number will differ. If intended, regenerate with --update-golden."
+        )
     errors: list = []
     _compare("golden", got, exp, errors)
-    assert not errors, "pipeline output drifted from tests/golden/pipeline_summary.json " \
-                       "(regenerate with --update-golden only if the change is intended):\n  " + "\n  ".join(errors)
+    assert not errors, (
+        "pipeline output drifted from tests/golden/pipeline_summary.json "
+        "(regenerate with --update-golden only if the change is intended):\n  " + "\n  ".join(errors)
+    )
 
 
 def test_golden_run_is_not_degenerate(golden_pipeline_run):

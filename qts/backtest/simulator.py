@@ -57,6 +57,7 @@ Recorded panels are indexed by the decision date ``t``: ``weights`` (post-
 trade), ``trades``, ``costs``, ``exante_var``; ``returns`` (gross/net) and
 ``nav`` are indexed by the date the return is realised (``t+1``).
 """
+
 from __future__ import annotations
 
 import inspect
@@ -84,11 +85,11 @@ COST_COLUMNS = ["spread", "impact", "fees", "borrow", "total"]
 
 @dataclass
 class BacktestResult:
-    nav: pd.Series                       # indexed by date (first entry = nav0 on dates[0])
-    returns: pd.DataFrame                # columns: gross, net (indexed by realisation date)
-    weights: Wide                        # post-trade weights by decision date
-    trades: Wide                         # weight changes by decision date
-    costs: pd.DataFrame                  # USD by decision date: spread, impact, fees, borrow, total
+    nav: pd.Series  # indexed by date (first entry = nav0 on dates[0])
+    returns: pd.DataFrame  # columns: gross, net (indexed by realisation date)
+    weights: Wide  # post-trade weights by decision date
+    trades: Wide  # weight changes by decision date
+    costs: pd.DataFrame  # USD by decision date: spread, impact, fees, borrow, total
     diagnostics: dict[str, object] = field(default_factory=dict)
     exante_var: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
     turnover: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
@@ -119,8 +120,11 @@ class BacktestResult:
         g, n = self.gross_returns.dropna(), self.net_returns.dropna()
         traded = float(self.traded_usd.sum())
         trading_cost = float((self.costs["spread"] + self.costs["impact"] + self.costs["fees"]).sum())
-        rv = realized_vs_exante_risk(g, self.exante_var.shift(1).reindex(g.index), q) \
-            if len(self.exante_var) else {"ratio": float("nan")}
+        rv = (
+            realized_vs_exante_risk(g, self.exante_var.shift(1).reindex(g.index), q)
+            if len(self.exante_var)
+            else {"ratio": float("nan")}
+        )
         gross_w = self.weights.abs().sum(axis=1)
         out = {
             "start": str(self.nav.index[0].date()) if len(self.nav) else "",
@@ -145,10 +149,13 @@ class BacktestResult:
             "avg_daily_turnover": float(self.turnover.mean()) if len(self.turnover) else float("nan"),
             "effective_holding_days": effective_holding_days(self.turnover, gross_w),
             "avg_cost_bps_per_side": trading_cost / traded * 1e4 if traded > 0 else float("nan"),
-            "avg_daily_cost_bps_of_nav": float(self.cost_bps_of_nav.mean()) if len(self.costs) else float("nan"),
+            "avg_daily_cost_bps_of_nav": float(self.cost_bps_of_nav.mean())
+            if len(self.costs)
+            else float("nan"),
             "total_costs_usd": float(self.costs["total"].sum()),
             "transfer_coefficient_mean": float(self.transfer_coefficient.mean())
-            if len(self.transfer_coefficient.dropna()) else float("nan"),
+            if len(self.transfer_coefficient.dropna())
+            else float("nan"),
             "realized_vs_exante_vol_ratio": rv["ratio"],
             "breakeven_cost_bps": M.breakeven_cost_bps(g, self.turnover_on_return_dates().reindex(g.index)),
             "n_delistings": len(self.diagnostics.get("delistings", [])),
@@ -204,10 +211,15 @@ def cost_frame(est, tickers: pd.Index) -> pd.DataFrame:
                 out["impact"] = est[cols["total"]].reindex(tickers).astype(float)
                 matched.append(cols["total"])
             else:
-                raise ValueError("estimate() returned no recognised cost column "
-                                 f"(expected spread/impact/fees[_usd|_cost] or total); got {list(est.columns)}")
-        bad = {c: list(out.index[~np.isfinite(out[c].values)][:5]) for c in out.columns
-               if not np.isfinite(out[c].values).all()}
+                raise ValueError(
+                    "estimate() returned no recognised cost column "
+                    f"(expected spread/impact/fees[_usd|_cost] or total); got {list(est.columns)}"
+                )
+        bad = {
+            c: list(out.index[~np.isfinite(out[c].values)][:5])
+            for c in out.columns
+            if not np.isfinite(out[c].values).all()
+        }
         if bad:
             raise ValueError(f"estimate() returned non-finite costs (source columns {matched}): {bad}")
         return out
@@ -240,29 +252,42 @@ class _LegacyCostModel:
 
     def snapshot(self, md: MarketData, t: pd.Timestamp) -> Snapshot:
         fn = getattr(self.model, "snapshot_from_market", None)
-        raw = fn(md, t) if callable(fn) else snapshot_from_market(md, t, self.adv_window, self.vol_window,
-                                                                   self.cfg.cost).to_dict()
+        raw = (
+            fn(md, t)
+            if callable(fn)
+            else snapshot_from_market(md, t, self.adv_window, self.vol_window, self.cfg.cost).to_dict()
+        )
         out = align_snapshot(dict(raw), md.tickers, self.cfg.cost)
         out.setdefault("date", pd.Timestamp(t))
         return out
 
-    def estimate(self, trades_usd: pd.Series, snap: Snapshot, venue: str | None = None,
-                 streak: pd.Series | None = None) -> CostEstimate:
+    def estimate(
+        self, trades_usd: pd.Series, snap: Snapshot, venue: str | None = None, streak: pd.Series | None = None
+    ) -> CostEstimate:
         kw: dict[str, object] = {}
         if "venue" in self._params and venue is not None:
             kw["venue"] = venue
         if "streak" in self._params and streak is not None:
             kw["streak"] = streak
         cf = cost_frame(self.model.estimate(trades_usd, snap, **kw), trades_usd.index)
-        return CostEstimate.from_components(trades_usd.index, venue or VENUE_ROUTED, trades_usd,
-                                            cf["spread"].to_numpy(), cf["impact"].to_numpy(),
-                                            cf["fees"].to_numpy())
+        return CostEstimate.from_components(
+            trades_usd.index,
+            venue or VENUE_ROUTED,
+            trades_usd,
+            cf["spread"].to_numpy(),
+            cf["impact"].to_numpy(),
+            cf["fees"].to_numpy(),
+        )
 
     def holding_cost_usd(self, w_post: pd.Series, nav: float, snap: Snapshot) -> pd.Series:
         fn = getattr(self.model, "holding_cost_usd", None)
         if callable(fn):
             return pd.Series(fn(w_post, nav, snap), dtype=float).reindex(w_post.index).fillna(0.0)
-        fee = pd.Series(snap["borrow_fee"]).reindex(w_post.index).fillna(self.cfg.cost.default_borrow_fee_annual)
+        fee = (
+            pd.Series(snap["borrow_fee"])
+            .reindex(w_post.index)
+            .fillna(self.cfg.cost.default_borrow_fee_annual)
+        )
         return (-w_post).clip(lower=0.0) * nav * fee / self.cfg.trading_days_per_year
 
 
@@ -278,8 +303,10 @@ class DailyBarSimulator:
         if callable(getattr(cost_model, "snapshot", None)):
             self._cm = cost_model
         else:
-            log.info("DailyBarSimulator: %s has no snapshot(); using the legacy cost-model adapter",
-                     type(cost_model).__name__)
+            log.info(
+                "DailyBarSimulator: %s has no snapshot(); using the legacy cost-model adapter",
+                type(cost_model).__name__,
+            )
             self._cm = _LegacyCostModel(cost_model, cfg, adv_window, vol_window)
 
     _cost_frame = staticmethod(cost_frame)
@@ -320,25 +347,31 @@ class DailyBarSimulator:
             raise ValueError("need at least two dates")
         if not dates.isin(md.dates).all():
             raise ValueError("dates must be a subset of md.dates")
-        lag = int(signal_lag_days if signal_lag_days is not None
-                  else getattr(self.cfg.execution, "signal_lag_days", 0))
+        lag = int(
+            signal_lag_days
+            if signal_lag_days is not None
+            else getattr(self.cfg.execution, "signal_lag_days", 0)
+        )
         if lag < 0:
             raise ValueError("signal_lag_days must be >= 0")
         tickers = md.tickers
         N = len(tickers)
         md_pos = md.dates.get_indexer(dates)
         close = md.close.loc[dates]
-        R = close.pct_change(fill_method=None)            # return realised on row date
+        R = close.pct_change(fill_method=None)  # return realised on row date
         price_ok = close.notna()
         elig_panel = getattr(md, "eligible", None)
-        elig_md: np.ndarray | None = None               # rows aligned with md.dates
+        elig_md: np.ndarray | None = None  # rows aligned with md.dates
         if elig_panel is not None:
             elig_md = elig_panel.reindex(index=md.dates, columns=tickers).fillna(False).astype(bool).values
             eligible_fn = None
-        exit_days = int(exit_ineligible_days if exit_ineligible_days is not None
-                        else getattr(self.cfg.portfolio, "exit_ineligible_days", 5))
+        exit_days = int(
+            exit_ineligible_days
+            if exit_ineligible_days is not None
+            else getattr(self.cfg.portfolio, "exit_ineligible_days", 5)
+        )
         exit_days = max(exit_days, 1)
-        forced: dict[str, dict[str, float]] = {}   # ticker -> {"w0": |w| at entry, "k": days elapsed}
+        forced: dict[str, dict[str, float]] = {}  # ticker -> {"w0": |w| at entry, "k": days elapsed}
         forced_log: list[dict[str, object]] = []
         n_out_of_model = 0
         n_ineligible_days = 0
@@ -348,7 +381,7 @@ class DailyBarSimulator:
 
         def snap_at(d: pd.Timestamp) -> Snapshot:
             if d not in snap_cache:
-                if len(snap_cache) > lag + 2:          # keep only the window still needed
+                if len(snap_cache) > lag + 2:  # keep only the window still needed
                     snap_cache.pop(next(iter(snap_cache)))
                 snap_cache[d] = self._snapshot(md, d)
             return snap_cache[d]
@@ -369,7 +402,7 @@ class DailyBarSimulator:
         navs[0] = nav
         gross = np.empty(T)
         net = np.empty(T)
-        streak = np.zeros(N)            # consecutive same-direction trading days per name
+        streak = np.zeros(N)  # consecutive same-direction trading days per name
         last_sign = np.zeros(N)
         delistings: list[dict[str, object]] = []
         solve_log: list[dict[str, object]] = []
@@ -406,7 +439,7 @@ class DailyBarSimulator:
             for tk in list(forced):
                 j = tickers.get_loc(tk)
                 if eligible[j] or not held[j]:
-                    forced.pop(tk)          # back in the universe, or already flat
+                    forced.pop(tk)  # back in the universe, or already flat
             force_caps: dict[str, float] = {}
             for tk, st in forced.items():
                 st["k"] += 1.0
@@ -427,24 +460,42 @@ class DailyBarSimulator:
                 if solve_accepts_hl and hl is not None:
                     solve_kw["alpha_half_life_days"] = float(hl)
                 res = optimizer.solve(
-                    alpha=exp_ret, risk=last_risk, w_current=pd.Series(w_pre, index=tickers), nav=nav,
-                    snapshot=snap_at(sig_date), venue=venue, neutral_styles=neutral_styles, no_trade=dead,
+                    alpha=exp_ret,
+                    risk=last_risk,
+                    w_current=pd.Series(w_pre, index=tickers),
+                    nav=nav,
+                    snapshot=snap_at(sig_date),
+                    venue=venue,
+                    neutral_styles=neutral_styles,
+                    no_trade=dead,
                     horizon_days=getattr(last_alpha, "horizon_days", None) or optimizer.horizon_days,
-                    force_to_zero=force_caps or None, **solve_kw,
+                    force_to_zero=force_caps or None,
+                    **solve_kw,
                 )
                 if res.status not in ("optimal", "optimal_inaccurate"):
                     n_failed += 1
-                    log.warning("optimizer solve failed on %s: status=%s (holding current book)",
-                                t.date(), res.status)
+                    log.warning(
+                        "optimizer solve failed on %s: status=%s (holding current book)", t.date(), res.status
+                    )
                 n_out_of_model += int(getattr(res, "n_out_of_model", 0) or 0)
                 w_post = np.array(res.w_target.reindex(tickers).fillna(0.0).values, dtype=float, copy=True)
                 w_post[~alive] = w_pre[~alive]  # cannot trade names without a price
                 TC[i] = res.transfer_coefficient
-                solve_log.append({"date": t, "signal_date": sig_date, "status": res.status,
-                                  "solve_time": res.solve_time, "binding": res.binding_constraints,
-                                  "vol_scalar": res.vol_scalar, "expected_alpha": res.expected_alpha,
-                                  "expected_risk": res.expected_risk, "expected_cost": res.expected_cost,
-                                  "notes": res.notes, "n_out_of_model": getattr(res, "n_out_of_model", 0)})
+                solve_log.append(
+                    {
+                        "date": t,
+                        "signal_date": sig_date,
+                        "status": res.status,
+                        "solve_time": res.solve_time,
+                        "binding": res.binding_constraints,
+                        "vol_scalar": res.vol_scalar,
+                        "expected_alpha": res.expected_alpha,
+                        "expected_risk": res.expected_risk,
+                        "expected_cost": res.expected_cost,
+                        "notes": res.notes,
+                        "n_out_of_model": getattr(res, "n_out_of_model", 0),
+                    }
+                )
             x = w_post - w_pre
             x[np.abs(x) < 1e-10] = 0.0
             w_post = w_pre + x
@@ -454,8 +505,12 @@ class DailyBarSimulator:
             sgn = np.sign(x)
             streak = np.where(sgn != 0, np.where(sgn == last_sign, streak + 1.0, 1.0), 0.0)
             last_sign = sgn
-            est = self._cm.estimate(pd.Series(x * nav, index=tickers), snap_exec, venue=venue,
-                                    streak=pd.Series(streak, index=tickers))
+            est = self._cm.estimate(
+                pd.Series(x * nav, index=tickers),
+                snap_exec,
+                venue=venue,
+                streak=pd.Series(streak, index=tickers),
+            )
             cf = cost_frame(est, tickers)
             borrow = self._cm.holding_cost_usd(pd.Series(w_post, index=tickers), nav, snap_exec)
             c_spread = float(cf["spread"].sum())
@@ -480,18 +535,28 @@ class DailyBarSimulator:
                 r[liquidate] = haircut * np.sign(w_post[liquidate])
                 x_liq = np.zeros(N)
                 x_liq[liquidate] = -w_post[liquidate] * (1.0 + r[liquidate])
-                liq_cf = cost_frame(self._cm.estimate(pd.Series(x_liq * nav, index=tickers), snap_exec,
-                                                      venue=VENUE_CONTINUOUS, streak=None), tickers)
+                liq_cf = cost_frame(
+                    self._cm.estimate(
+                        pd.Series(x_liq * nav, index=tickers), snap_exec, venue=VENUE_CONTINUOUS, streak=None
+                    ),
+                    tickers,
+                )
                 liq_cf["impact"] = 0.0
                 for j in np.where(liquidate)[0]:
-                    delistings.append({"date": t1, "ticker": tickers[j], "weight": float(w_post[j]),
-                                       "haircut_return": float(r[j]),
-                                       "liquidation_usd": float(abs(x_liq[j]) * nav),
-                                       "cost_usd": float(liq_cf.iloc[j].sum())})
+                    delistings.append(
+                        {
+                            "date": t1,
+                            "ticker": tickers[j],
+                            "weight": float(w_post[j]),
+                            "haircut_return": float(r[j]),
+                            "liquidation_usd": float(abs(x_liq[j]) * nav),
+                            "cost_usd": float(liq_cf.iloc[j].sum()),
+                        }
+                    )
                 c_spread += float(liq_cf["spread"].sum())
                 c_fees += float(liq_cf["fees"].sum())
                 c_total = c_spread + c_impact + c_fees + c_borrow
-                x = x + x_liq                     # recorded in trades / turnover below
+                x = x + x_liq  # recorded in trades / turnover below
             g_ret = float(w_post @ r)
             nav1 = nav * (1.0 + g_ret) - c_total
             n_ret = nav1 / nav - 1.0
@@ -516,17 +581,17 @@ class DailyBarSimulator:
                 log.error("NAV <= 0 on %s; stopping", t1)
                 T_eff = i + 1
                 W, X, C, EXV, TO, TC = W[:T_eff], X[:T_eff], C[:T_eff], EXV[:T_eff], TO[:T_eff], TC[:T_eff]
-                navs, gross, net = navs[:T_eff + 1], gross[:T_eff], net[:T_eff]
-                dates = dates[:T_eff + 1]
+                navs, gross, net = navs[: T_eff + 1], gross[:T_eff], net[:T_eff]
+                dates = dates[: T_eff + 1]
                 T = T_eff
                 break
             if progress and i % 50 == 0:
                 log.info("%s nav=%.0f gross=%.4f to=%.3f", t.date(), nav, g_ret, TO[i])
 
         dec = dates[:T]
-        real = dates[1:T + 1]
+        real = dates[1 : T + 1]
         res_obj = BacktestResult(
-            nav=pd.Series(navs, index=dates[:T + 1], name="nav"),
+            nav=pd.Series(navs, index=dates[: T + 1], name="nav"),
             returns=pd.DataFrame({"gross": gross, "net": net}, index=real),
             weights=pd.DataFrame(W, index=dec, columns=tickers),
             trades=pd.DataFrame(X, index=dec, columns=tickers),
@@ -535,16 +600,26 @@ class DailyBarSimulator:
             turnover=pd.Series(TO, index=dec, name="turnover"),
             transfer_coefficient=pd.Series(TC, index=dec, name="transfer_coefficient"),
             periods_per_year=self.cfg.trading_days_per_year,
-            diagnostics={"delistings": delistings, "solve_log": solve_log, "n_failed_solves": n_failed,
-                         "run_time_sec": time.perf_counter() - t_start, "rebalance_every": rebalance_every,
-                         "venue": venue, "signal_lag_days": lag, "n_no_signal_days": n_no_signal,
-                         "forced_exits": forced_log,
-                         "n_ineligible_name_days": n_ineligible_days,
-                         "n_out_of_model_name_days": n_out_of_model},
+            diagnostics={
+                "delistings": delistings,
+                "solve_log": solve_log,
+                "n_failed_solves": n_failed,
+                "run_time_sec": time.perf_counter() - t_start,
+                "rebalance_every": rebalance_every,
+                "venue": venue,
+                "signal_lag_days": lag,
+                "n_no_signal_days": n_no_signal,
+                "forced_exits": forced_log,
+                "n_ineligible_name_days": n_ineligible_days,
+                "n_out_of_model_name_days": n_out_of_model,
+            },
         )
         if n_failed:
             log.warning("backtest: %d failed solves (see diagnostics['solve_log'])", n_failed)
         if n_out_of_model:
-            log.warning("backtest: %d name-days with alpha/position outside the risk-model universe "
-                        "(priced at 90th-pct specific variance, zero factor exposure)", n_out_of_model)
+            log.warning(
+                "backtest: %d name-days with alpha/position outside the risk-model universe "
+                "(priced at 90th-pct specific variance, zero factor exposure)",
+                n_out_of_model,
+            )
         return res_obj

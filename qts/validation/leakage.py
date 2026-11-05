@@ -22,6 +22,7 @@ shift arguments (``shift(-1)``, ``shift(periods=-5)``), and cannot see
 or ``bfill``.  It is a cheap tripwire; :func:`pit_shift_test` is the real gate
 and must be run on every registered feature.
 """
+
 from __future__ import annotations
 
 import ast
@@ -45,8 +46,13 @@ class LeakageError(AssertionError):
 
 
 # --------------------------------------------------------------------------- PIT test
-def pit_shift_test(build_fn: Callable[[MarketData], Wide], md: MarketData, cut_date,
-                   atol: float = 1e-10, raise_on_fail: bool = False) -> bool:
+def pit_shift_test(
+    build_fn: Callable[[MarketData], Wide],
+    md: MarketData,
+    cut_date,
+    atol: float = 1e-10,
+    raise_on_fail: bool = False,
+) -> bool:
     """True iff ``build_fn`` is point-in-time at ``cut_date``.
 
     Compares ``build_fn(md)`` restricted to dates ``<= cut_date`` against
@@ -74,14 +80,22 @@ def pit_shift_test(build_fn: Callable[[MarketData], Wide], md: MarketData, cut_d
             if diff.size and diff.max() > atol:
                 bad = np.argwhere(diff > atol)
                 d0 = full_c.index[bad[0][0]]
-                ok, reason = False, f"{len(bad)} cells differ; first at {d0.date()} (max |diff| {diff.max():.3g})"
+                ok, reason = (
+                    False,
+                    f"{len(bad)} cells differ; first at {d0.date()} (max |diff| {diff.max():.3g})",
+                )
     if not ok and raise_on_fail:
         raise LeakageError(f"pit_shift_test failed at cut {cut.date()}: {reason}")
     return ok
 
 
-def label_overlap_check(train_dates, test_dates, horizon: int, raise_on_fail: bool = False,
-                        calendar: pd.DatetimeIndex | None = None) -> bool:
+def label_overlap_check(
+    train_dates,
+    test_dates,
+    horizon: int,
+    raise_on_fail: bool = False,
+    calendar: pd.DatetimeIndex | None = None,
+) -> bool:
     """True iff no train label window [s, s+horizon] overlaps any test label window.
 
     ``horizon`` is counted in trading days on ``calendar`` (default: business
@@ -117,8 +131,9 @@ def forward_return(md: MarketData, horizon: int) -> Wide:
     return md.close.shift(-horizon) / md.close - 1.0
 
 
-def simple_rank_backtest(md: MarketData, feature: Wide, horizon: int = 20, quantile: float = 0.2,
-                         periods_per_year: int = 252) -> dict[str, float]:
+def simple_rank_backtest(
+    md: MarketData, feature: Wide, horizon: int = 20, quantile: float = 0.2, periods_per_year: int = 252
+) -> dict[str, float]:
     """Minimal long-short quantile backtest used by :func:`planted_oracle_test`.
 
     Each day rank ``feature``, go long the top ``quantile`` and short the
@@ -137,8 +152,12 @@ def simple_rank_backtest(md: MarketData, feature: Wide, horizon: int = 20, quant
     return {"sharpe": sr, "mean_daily": float(pnl.mean()) if len(pnl) else 0.0, "n_obs": len(pnl)}
 
 
-def planted_oracle_test(backtest_fn: Callable[[MarketData, Wide], object] | None, md: MarketData,
-                        horizon: int = 20, suspect_sharpe: float = SUSPECT_SHARPE) -> dict[str, object]:
+def planted_oracle_test(
+    backtest_fn: Callable[[MarketData, Wide], object] | None,
+    md: MarketData,
+    horizon: int = 20,
+    suspect_sharpe: float = SUSPECT_SHARPE,
+) -> dict[str, object]:
     """Run ``backtest_fn(md, oracle_feature)`` with the oracle = future return.
 
     ``backtest_fn`` may return a float Sharpe or a dict containing ``"sharpe"``.
@@ -152,18 +171,43 @@ def planted_oracle_test(backtest_fn: Callable[[MarketData, Wide], object] | None
     out = fn(md, oracle)
     sr = float(out["sharpe"]) if isinstance(out, dict) else float(out)
     flagged = sr > suspect_sharpe
-    return {"sharpe": sr, "flagged": flagged, "passed": flagged,
-            "message": ("oracle correctly flagged as suspect" if flagged else
-                        "ORACLE NOT FLAGGED: the suspect-Sharpe gate or the backtest wiring is broken")}
+    return {
+        "sharpe": sr,
+        "flagged": flagged,
+        "passed": flagged,
+        "message": (
+            "oracle correctly flagged as suspect"
+            if flagged
+            else "ORACLE NOT FLAGGED: the suspect-Sharpe gate or the backtest wiring is broken"
+        ),
+    }
 
 
 # --------------------------------------------------------------------------- registry
 FEATURE_REGISTRY: dict[str, dict[str, object]] = {}
 
-_PANEL_NAMES = {"close", "volume", "market_cap", "industry", "spread_bps", "short_interest_ratio",
-                "borrow_fee", "book_to_price", "earnings_yield", "gross_profitability", "asset_growth",
-                "returns", "dollar_volume", "extra", "close_raw", "shares_outstanding", "industry_history",
-                "eligible", "trade_price", "industry_as_of"}
+_PANEL_NAMES = {
+    "close",
+    "volume",
+    "market_cap",
+    "industry",
+    "spread_bps",
+    "short_interest_ratio",
+    "borrow_fee",
+    "book_to_price",
+    "earnings_yield",
+    "gross_profitability",
+    "asset_growth",
+    "returns",
+    "dollar_volume",
+    "extra",
+    "close_raw",
+    "shares_outstanding",
+    "industry_history",
+    "eligible",
+    "trade_price",
+    "industry_as_of",
+}
 
 
 def _negative_shift_calls(tree: ast.AST):
@@ -178,8 +222,12 @@ def _negative_shift_calls(tree: ast.AST):
         args += [kw.value for kw in node.keywords if kw.arg == "periods"]
         for a in args:
             val = None
-            if (isinstance(a, ast.UnaryOp) and isinstance(a.op, ast.USub) and isinstance(a.operand, ast.Constant)
-                    and isinstance(a.operand.value, (int, float))):
+            if (
+                isinstance(a, ast.UnaryOp)
+                and isinstance(a.op, ast.USub)
+                and isinstance(a.operand, ast.Constant)
+                and isinstance(a.operand.value, (int, float))
+            ):
                 val = -a.operand.value
             elif isinstance(a, ast.Constant) and isinstance(a.value, (int, float)):
                 val = a.value
@@ -191,10 +239,18 @@ def _negative_shift_calls(tree: ast.AST):
 def _panel_reads(tree: ast.AST, md_param: str | None):
     reads = set()
     for node in ast.walk(tree):
-        if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
-                and (md_param is None or node.value.id == md_param) and node.attr in _PANEL_NAMES):
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and (md_param is None or node.value.id == md_param)
+            and node.attr in _PANEL_NAMES
+        ):
             reads.add(node.attr)
-        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute) and node.value.attr == "extra":
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "extra"
+        ):
             key = node.slice
             if isinstance(key, ast.Constant):
                 reads.add(f"extra[{key.value!r}]")
@@ -214,6 +270,7 @@ def feature_registry(fn: Callable | None = None, *, name: str | None = None, rea
     function source calls ``.shift(-k)`` with ``k > 0``.  See module docstring
     for the limits of the static check.
     """
+
     def deco(f):
         try:
             src = textwrap.dedent(inspect.getsource(f))
@@ -224,7 +281,9 @@ def feature_registry(fn: Callable | None = None, *, name: str | None = None, rea
             bad = _negative_shift_calls(tree)
             if bad:
                 ln, k = bad[0]
-                raise LeakageError(f"{f.__name__}: .shift({k}) at line {ln} looks ahead; refused by feature_registry")
+                raise LeakageError(
+                    f"{f.__name__}: .shift({k}) at line {ln} looks ahead; refused by feature_registry"
+                )
         params = list(inspect.signature(f).parameters)
         md_param = params[0] if params else None
         detected = _panel_reads(tree, md_param) if tree is not None else []
@@ -239,6 +298,7 @@ def feature_registry(fn: Callable | None = None, *, name: str | None = None, rea
         @functools.wraps(f)
         def wrapper(*a, **k):
             return f(*a, **k)
+
         wrapper.__feature_entry__ = entry
         return wrapper
 

@@ -44,6 +44,7 @@ It is slow (one optimisation per date per bisection step) and is deliberately
 shipped default 0.25 is the median over three synthetic seeds of the
 production-optimizer calibration (``docs/notes/alignment_nu_calibration.md``).
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -57,10 +58,15 @@ from qts.core.types import RiskModelOutput
 from qts.risk.covariance import style_variances
 
 
-def alpha_alignment(alpha: pd.Series, exposures: pd.DataFrame, specific_var: pd.Series,
-                    nu_scale: float | None = None, factor_cov: pd.DataFrame | None = None,
-                    cfg: RiskConfig | None = None, weighted: bool = False
-                    ) -> tuple[pd.Series, float]:
+def alpha_alignment(
+    alpha: pd.Series,
+    exposures: pd.DataFrame,
+    specific_var: pd.Series,
+    nu_scale: float | None = None,
+    factor_cov: pd.DataFrame | None = None,
+    cfg: RiskConfig | None = None,
+    weighted: bool = False,
+) -> tuple[pd.Series, float]:
     """Return ``(y, nu)``: unit-norm alignment vector orthogonal to the
     exposure columns.
 
@@ -112,12 +118,13 @@ def misalignment_gauge(alpha: pd.Series, exposures: pd.DataFrame) -> float:
     coef, *_ = np.linalg.lstsq(B, a, rcond=None)
     resid = a - B @ coef
     tss = float(((a - a.mean()) ** 2).sum())
-    return float((resid ** 2).sum() / tss) if tss > 0 else np.nan
+    return float((resid**2).sum() / tss) if tss > 0 else np.nan
 
 
 # --------------------------------------------------------------------------- nu calibration
-def _default_mean_variance_book(date: pd.Timestamp, rm: RiskModelOutput, alpha: pd.Series,
-                                gross: float = 2.0) -> pd.Series:
+def _default_mean_variance_book(
+    date: pd.Timestamp, rm: RiskModelOutput, alpha: pd.Series, gross: float = 2.0
+) -> pd.Series:
     """Cheap stand-in for the production optimizer: dollar-neutral
     ``Sigma_aug^{-1} alpha`` scaled to ``gross``.  Loads on ``alpha_perp`` in
     exactly the way an unconstrained optimizer does, which is the effect the
@@ -246,6 +253,15 @@ def calibrate_alignment_nu(
                 c_ = m_
     grid_out = [(float(g), bias_for(float(g))) for g in (grid or [])]
     lo_band, hi_band = bias_band(len(base))
-    return {"grid": grid_out, "nu_scale": float(nu_star), "bias": float(b_star), "bias_unaligned": float(b0),
-            "lower": lo_band, "upper": hi_band, "in_band": bool(lo_band <= b_star <= hi_band),
-            "n_dates": len(base), "history": history, "converged": converged}
+    return {
+        "grid": grid_out,
+        "nu_scale": float(nu_star),
+        "bias": float(b_star),
+        "bias_unaligned": float(b0),
+        "lower": lo_band,
+        "upper": hi_band,
+        "in_band": bool(lo_band <= b_star <= hi_band),
+        "n_dates": len(base),
+        "history": history,
+        "converged": converged,
+    }

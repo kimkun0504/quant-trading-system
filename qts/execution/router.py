@@ -31,6 +31,7 @@ forceCompletion`` only -- ``noTakeLiq`` is not a documented ClosePx parameter
 Campus Close Price lesson; finding #22) and is no longer sent.  ``Vwap`` does
 document ``noTakeLiq``.
 """
+
 from __future__ import annotations
 
 import math
@@ -58,8 +59,12 @@ class ExecutionRouter:
     violated by the order's own expected impact.  Set to 0 to use the fixed offset.
     """
 
-    def __init__(self, cfg: ExecutionConfig | None = None, cost_cfg: CostConfig | None = None,
-                 loc_offset_impact_mult: float = 1.5):
+    def __init__(
+        self,
+        cfg: ExecutionConfig | None = None,
+        cost_cfg: CostConfig | None = None,
+        loc_offset_impact_mult: float = 1.5,
+    ):
         self.cfg = cfg or ExecutionConfig()
         self.cost_cfg = cost_cfg or CostConfig()
         self.loc_offset_impact_mult = loc_offset_impact_mult
@@ -83,12 +88,21 @@ class ExecutionRouter:
     @staticmethod
     def is_reversal(order: Order) -> bool:
         m = order.meta or {}
-        return bool(m.get("reversal")) or str(m.get("sleeve", "")).lower() in ("reversal", "str", "short_term_reversal")
+        return bool(m.get("reversal")) or str(m.get("sleeve", "")).lower() in (
+            "reversal",
+            "str",
+            "short_term_reversal",
+        )
 
     def loc_offset_bps(self, qty: float, auction_volume: float, sigma_daily: float) -> float:
         """Offset in bps through the indicative: see class docstring."""
         off = float(self.cfg.loc_offset_bps)
-        if self.loc_offset_impact_mult > 0 and np.isfinite(auction_volume) and auction_volume > 0 and np.isfinite(sigma_daily):
+        if (
+            self.loc_offset_impact_mult > 0
+            and np.isfinite(auction_volume)
+            and auction_volume > 0
+            and np.isfinite(sigma_daily)
+        ):
             e = float(self.cost_cfg.impact_exponent)
             exp_imp = 1e4 * self.cost_cfg.impact_b_auction * sigma_daily * (qty / auction_volume) ** (e - 1.0)
             off = max(off, self.loc_offset_impact_mult * exp_imp)
@@ -104,7 +118,7 @@ class ExecutionRouter:
         """Round ``px`` to the tick, ``direction`` "up" (ceil) or "down" (floor)."""
         tick = cls.tick_size(px)
         n = px / tick
-        n = round(n, 6)                       # kill float noise (7.0021/0.01 = 700.21 exactly)
+        n = round(n, 6)  # kill float noise (7.0021/0.01 = 700.21 exactly)
         k = math.ceil(n) if direction == "up" else math.floor(n)
         return round(k * tick, 4 if tick < 0.01 else 2)
 
@@ -138,8 +152,9 @@ class ExecutionRouter:
         return float(np.clip(urgency_from_half_life(float(half_life_days)), min(0.01, cap), cap))
 
     # --------------------------------------------------------------- route
-    def route(self, orders: list[Order], snapshot: dict, signal_half_life_days: float | None = None,
-              date=None) -> list[Order]:
+    def route(
+        self, orders: list[Order], snapshot: dict, signal_half_life_days: float | None = None, date=None
+    ) -> list[Order]:
         """Return new Order objects with order_type/limit/algo set and
         ``meta['routing_reason']`` populated.  Per-order ``meta['half_life_days']``
         overrides ``signal_half_life_days``."""
@@ -164,20 +179,44 @@ class ExecutionRouter:
             # 1) reversal sleeve: passive, never marketable
             if self.is_reversal(o):
                 lim = self.passive_limit(o.side, ind, hs) if np.isfinite(ind) else None
-                meta["routing_reason"] = (f"reversal sleeve -> passive LMT at {lim} "
-                                          f"(liquidity provision; never cross the spread)")
-                routed.append(o.with_(order_type="LMT", limit_px=lim, algo=None, algo_params={},
-                                      tif="DAY", venue_hint="continuous", meta=meta))
+                meta["routing_reason"] = (
+                    f"reversal sleeve -> passive LMT at {lim} (liquidity provision; never cross the spread)"
+                )
+                routed.append(
+                    o.with_(
+                        order_type="LMT",
+                        limit_px=lim,
+                        algo=None,
+                        algo_params={},
+                        tif="DAY",
+                        venue_hint="continuous",
+                        meta=meta,
+                    )
+                )
                 continue
 
             # 2) fast-decaying signal: arrival-price algo at next open
             if hl is not None and float(hl) < cfg.urgency_half_life_days_threshold:
-                params = {"maxPctVol": self.participation(hl), "riskAversion": "Aggressive",
-                          "forceCompletion": False, "allowPastEndTime": True}
-                meta["routing_reason"] = (f"half-life {float(hl):.1f}d < {cfg.urgency_half_life_days_threshold}d "
-                                          f"-> ALGO ArrivalPx at next open, maxPctVol {params['maxPctVol']:.1%}")
-                routed.append(o.with_(order_type="ALGO", algo=ALGO_ARRIVAL, algo_params=params, limit_px=None,
-                                      venue_hint="open", meta=meta))
+                params = {
+                    "maxPctVol": self.participation(hl),
+                    "riskAversion": "Aggressive",
+                    "forceCompletion": False,
+                    "allowPastEndTime": True,
+                }
+                meta["routing_reason"] = (
+                    f"half-life {float(hl):.1f}d < {cfg.urgency_half_life_days_threshold}d "
+                    f"-> ALGO ArrivalPx at next open, maxPctVol {params['maxPctVol']:.1%}"
+                )
+                routed.append(
+                    o.with_(
+                        order_type="ALGO",
+                        algo=ALGO_ARRIVAL,
+                        algo_params=params,
+                        limit_px=None,
+                        venue_hint="open",
+                        meta=meta,
+                    )
+                )
                 continue
 
             # 3) small relative to the closing auction: LOC through the indicative
@@ -185,15 +224,27 @@ class ExecutionRouter:
                 off = self.loc_offset_bps(o.qty, auc, sig)
                 lim = self.loc_limit(o.side, ind, off)
                 meta["loc_offset_bps"] = off
-                meta["routing_reason"] = (f"{pct_auc:.2%} of est. auction volume <= "
-                                          f"{cfg.auction_max_pct_of_auction_volume:.0%} -> LOC "
-                                          f"{'above' if o.side == 'BUY' else 'below'} indicative {ind:.2f} "
-                                          f"by {off:.1f}bp; submit before 15:50 ET")
-                routed.append(o.with_(order_type="LOC", limit_px=lim, algo=None, algo_params={},
-                                      venue_hint="auction", meta=meta))
+                meta["routing_reason"] = (
+                    f"{pct_auc:.2%} of est. auction volume <= "
+                    f"{cfg.auction_max_pct_of_auction_volume:.0%} -> LOC "
+                    f"{'above' if o.side == 'BUY' else 'below'} indicative {ind:.2f} "
+                    f"by {off:.1f}bp; submit before 15:50 ET"
+                )
+                routed.append(
+                    o.with_(
+                        order_type="LOC",
+                        limit_px=lim,
+                        algo=None,
+                        algo_params={},
+                        venue_hint="auction",
+                        meta=meta,
+                    )
+                )
                 continue
             if pct_auc <= cfg.auction_max_pct_of_auction_volume:  # no indicative price available
-                meta["routing_reason"] = (f"{pct_auc:.2%} of est. auction volume but no indicative price -> MOC")
+                meta["routing_reason"] = (
+                    f"{pct_auc:.2%} of est. auction volume but no indicative price -> MOC"
+                )
                 routed.append(o.with_(order_type="MOC", limit_px=None, venue_hint="auction", meta=meta))
                 continue
 
@@ -202,22 +253,45 @@ class ExecutionRouter:
             low_urgency = hl is None or float(hl) >= 2 * cfg.urgency_half_life_days_threshold
             algo = ALGO_CLOSE if low_urgency else ALGO_VWAP
             params = {"maxPctVol": max_pct}
-            if algo == ALGO_VWAP:     # noTakeLiq is documented for Vwap, not for ClosePx (#22)
+            if algo == ALGO_VWAP:  # noTakeLiq is documented for Vwap, not for ClosePx (#22)
                 params.update(startTime="13:00:00 US/Eastern", endTime="16:00:00 US/Eastern", noTakeLiq=False)
-            reason = (f"{pct_auc:.1%} of est. auction volume > {cfg.auction_max_pct_of_auction_volume:.0%} "
-                      f"-> ALGO {algo}, maxPctVol {max_pct:.1%}")
+            reason = (
+                f"{pct_auc:.1%} of est. auction volume > {cfg.auction_max_pct_of_auction_volume:.0%} "
+                f"-> ALGO {algo}, maxPctVol {max_pct:.1%}"
+            )
             if pct_adv > max_pct:
-                reason += (f"; WARNING order is {pct_adv:.1%} of ADV > {max_pct:.1%} participation cap: "
-                           f"expect partial fill / multi-day working")
+                reason += (
+                    f"; WARNING order is {pct_adv:.1%} of ADV > {max_pct:.1%} participation cap: "
+                    f"expect partial fill / multi-day working"
+                )
                 meta["multi_day"] = True
             meta["routing_reason"] = reason
-            routed.append(o.with_(order_type="ALGO", algo=algo, algo_params=params, limit_px=None,
-                                  venue_hint="continuous", meta=meta))
+            routed.append(
+                o.with_(
+                    order_type="ALGO",
+                    algo=algo,
+                    algo_params=params,
+                    limit_px=None,
+                    venue_hint="continuous",
+                    meta=meta,
+                )
+            )
         return routed
 
     def routing_table(self, routed: list[Order]) -> pd.DataFrame:
-        rows = [{"ticker": o.ticker, "side": o.side, "qty": o.qty, "order_type": o.order_type,
-                 "algo": o.algo, "limit_px": o.limit_px, "venue_hint": o.venue_hint,
-                 "pct_auction": o.meta.get("pct_of_auction_volume"), "pct_adv": o.meta.get("pct_of_adv"),
-                 "reason": o.meta.get("routing_reason")} for o in routed]
+        rows = [
+            {
+                "ticker": o.ticker,
+                "side": o.side,
+                "qty": o.qty,
+                "order_type": o.order_type,
+                "algo": o.algo,
+                "limit_px": o.limit_px,
+                "venue_hint": o.venue_hint,
+                "pct_auction": o.meta.get("pct_of_auction_volume"),
+                "pct_adv": o.meta.get("pct_of_adv"),
+                "reason": o.meta.get("routing_reason"),
+            }
+            for o in routed
+        ]
         return pd.DataFrame(rows)

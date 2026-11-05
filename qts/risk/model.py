@@ -28,6 +28,7 @@ the bucket's first observation only, so ``as_of(t)`` never uses data after
 ``t`` and does not depend on query order (finding #46).  The bias ratios
 depend only on the estimator and the eigenvalue spectrum, which drifts slowly.
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -52,14 +53,25 @@ def factor_groups_for(columns, cfg: RiskConfig, statistical=None) -> dict[str, l
     stat = [str(c) for c in (statistical or [])]
     cols = [c for c in columns if c not in stat]
     market, industries, styles = split_factor_columns(cols, cfg)
-    return {"market": list(market), "industry": list(industries), "style": list(styles),
-            "statistical": stat, "alignment": []}
+    return {
+        "market": list(market),
+        "industry": list(industries),
+        "style": list(styles),
+        "statistical": stat,
+        "alignment": [],
+    }
 
 
 class BarraStyleRiskModel:
-    def __init__(self, cfg: RiskConfig | None = None, warmup_days: int | None = None,
-                 eigen_refresh_days: int = 21, seed: int = 0,
-                 constraint_weights: str = "cap", weight_cap_quantile: float | None = None):
+    def __init__(
+        self,
+        cfg: RiskConfig | None = None,
+        warmup_days: int | None = None,
+        eigen_refresh_days: int = 21,
+        seed: int = 0,
+        constraint_weights: str = "cap",
+        weight_cap_quantile: float | None = None,
+    ):
         """``constraint_weights`` / ``weight_cap_quantile`` are forwarded to the
         cross-sectional regression (see ``estimate_factor_returns``); defaults
         are the pure USE4 choices."""
@@ -70,7 +82,7 @@ class BarraStyleRiskModel:
         self.eigen_refresh_days = int(eigen_refresh_days)
         self.seed = seed
         self.md: MarketData | None = None
-        self.exposures: dict[pd.Timestamp, pd.DataFrame] = {}   # ExposureHistory after fit()
+        self.exposures: dict[pd.Timestamp, pd.DataFrame] = {}  # ExposureHistory after fit()
         self.factor_returns: pd.DataFrame | None = None
         self.specific_returns: pd.DataFrame | None = None
         self.r2: pd.Series | None = None
@@ -85,12 +97,17 @@ class BarraStyleRiskModel:
         exist for every date whose previous day has exposures."""
         self.md = md
         if dates is None:
-            dates = md.dates[min(self.warmup_days, len(md.dates) - 1):]
-        self.exposures = exposure_history(md, dates, self.cfg,
-                                          dtype=np.dtype(getattr(self.cfg, "exposure_dtype", "float64")))
+            dates = md.dates[min(self.warmup_days, len(md.dates) - 1) :]
+        self.exposures = exposure_history(
+            md, dates, self.cfg, dtype=np.dtype(getattr(self.cfg, "exposure_dtype", "float64"))
+        )
         fr, sr, r2 = estimate_factor_return_history(
-            md, self.exposures, self.cfg, constraint_weights=self.constraint_weights,
-            weight_cap_quantile=self.weight_cap_quantile)
+            md,
+            self.exposures,
+            self.cfg,
+            constraint_weights=self.constraint_weights,
+            weight_cap_quantile=self.weight_cap_quantile,
+        )
         self.factor_returns, self.specific_returns, self.r2 = fr, sr, r2
         self._eigen_cache.clear()
         return self
@@ -143,23 +160,26 @@ class BarraStyleRiskModel:
         key = (n0, tuple(F_hist.columns))
         v = self._eigen_cache.get(key)
         if v is None:
-            det = factor_covariance(F_hist.iloc[:n0], self.cfg, eigen_bias=None, seed=self.seed,
-                                    return_details=True)
+            det = factor_covariance(
+                F_hist.iloc[:n0], self.cfg, eigen_bias=None, seed=self.seed, return_details=True
+            )
             v = det.eigen_bias
             self._eigen_cache[key] = v
         return v
 
     # ------------------------------------------------------------------ as_of
-    def as_of(self, date: pd.Timestamp, alpha: pd.Series | None = None,
-              nu_scale: float | None = None) -> RiskModelOutput:
+    def as_of(
+        self, date: pd.Timestamp, alpha: pd.Series | None = None, nu_scale: float | None = None
+    ) -> RiskModelOutput:
         """Risk model as of ``date`` (factor returns through ``date`` inclusive,
         exposures as of ``date``)."""
         md, factor_returns, specific_returns = self._fitted_state()
         date = pd.Timestamp(date)
         F_hist = factor_returns.loc[:date]
         if len(F_hist) < self.cfg.min_history_days:
-            raise ValueError(f"only {len(F_hist)} factor-return days <= {date}; "
-                             f"need {self.cfg.min_history_days}")
+            raise ValueError(
+                f"only {len(F_hist)} factor-return days <= {date}; need {self.cfg.min_history_days}"
+            )
         B = self.exposures_as_of(date)
         F_hist = F_hist.reindex(columns=B.columns).fillna(0.0)
         v = self._eigen_bias(F_hist)
@@ -170,18 +190,29 @@ class BarraStyleRiskModel:
         y: pd.Series | None = None
         nu = 0.0
         if alpha is not None and self.cfg.alignment:
-            y, nu = alpha_alignment(alpha.reindex(B.index), B, D, nu_scale=nu_scale,
-                                    factor_cov=F, cfg=self.cfg)
-        return RiskModelOutput(date=date, exposures=B, factor_cov=F, specific_var=D, factor_returns=F_hist,
-                               alignment_vector=y, alignment_var=float(nu),
-                               factor_groups=factor_groups_for(B.columns, self.cfg))
+            y, nu = alpha_alignment(
+                alpha.reindex(B.index), B, D, nu_scale=nu_scale, factor_cov=F, cfg=self.cfg
+            )
+        return RiskModelOutput(
+            date=date,
+            exposures=B,
+            factor_cov=F,
+            specific_var=D,
+            factor_returns=F_hist,
+            alignment_vector=y,
+            alignment_var=float(nu),
+            factor_groups=factor_groups_for(B.columns, self.cfg),
+        )
 
-    def residual_covariance_as_of(self, date: pd.Timestamp, window: int | None = None,
-                                  method: str = "qis") -> pd.DataFrame:
+    def residual_covariance_as_of(
+        self, date: pd.Timestamp, window: int | None = None, method: str = "qis"
+    ) -> pd.DataFrame:
         """Full shrunk residual covariance (``method`` = ``"qis"`` / ``"lw"``),
         evaluation only -- see :func:`shrunk_residual_covariance`."""
         _, _, specific_returns = self._fitted_state()
-        return shrunk_residual_covariance(specific_returns.loc[:pd.Timestamp(date)], self.cfg, window, method)
+        return shrunk_residual_covariance(
+            specific_returns.loc[: pd.Timestamp(date)], self.cfg, window, method
+        )
 
 
 def build_risk_model(cfg: RiskConfig | None = None, **kwargs):
@@ -196,5 +227,6 @@ def build_risk_model(cfg: RiskConfig | None = None, **kwargs):
     fundamental = BarraStyleRiskModel(cfg, **kwargs)
     if cfg.statistical_companion:
         from qts.risk.hybrid import HybridRiskModel  # local import: hybrid imports this module
+
         return HybridRiskModel(fundamental, cfg)
     return fundamental

@@ -7,6 +7,7 @@ Thin wrapper around ``python -m qts.cli demo`` (same flags):
     python scripts/run_demo.py --stocks 500 --days 2520 --ml
     python scripts/run_demo.py --compare-lag  # D4: Sharpe at signal lag 0 vs 1
 """
+
 import sys
 
 from qts.cli import main

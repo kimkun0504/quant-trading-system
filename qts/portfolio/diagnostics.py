@@ -1,5 +1,6 @@
 """Portfolio diagnostics: transfer coefficient, holding period, factor
 exposures, realised-vs-ex-ante risk, factor/specific attribution."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -10,8 +11,13 @@ import pandas as pd
 from qts.core.types import RiskModelOutput
 
 
-def transfer_coefficient(alpha: pd.Series, w: pd.Series, cov: pd.DataFrame | None = None,
-                         risk: RiskModelOutput | None = None, exact_max_n: int = 500) -> float:
+def transfer_coefficient(
+    alpha: pd.Series,
+    w: pd.Series,
+    cov: pd.DataFrame | None = None,
+    risk: RiskModelOutput | None = None,
+    exact_max_n: int = 500,
+) -> float:
     """Transfer coefficient (Clarke, de Silva & Thorley 2002).
 
     Approximate (always available): ``corr(w_i * sigma_i, alpha_i / sigma_i)``
@@ -41,8 +47,13 @@ def transfer_coefficient(alpha: pd.Series, w: pd.Series, cov: pd.DataFrame | Non
         except np.linalg.LinAlgError:
             pass
     if risk is not None:
-        sig = np.sqrt(pd.Series(risk.specific_var, dtype=float).reindex(idx)
-                      .fillna(risk.specific_var.median()).clip(lower=1e-12).values)
+        sig = np.sqrt(
+            pd.Series(risk.specific_var, dtype=float)
+            .reindex(idx)
+            .fillna(risk.specific_var.median())
+            .clip(lower=1e-12)
+            .values
+        )
     elif S is not None:
         sig = np.sqrt(np.clip(np.diag(S), 1e-12, None))
     else:
@@ -62,7 +73,9 @@ def effective_holding_days(turnover_series: pd.Series, gross_series: pd.Series |
     if len(to) == 0:
         return float("nan")
     one_sided = to.mean() / 2.0
-    gross = 1.0 if gross_series is None else float(pd.Series(gross_series, dtype=float).reindex(to.index).mean())
+    gross = (
+        1.0 if gross_series is None else float(pd.Series(gross_series, dtype=float).reindex(to.index).mean())
+    )
     if one_sided <= 0:
         return float("inf")
     return float(gross / one_sided)
@@ -79,21 +92,25 @@ def factor_exposure_report(w: pd.Series, risk: RiskModelOutput) -> pd.DataFrame:
     Ff = F @ f
     contrib = f * Ff
     d = pd.Series(risk.specific_var, dtype=float).reindex(t).fillna(risk.specific_var.median()).values
-    spec = float((wv ** 2 * d).sum())
+    spec = float((wv**2 * d).sum())
     total = float(f @ Ff + spec)
-    out = pd.DataFrame({
-        "exposure": f,
-        "factor_vol_annual": np.sqrt(np.clip(np.diag(F), 0, None) * 252),
-        "var_contribution": contrib,
-    }, index=B.columns)
+    out = pd.DataFrame(
+        {
+            "exposure": f,
+            "factor_vol_annual": np.sqrt(np.clip(np.diag(F), 0, None) * 252),
+            "var_contribution": contrib,
+        },
+        index=B.columns,
+    )
     out["pct_of_var"] = out["var_contribution"] / total if total > 0 else np.nan
     out.loc["__specific__"] = [np.nan, np.nan, spec, spec / total if total > 0 else np.nan]
     out.loc["__total__"] = [np.nan, np.sqrt(total * 252), total, 1.0]
     return out
 
 
-def realized_vs_exante_risk(returns: pd.Series, exante_var_series: pd.Series,
-                            periods_per_year: int = 252) -> dict[str, float]:
+def realized_vs_exante_risk(
+    returns: pd.Series, exante_var_series: pd.Series, periods_per_year: int = 252
+) -> dict[str, float]:
     """Compare realised return vol with the model's ex-ante forecast.
 
     ``exante_var_series[t]`` must be the forecast daily variance of the
@@ -104,22 +121,35 @@ def realized_vs_exante_risk(returns: pd.Series, exante_var_series: pd.Series,
     v = pd.Series(exante_var_series, dtype=float).reindex(r.index)
     m = r.notna() & v.notna() & (v > 0)
     if m.sum() < 5:
-        return {"ratio": float("nan"), "bias_stat": float("nan"), "realized_vol_annual": float("nan"),
-                "exante_vol_annual": float("nan")}
+        return {
+            "ratio": float("nan"),
+            "bias_stat": float("nan"),
+            "realized_vol_annual": float("nan"),
+            "exante_vol_annual": float("nan"),
+        }
     rr, vv = r[m], v[m]
     real = float(rr.std(ddof=1) * np.sqrt(periods_per_year))
     ex = float(np.sqrt(vv.mean() * periods_per_year))
     z = rr / np.sqrt(vv)
-    return {"ratio": real / ex if ex > 0 else float("nan"), "bias_stat": float(z.std(ddof=1)),
-            "realized_vol_annual": real, "exante_vol_annual": ex}
+    return {
+        "ratio": real / ex if ex > 0 else float("nan"),
+        "bias_stat": float(z.std(ddof=1)),
+        "realized_vol_annual": real,
+        "exante_vol_annual": ex,
+    }
 
 
 ExposuresHistory = Mapping[pd.Timestamp, pd.DataFrame] | pd.DataFrame
 
 
-def brinson_like_attribution(w_history: pd.DataFrame, factor_returns: pd.DataFrame,
-                             exposures_history: ExposuresHistory, specific_returns: pd.DataFrame | None = None,
-                             total_returns: pd.DataFrame | None = None, lag: int = 1) -> pd.DataFrame:
+def brinson_like_attribution(
+    w_history: pd.DataFrame,
+    factor_returns: pd.DataFrame,
+    exposures_history: ExposuresHistory,
+    specific_returns: pd.DataFrame | None = None,
+    total_returns: pd.DataFrame | None = None,
+    lag: int = 1,
+) -> pd.DataFrame:
     """Decompose daily portfolio PnL into factor and specific components.
 
     ``w_history`` rows are weights *held* at the close of date t; they earn

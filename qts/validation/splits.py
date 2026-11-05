@@ -24,6 +24,7 @@ Classes
                           with ``backtest_paths()`` to assemble the
                           ``n_paths = C(N,k) * k / N`` out-of-sample paths.
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
@@ -41,8 +42,13 @@ def _n(dates) -> int:
     return len(dates)
 
 
-def purge_train(train_pos: np.ndarray, test_blocks: Sequence[tuple[int, int]],
-                label_horizon: int, embargo_days: int, n: int) -> np.ndarray:
+def purge_train(
+    train_pos: np.ndarray,
+    test_blocks: Sequence[tuple[int, int]],
+    label_horizon: int,
+    embargo_days: int,
+    n: int,
+) -> np.ndarray:
     """Remove training positions whose label window overlaps any test block.
 
     ``test_blocks`` is a list of inclusive ``(start, end)`` position ranges.
@@ -53,7 +59,7 @@ def purge_train(train_pos: np.ndarray, test_blocks: Sequence[tuple[int, int]],
     h = int(label_horizon)
     keep = np.ones(len(train_pos), dtype=bool)
     for t0, t1 in test_blocks:
-        lo = t0 - h                 # any s with s + h >= t0 overlaps
+        lo = t0 - h  # any s with s + h >= t0 overlaps
         hi = t1 + h + embargo_days  # test forward reach + embargo
         keep &= ~((train_pos >= lo) & (train_pos <= hi))
     return train_pos[keep]

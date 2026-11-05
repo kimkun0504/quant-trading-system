@@ -25,6 +25,7 @@ the IBKR Campus "Close Price" lesson lists the same four inputs):
 * ``Vwap``: ``maxPctVol, startTime, endTime, allowPastEndTime, noTakeLiq, speedUp``.
 * ``ArrivalPx``: ``maxPctVol, riskAversion, startTime, endTime, allowPastEndTime, forceCompletion``.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -40,8 +41,19 @@ from qts.tcost.impact import VENUE_AUCTION, VENUE_CONTINUOUS, SquareRootImpact
 
 NY_TZ = "America/New_York"
 KNOWN_ALGOS = {"Vwap", "ArrivalPx", "ClosePx", "Adaptive", "Twap", "PctVol", "DarkIce", "AD"}
-ALGO_PARAM_ORDER = ["maxPctVol", "startTime", "endTime", "noTakeLiq", "riskAversion", "adaptivePriority",
-                    "forceCompletion", "allowPastEndTime", "speedUp", "pctVol", "displaySize"]
+ALGO_PARAM_ORDER = [
+    "maxPctVol",
+    "startTime",
+    "endTime",
+    "noTakeLiq",
+    "riskAversion",
+    "adaptivePriority",
+    "forceCompletion",
+    "allowPastEndTime",
+    "speedUp",
+    "pctVol",
+    "displaySize",
+]
 
 
 def _tag_value(tag: str, value: Any) -> dict[str, str]:
@@ -52,8 +64,9 @@ def _tag_value(tag: str, value: Any) -> dict[str, str]:
     return {"tag": tag, "value": v}
 
 
-def to_ib_order_dict(order: Order, account: str | None = None, transmit: bool = True,
-                     outside_rth: bool = False) -> dict[str, Any]:
+def to_ib_order_dict(
+    order: Order, account: str | None = None, transmit: bool = True, outside_rth: bool = False
+) -> dict[str, Any]:
     """Build an ib_async-style ``Order`` kwargs dict from an :class:`Order`.
 
     Mapping: MOC -> orderType "MOC"; LOC -> "LOC" + lmtPrice; LMT -> "LMT" +
@@ -69,8 +82,13 @@ def to_ib_order_dict(order: Order, account: str | None = None, transmit: bool = 
         "outsideRth": outside_rth,
         "transmit": transmit,
         "orderRef": order.order_id or "",
-        "contract": {"symbol": order.ticker, "secType": "STK", "exchange": "SMART",
-                     "primaryExchange": "", "currency": "USD"},
+        "contract": {
+            "symbol": order.ticker,
+            "secType": "STK",
+            "exchange": "SMART",
+            "primaryExchange": "",
+            "currency": "USD",
+        },
     }
     if account:
         payload["account"] = account
@@ -92,7 +110,9 @@ def to_ib_order_dict(order: Order, account: str | None = None, transmit: bool = 
             payload["lmtPrice"] = float(order.limit_px)
         payload["algoStrategy"] = order.algo
         params = dict(order.algo_params)
-        ordered = [k for k in ALGO_PARAM_ORDER if k in params] + [k for k in params if k not in ALGO_PARAM_ORDER]
+        ordered = [k for k in ALGO_PARAM_ORDER if k in params] + [
+            k for k in params if k not in ALGO_PARAM_ORDER
+        ]
         payload["algoParams"] = [_tag_value(k, params[k]) for k in ordered]
     else:  # pragma: no cover
         raise ValueError(ot)
@@ -140,22 +160,42 @@ class DryRunBroker:
         self.submitted.append({"ib_order_id": oid, "order": order, "payload": payload, "status": "Submitted"})
         return oid
 
-    def simulate_fill(self, ib_order_id: int, ref_px: float, adv_shares: float, sigma_daily: float,
-                      ts=None, venue: str | None = None) -> dict[str, Any]:
+    def simulate_fill(
+        self,
+        ib_order_id: int,
+        ref_px: float,
+        adv_shares: float,
+        sigma_daily: float,
+        ts=None,
+        venue: str | None = None,
+    ) -> dict[str, Any]:
         rec = next(r for r in self.submitted if r["ib_order_id"] == ib_order_id)
         o: Order = rec["order"]
         venue = venue or (VENUE_AUCTION if o.order_type in ("MOC", "LOC") else VENUE_CONTINUOUS)
-        share = auction_share_for_date(ts, self.cfg_cost.auction_volume_share_default)  # ts None -> normal day
+        share = auction_share_for_date(
+            ts, self.cfg_cost.auction_volume_share_default
+        )  # ts None -> normal day
         vol_sh = adv_shares * (share if venue == VENUE_AUCTION else 1.0)
         bps = float(self.impact.cost_bps(o.qty * ref_px, vol_sh * ref_px, sigma_daily, venue=venue))
         px = ref_px * (1 + o.sign * bps / 1e4)
         filled = o.qty
-        if o.order_type in ("LOC", "LMT") and o.limit_px is not None and (
-                (o.side == "BUY" and px > o.limit_px) or (o.side == "SELL" and px < o.limit_px)):
+        if (
+            o.order_type in ("LOC", "LMT")
+            and o.limit_px is not None
+            and ((o.side == "BUY" and px > o.limit_px) or (o.side == "SELL" and px < o.limit_px))
+        ):
             filled = 0.0
-        fill = {"ib_order_id": ib_order_id, "order_id": o.order_id, "ticker": o.ticker, "side": o.side,
-                "qty": filled, "px": px if filled else np.nan, "ts": pd.Timestamp(ts) if ts is not None else pd.Timestamp.now(),
-                "venue": venue, "impact_bps": bps}
+        fill = {
+            "ib_order_id": ib_order_id,
+            "order_id": o.order_id,
+            "ticker": o.ticker,
+            "side": o.side,
+            "qty": filled,
+            "px": px if filled else np.nan,
+            "ts": pd.Timestamp(ts) if ts is not None else pd.Timestamp.now(),
+            "venue": venue,
+            "impact_bps": bps,
+        }
         rec["status"] = "Filled" if filled else "Cancelled"
         self.fills.append(fill)
         return fill

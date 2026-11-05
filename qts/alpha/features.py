@@ -19,6 +19,7 @@ function is used for training and live scoring (process parity; see
 All rolling statistics are vectorised wide-panel operations; there are no
 Python loops over dates.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -34,12 +35,23 @@ from qts.core.types import Long, MarketData, Wide, to_long
 
 # Canonical feature order.  Keep stable: it is part of the live/train parity hash.
 FEATURE_ORDER: list[str] = [
-    "value_bp", "value_ep",
-    "mom_12_1", "mom_6_1", "mom_change", "industry_momentum",
-    "quality_gpa", "investment_ag",
-    "beta_252", "idio_vol_252", "max_ret_21",
-    "turnover_63", "amihud_63", "log_dollar_vol_63", "log_mcap",
-    "short_interest", "borrow_fee",
+    "value_bp",
+    "value_ep",
+    "mom_12_1",
+    "mom_6_1",
+    "mom_change",
+    "industry_momentum",
+    "quality_gpa",
+    "investment_ag",
+    "beta_252",
+    "idio_vol_252",
+    "max_ret_21",
+    "turnover_63",
+    "amihud_63",
+    "log_dollar_vol_63",
+    "log_mcap",
+    "short_interest",
+    "borrow_fee",
     "strev_21",
 ]
 
@@ -83,7 +95,7 @@ def industry_segments(md: MarketData) -> list[tuple[pd.DatetimeIndex, pd.Series]
     bounds = [*sorted(b for b in starts if b < len(dates)), len(dates)]
     for i in range(len(bounds) - 1):
         if bounds[i + 1] > bounds[i]:
-            seg = dates[bounds[i]:bounds[i + 1]]
+            seg = dates[bounds[i] : bounds[i + 1]]
             out.append((seg, md.industry_as_of(seg[0])))
     return out
 
@@ -123,8 +135,8 @@ class FeatureBuilder:
         rets = md.returns
         mcap = md.market_cap
         dvol = md.dollar_volume
-        segs = industry_segments(md)      # PIT industry labels (md.industry_as_of)
-        valid = md.eligibility()          # in-universe & alive, per date (PIT)
+        segs = industry_segments(md)  # PIT industry labels (md.industry_as_of)
+        valid = md.eligibility()  # in-universe & alive, per date (PIT)
         f: dict[str, Wide] = {}
 
         # value
@@ -138,7 +150,8 @@ class FeatureBuilder:
         f["mom_6_1"] = _trailing_return(close, 126, 21)
         f["mom_change"] = f["mom_12_1"] - f["mom_12_1"].shift(63)
         f["industry_momentum"] = _by_industry(
-            lambda v, lab: cap_weighted_group_mean(v, mcap.loc[v.index], lab), f["mom_6_1"], segs)
+            lambda v, lab: cap_weighted_group_mean(v, mcap.loc[v.index], lab), f["mom_6_1"], segs
+        )
 
         # quality / investment
         if md.gross_profitability is not None:
@@ -169,7 +182,7 @@ class FeatureBuilder:
         # short-term reversal: -(21d return, industry-demeaned).  A risk-only style
         # proxy (qts.core.roles: label residualisation / optimizer neutralisation);
         # as a feature it is an ordinary ML input -- it is not used for trade timing.
-        r21 = _trailing_return(close, 21, 0).where(valid)   # demean within eligible names only
+        r21 = _trailing_return(close, 21, 0).where(valid)  # demean within eligible names only
         f["strev_21"] = -_by_industry(demean_by_group, r21, segs)
 
         ordered = {k: f[k] for k in FEATURE_ORDER if k in f}

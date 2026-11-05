@@ -18,6 +18,7 @@
   default (``garleanu_pedersen_shrink(renormalize=False)``); GP shrinks the
   magnitude of each signal, not just the mix.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -132,8 +133,9 @@ def garleanu_pedersen_shrink(
     return combine_in_forecast_space({k: alphas[k] for k in keys}, w.to_dict())
 
 
-def cost_implied_holding_days(expected_alpha_per_day: float, round_trip_cost: float,
-                              min_days: float = 1.0, max_days: float = 252.0) -> float:
+def cost_implied_holding_days(
+    expected_alpha_per_day: float, round_trip_cost: float, min_days: float = 1.0, max_days: float = 252.0
+) -> float:
     """Crude GP trading-speed proxy: the holding period at which one round-trip
     cost equals the alpha earned, ``H = cost / alpha_per_day``."""
     if expected_alpha_per_day <= 0:

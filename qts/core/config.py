@@ -3,6 +3,7 @@ amendments (lower Phase-1 bar, dollar-neutral long/short book at gross 2.0,
 auction impact prefactor 0.3 against auction volume (design decision D2),
 momentum crash control, capped factor-momentum tilt).
 """
+
 from __future__ import annotations
 
 import copy
@@ -57,6 +58,7 @@ class _ConfigBase:
 
     def to_yaml(self, header: str | None = None) -> str:
         import yaml  # PyYAML (runtime dependency for config files)
+
         body = yaml.safe_dump(self.to_dict(), sort_keys=False, default_flow_style=False, width=100)
         if header:
             body = "".join(f"# {ln}\n" if ln else "#\n" for ln in header.splitlines()) + body
@@ -65,6 +67,7 @@ class _ConfigBase:
     @classmethod
     def from_yaml(cls: type[_C], path: str | Path) -> _C:
         import yaml
+
         with open(path) as f:
             d: Any = yaml.safe_load(f) or {}
         if not isinstance(d, dict):
@@ -137,7 +140,7 @@ class UniverseConfig(_ConfigBase):
     min_price: float = 5.0
     min_adv_usd: float = 2_000_000.0
     adv_window: int = 63
-    exclude_bottom_size_quantile: float = 0.20   # NYSE-breakpoint proxy
+    exclude_bottom_size_quantile: float = 0.20  # NYSE-breakpoint proxy
     # membership is re-evaluated every ``refresh_days`` trading days and held in
     # between; a member leaves only after ``exit_after_n_fails`` consecutive
     # failed refreshes (turnover hysteresis; qts.data.universe.build_universe_mask)
@@ -151,14 +154,15 @@ class LGBMParams(_ConfigBase):
     names in parentheses).  Early stopping is on the per-date rank IC of the
     trainer's validation block; with ``refit_on_full`` the model is refit on
     train + validation with the early-stopped round count."""
+
     n_estimators: int = 600
     learning_rate: float = 0.03
     num_leaves: int = 31
-    min_data_in_leaf: int = 200          # (min_child_samples)
-    feature_fraction: float = 0.7        # (colsample_bytree)
-    bagging_fraction: float = 0.8        # (subsample)
-    bagging_freq: int = 1                # (subsample_freq)
-    lambda_l2: float = 1.0               # (reg_lambda)
+    min_data_in_leaf: int = 200  # (min_child_samples)
+    feature_fraction: float = 0.7  # (colsample_bytree)
+    bagging_fraction: float = 0.8  # (subsample)
+    bagging_freq: int = 1  # (subsample_freq)
+    lambda_l2: float = 1.0  # (reg_lambda)
     early_stopping_rounds: int = 100
     refit_on_full: bool = True
     # OpenMP threads (None -> os.cpu_count() at fit time).  Kept at 4: with
@@ -179,14 +183,15 @@ class MLPParams(_ConfigBase):
     validation mean rank IC and stops after ``n_iter_no_change`` epochs
     without improvement; with ``refit_on_full`` a fresh net is then trained on
     train + validation for the selected number of epochs."""
+
     hidden: tuple[int, ...] = (64, 32)
-    alpha: float = 1e-3                  # L2 penalty
-    max_iter: int = 200                  # max epochs
+    alpha: float = 1e-3  # L2 penalty
+    max_iter: int = 200  # max epochs
     batch_size: int = 2048
     learning_rate_init: float = 1e-3
-    max_train_rows: int | None = 400_000   # random row subsample cap (memory / time)
+    max_train_rows: int | None = 400_000  # random row subsample cap (memory / time)
     n_iter_no_change: int = 10
-    valid_fraction: float = 0.1          # fallback validation block (last 10 % of dates)
+    valid_fraction: float = 0.1  # fallback validation block (last 10 % of dates)
     refit_on_full: bool = True
 
 
@@ -197,13 +202,21 @@ class AlphaConfig(_ConfigBase):
     # alongside ``horizon_days``; diagnostics only, never trained on).
     secondary_horizons: list[int] = field(default_factory=lambda: [5, 60])
     winsor_pct: float = 0.01
-    industry_demean: list[str] = field(default_factory=lambda: [
-        "value_bp", "value_ep", "quality_gpa", "investment_ag"])
-    theme_weights: dict[str, float] = field(default_factory=lambda: {
-        "value": 1.0, "momentum": 1.0, "quality": 1.0, "investment": 1.0,
-        "low_risk": 1.0, "short_interest": 1.0})
+    industry_demean: list[str] = field(
+        default_factory=lambda: ["value_bp", "value_ep", "quality_gpa", "investment_ag"]
+    )
+    theme_weights: dict[str, float] = field(
+        default_factory=lambda: {
+            "value": 1.0,
+            "momentum": 1.0,
+            "quality": 1.0,
+            "investment": 1.0,
+            "low_risk": 1.0,
+            "short_interest": 1.0,
+        }
+    )
     factor_momentum_lookback_months: int = 1
-    factor_momentum_max_tilt: float = 0.25     # review item 6
+    factor_momentum_max_tilt: float = 0.25  # review item 6
     # Momentum sleeve weight x clip(target / realised 63d theme vol, lo, hi):
     # a *bounded* vol scaling (Barroso & Santa-Clara 2015 style), not full vol
     # targeting -- the clip stops the weight exploding in calm regimes and
@@ -219,21 +232,23 @@ class AlphaConfig(_ConfigBase):
     # *pre-shrink* and shrunk the same way (0.03 x 0.5 = 0.015).
     ic_shrink: float = 0.5
     default_ic: float = 0.03
-    ic_window: int = 252                       # trailing dates for IC_hat
-    ic_min_obs: int = 60                       # min realised IC dates for IC_hat
+    ic_window: int = 252  # trailing dates for IC_hat
+    ic_min_obs: int = 60  # min realised IC dates for IC_hat
     # combined score = zscore(w * composite + (1 - w) * ML) where both exist
     composite_weight: float = 0.5
-    dynamic_weights: bool = True               # factor-momentum / crash / vol theme weights
-    half_life_lookback_days: int = 504         # score history for the half-life fit
+    dynamic_weights: bool = True  # factor-momentum / crash / vol theme weights
+    half_life_lookback_days: int = 504  # score history for the half-life fit
     model_seeds: int = 3
-    valid_days: int = 252                      # trailing validation block inside each training window
+    valid_days: int = 252  # trailing validation block inside each training window
     # ensemble member weights of ``default_ml_factory`` (rank-averaged, fixed ex ante)
-    ensemble_weights: dict[str, float] = field(default_factory=lambda: {"lgbm": 0.45, "mlp": 0.35, "ridge": 0.20})
+    ensemble_weights: dict[str, float] = field(
+        default_factory=lambda: {"lgbm": 0.45, "mlp": 0.35, "ridge": 0.20}
+    )
     lgbm: LGBMParams = field(default_factory=LGBMParams)
     mlp: MLPParams = field(default_factory=MLPParams)
     refit_frequency_days: int = 252
     train_min_days: int = 756
-    embargo_days: int | None = None         # defaults to horizon_days
+    embargo_days: int | None = None  # defaults to horizon_days
     # Label treatment of names that delist inside the forward window (t, t+h]
     # uses ``CostConfig.delisting_haircut`` -- the single source of the
     # delisting assumption for labels and backtest accounting (the former
@@ -251,9 +266,20 @@ class RiskConfig(_ConfigBase):
     specific_half_life: int = 84
     specific_shrink_q: float = 0.1
     min_history_days: int = 252
-    styles: list[str] = field(default_factory=lambda: [
-        "beta", "size", "momentum", "value", "residual_vol", "liquidity",
-        "short_term_reversal", "quality", "investment", "short_interest"])
+    styles: list[str] = field(
+        default_factory=lambda: [
+            "beta",
+            "size",
+            "momentum",
+            "value",
+            "residual_vol",
+            "liquidity",
+            "short_term_reversal",
+            "quality",
+            "investment",
+            "short_interest",
+        ]
+    )
     # (``use_nonlinear_shrinkage`` removed, finding #16: it never affected
     # ``specific_var``, and a QIS-diagonal prior for thin-history specific risk
     # lost to the USE4 structural model out of sample -- QLIKE 0.07 vs 0.15-0.47
@@ -277,8 +303,8 @@ class RiskConfig(_ConfigBase):
     # smooths the noisy per-eigenfactor bias this way).
     eigen_parabola_smoothing: bool = False
     # --- statistical (APCA) companion model on the fundamental residuals
-    statistical_companion: bool = True        # build_risk_model -> HybridRiskModel
-    max_statistical_factors: int = 5          # cap on select_n_factors
+    statistical_companion: bool = True  # build_risk_model -> HybridRiskModel
+    max_statistical_factors: int = 5  # cap on select_n_factors
     statistical_n_factors: int | None = None  # fixed k; None = Bai-Ng per refit, capped (PIT)
     statistical_window: int = 252
     statistical_refit_every: int = 21
@@ -295,7 +321,7 @@ class CostConfig(_ConfigBase):
     commission_min_per_order: float = 0.35
     commission_max_pct_value: float = 0.01
     clearing_per_share: float = 0.0002
-    sec_fee_per_dollar_sold: float = 20.60 / 1e6   # from 2026-04-04
+    sec_fee_per_dollar_sold: float = 20.60 / 1e6  # from 2026-04-04
     # FINRA TAF 2026 rate (SR-FINRA-2024-019 fee-adjustment schedule, kept
     # through 2028 by SR-FINRA-2026-020); dated history in qts.tcost.fees.
     finra_taf_per_share_sold: float = 0.000195
@@ -325,7 +351,7 @@ class CostConfig(_ConfigBase):
     # Must satisfy 1 < e <= 2 (validated by SquareRootImpact).
     impact_exponent: float = 1.5
     default_half_spread_bps: float = 2.0
-    default_borrow_fee_annual: float = 0.005      # GC placeholder; use data when present
+    default_borrow_fee_annual: float = 0.005  # GC placeholder; use data when present
     max_participation_adv: float = 0.05
     # --- borrow-fee proxy (qts.tcost.borrow.borrow_fee_proxy); placeholder until
     # IBKR SLB history is logged.  GC below `borrow_proxy_si_gc`, rising convexly
@@ -333,7 +359,7 @@ class CostConfig(_ConfigBase):
     htb_fee_cap_annual: float = 0.25
     borrow_proxy_si_gc: float = 0.05
     borrow_proxy_si_htb: float = 0.20
-    small_cap_borrow_multiplier: float = 2.0      # applied when market cap < small_cap_threshold_usd
+    small_cap_borrow_multiplier: float = 2.0  # applied when market cap < small_cap_threshold_usd
     small_cap_threshold_usd: float = 2e9
     # --- backtest accounting
     # Return applied on the final day to a held name whose next close is NaN
@@ -351,8 +377,8 @@ class CostConfig(_ConfigBase):
 
 @dataclass
 class PortfolioConfig(_ConfigBase):
-    book: str = "long_short"                      # or "long_only", "130_30"
-    gross_leverage_max: float = 2.0               # dollar-neutral long/short ~100/100 at gross 2.0; review item 7
+    book: str = "long_short"  # or "long_only", "130_30"
+    gross_leverage_max: float = 2.0  # dollar-neutral long/short ~100/100 at gross 2.0; review item 7
     net_exposure_target: float = 0.0
     net_exposure_band: float = 0.05
     max_position_weight: float = 0.02
@@ -363,10 +389,10 @@ class PortfolioConfig(_ConfigBase):
     risk_aversion: float = 10.0
     trade_aversion: float = 1.0
     hold_aversion: float = 1.0
-    turnover_penalty: float = 0.0                 # extra linear penalty on |x|
+    turnover_penalty: float = 0.0  # extra linear penalty on |x|
     target_vol_annual: float | None = 0.10
-    vol_target_scale_up: bool = True              # lever up toward target within hard caps
-    effective_holding_days_target: int = 50       # review item 5 (monitored)
+    vol_target_scale_up: bool = True  # lever up toward target within hard caps
+    effective_holding_days_target: int = 50  # review item 5 (monitored)
     solver: str = "CLARABEL"
     # --- beta neutrality: the *style* factor named ``beta_factor_name`` (resolved
     # through ``RiskModelOutput.factor_groups["style"]``, never the unit-exposure
@@ -434,7 +460,7 @@ class ValidationConfig(_ConfigBase):
     cpcv_k_test: int = 2
     dsr_threshold: float = 0.95
     pbo_threshold: float = 0.5
-    phase1_min_net_sharpe: float = 0.3            # review item 1
+    phase1_min_net_sharpe: float = 0.3  # review item 1
     phase2_min_net_sharpe: float = 0.5
     min_fold_pass_fraction: float = 2 / 3
     hurdle_t_stat: float = 3.0
@@ -450,6 +476,7 @@ class SystemConfig(_ConfigBase):
     rebuild with ``from_dict``/``from_yaml`` (strict), identify with ``hash()``.
     ``configs/default.yaml`` is generated from these defaults by
     ``python -m qts.cli config dump`` and a test fails if it drifts."""
+
     universe: UniverseConfig = field(default_factory=UniverseConfig)
     alpha: AlphaConfig = field(default_factory=AlphaConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
@@ -498,6 +525,6 @@ def _json_default(o: Any) -> Any:
         return sorted(cast(Any, o))
     if isinstance(o, tuple):
         return list(cast(tuple[Any, ...], o))
-    if hasattr(o, "item"):          # numpy scalars
+    if hasattr(o, "item"):  # numpy scalars
         return o.item()
     return str(o)

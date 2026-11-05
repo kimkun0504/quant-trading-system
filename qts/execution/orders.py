@@ -1,4 +1,5 @@
 """Order dataclass and target-weight -> order-list conversion."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -14,11 +15,11 @@ SIDES = ("BUY", "SELL")
 @dataclass
 class Order:
     ticker: str
-    side: str                       # "BUY" | "SELL"
-    qty: float                      # shares, positive
-    order_type: str = "MOC"         # one of ORDER_TYPES
+    side: str  # "BUY" | "SELL"
+    qty: float  # shares, positive
+    order_type: str = "MOC"  # one of ORDER_TYPES
     limit_px: float | None = None
-    algo: str | None = None      # IB algoStrategy: "Vwap" | "ArrivalPx" | "ClosePx" | "Adaptive" | "Twap"
+    algo: str | None = None  # IB algoStrategy: "Vwap" | "ArrivalPx" | "ClosePx" | "Adaptive" | "Twap"
     algo_params: dict[str, Any] = field(default_factory=dict)
     tif: str = "DAY"
     venue_hint: str | None = None  # "auction" | "continuous" | "open"
@@ -47,12 +48,20 @@ class Order:
 
     def with_(self, **changes) -> Order:
         from dataclasses import replace
+
         return replace(self, **changes)
 
 
-def targets_to_orders(w_target: pd.Series, w_current: pd.Series, nav: float, prices: pd.Series,
-                      lot_size: int = 1, min_notional: float = 200.0,
-                      decision_ts=None, meta: dict[str, dict[str, Any]] | None = None) -> list[Order]:
+def targets_to_orders(
+    w_target: pd.Series,
+    w_current: pd.Series,
+    nav: float,
+    prices: pd.Series,
+    lot_size: int = 1,
+    min_notional: float = 200.0,
+    decision_ts=None,
+    meta: dict[str, dict[str, Any]] | None = None,
+) -> list[Order]:
     """Convert weight targets to share orders.
 
     ``w_target``/``w_current`` are weights (fraction of NAV); missing tickers
@@ -84,6 +93,15 @@ def targets_to_orders(w_target: pd.Series, w_current: pd.Series, nav: float, pri
             m.update(meta[t])
         # order_id is unique across days when decision_ts is given (TCALedger keys on it)
         prefix = f"{pd.Timestamp(decision_ts):%Y%m%d}-" if decision_ts is not None else ""
-        orders.append(Order(ticker=str(t), side=side, qty=float(shares), order_type="MOC",
-                            venue_hint="auction", order_id=f"{prefix}{t}-{side}-{shares}", meta=m))
+        orders.append(
+            Order(
+                ticker=str(t),
+                side=side,
+                qty=float(shares),
+                order_type="MOC",
+                venue_hint="auction",
+                order_id=f"{prefix}{t}-{side}-{shares}",
+                meta=m,
+            )
+        )
     return orders

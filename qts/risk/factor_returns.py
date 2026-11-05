@@ -30,6 +30,7 @@ regression is point-in-time (exposures known before the return is realized).
 R^2 is the weighted coefficient of determination
 ``1 - sum w u^2 / sum w (r - rbar_w)^2`` where ``rbar_w`` is the weighted mean.
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -46,6 +47,7 @@ from qts.risk.exposures import split_factor_columns
 class CrossSectionalFit(NamedTuple):
     """Result of one cross-sectional regression.  Unpacks as a 3-tuple
     ``(factor_returns, specific_returns, r2)``."""
+
     factor_returns: pd.Series
     specific_returns: pd.Series
     r2: float
@@ -74,11 +76,14 @@ def restricted_wls(y: np.ndarray, X: np.ndarray, w: np.ndarray, c: np.ndarray) -
     return R @ g
 
 
-def estimate_factor_returns(returns_t: pd.Series, exposures_tminus1: pd.DataFrame,
-                            market_cap_tminus1: pd.Series,
-                            cfg: RiskConfig | None = None,
-                            constraint_weights: str = "cap",
-                            weight_cap_quantile: float | None = None) -> CrossSectionalFit:
+def estimate_factor_returns(
+    returns_t: pd.Series,
+    exposures_tminus1: pd.DataFrame,
+    market_cap_tminus1: pd.Series,
+    cfg: RiskConfig | None = None,
+    constraint_weights: str = "cap",
+    weight_cap_quantile: float | None = None,
+) -> CrossSectionalFit:
     """One day's constrained WLS.  See module docstring.
 
     Parameters
@@ -102,9 +107,11 @@ def estimate_factor_returns(returns_t: pd.Series, exposures_tminus1: pd.DataFram
     industries with no members on the day are reported as 0.0.
     """
     cfg = cfg or RiskConfig()
-    idx = (returns_t.dropna().index
-           .intersection(exposures_tminus1.index)
-           .intersection(market_cap_tminus1.dropna().index))
+    idx = (
+        returns_t.dropna()
+        .index.intersection(exposures_tminus1.index)
+        .intersection(market_cap_tminus1.dropna().index)
+    )
     B = exposures_tminus1.loc[idx]
     cols = list(B.columns)
     y = returns_t.loc[idx].values.astype(float)
@@ -129,16 +136,19 @@ def estimate_factor_returns(returns_t: pd.Series, exposures_tminus1: pd.DataFram
     u = y - X @ f
     ybar = float(w @ y)
     sst = float(w @ (y - ybar) ** 2)
-    r2 = float(1.0 - (w @ u ** 2) / sst) if sst > 0 else np.nan
-    return CrossSectionalFit(pd.Series(f, index=cols, name="factor_return"),
-                             pd.Series(u, index=idx, name="specific_return"), r2)
+    r2 = float(1.0 - (w @ u**2) / sst) if sst > 0 else np.nan
+    return CrossSectionalFit(
+        pd.Series(f, index=cols, name="factor_return"), pd.Series(u, index=idx, name="specific_return"), r2
+    )
 
 
-def estimate_factor_return_history(md: MarketData, exposures_by_date: dict[pd.Timestamp, pd.DataFrame],
-                                   cfg: RiskConfig | None = None,
-                                   dates: Iterable[pd.Timestamp] | None = None,
-                                   **regression_kwargs,
-                                   ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
+def estimate_factor_return_history(
+    md: MarketData,
+    exposures_by_date: dict[pd.Timestamp, pd.DataFrame],
+    cfg: RiskConfig | None = None,
+    dates: Iterable[pd.Timestamp] | None = None,
+    **regression_kwargs,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
     """Run the daily regression for every date ``t`` whose previous trading
     day ``t-1`` has an exposure matrix in ``exposures_by_date``.
 
@@ -172,8 +182,12 @@ def estimate_factor_return_history(md: MarketData, exposures_by_date: dict[pd.Ti
     return factor_returns, specific_returns, pd.Series(r2, name="r2").sort_index()
 
 
-def cap_weighted_industry_sum(factor_returns_t: pd.Series, exposures_tminus1: pd.DataFrame,
-                              market_cap_tminus1: pd.Series, cfg: RiskConfig | None = None) -> float:
+def cap_weighted_industry_sum(
+    factor_returns_t: pd.Series,
+    exposures_tminus1: pd.DataFrame,
+    market_cap_tminus1: pd.Series,
+    cfg: RiskConfig | None = None,
+) -> float:
     """Diagnostic: ``sum_j c_j f_j`` which the constraint forces to zero."""
     cfg = cfg or RiskConfig()
     _, industries, _ = split_factor_columns(exposures_tminus1.columns, cfg)

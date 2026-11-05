@@ -14,6 +14,7 @@ names stable:
   (median fills; a ``LiquiditySnapshot`` stays typed, a dict stays a dict).
 * :class:`SimpleCostModel` -- **test double, not used in production**.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -35,6 +36,7 @@ SNAPSHOT_KEYS = ("adv_usd", "sigma_daily", "half_spread", "price", "borrow_fee")
 
 def _tcost_model(cfg: CostConfig):
     from qts.tcost.model import TransactionCostModel  # local import: no import cycle at package load
+
     return TransactionCostModel(cfg)
 
 
@@ -48,8 +50,9 @@ def snapshot_from_market(
     """Point-in-time :class:`LiquiditySnapshot` (only data with timestamp <= date):
     ``TransactionCostModel(cfg).snapshot(md, date, adv_window, vol_window)``.
     Supports ``snap["adv_usd"]``-style access for older callers."""
-    return _tcost_model(cfg or CostConfig()).snapshot(md, pd.Timestamp(date), adv_window=adv_window,
-                                                       vol_window=vol_window)
+    return _tcost_model(cfg or CostConfig()).snapshot(
+        md, pd.Timestamp(date), adv_window=adv_window, vol_window=vol_window
+    )
 
 
 def align_snapshot(snapshot: Snapshot, tickers: pd.Index, cfg: CostConfig | None = None) -> Snapshot:
@@ -66,8 +69,11 @@ def align_snapshot(snapshot: Snapshot, tickers: pd.Index, cfg: CostConfig | None
         return snapshot.reindex(tickers)
     cfg = cfg or CostConfig()
     defaults = {
-        "adv_usd": 1e6, "sigma_daily": 0.02, "half_spread": cfg.default_half_spread_bps / 1e4,
-        "price": 100.0, "borrow_fee": cfg.default_borrow_fee_annual,
+        "adv_usd": 1e6,
+        "sigma_daily": 0.02,
+        "half_spread": cfg.default_half_spread_bps / 1e4,
+        "price": 100.0,
+        "borrow_fee": cfg.default_borrow_fee_annual,
     }
     src = dict(snapshot)
     if src.get("half_spread") is None and src.get("half_spread_bps") is not None:
@@ -119,17 +125,33 @@ class SimpleCostModel:
         return self._tcm is not None
 
     def snapshot(self, md: MarketData, date, **kw) -> LiquiditySnapshot:
-        return _tcost_model(self.cfg).snapshot(md, date, **kw) if self.zero else self._tcm.snapshot(md, date, **kw)
+        return (
+            _tcost_model(self.cfg).snapshot(md, date, **kw)
+            if self.zero
+            else self._tcm.snapshot(md, date, **kw)
+        )
 
-    def cvx_terms(self, x, w_post, nav, snapshot: SnapshotLike, venue: str | None = VENUE_ROUTED,
-                  tickers: pd.Index | None = None):
+    def cvx_terms(
+        self,
+        x,
+        w_post,
+        nav,
+        snapshot: SnapshotLike,
+        venue: str | None = VENUE_ROUTED,
+        tickers: pd.Index | None = None,
+    ):
         if self.zero:
             z = cp.Constant(0.0)
             return z, z
         return self._tcm.cvx_terms(x, w_post, nav, snapshot, venue=venue, tickers=tickers)
 
-    def estimate(self, trades_usd: pd.Series, snapshot: SnapshotLike, venue: str | None = VENUE_ROUTED,
-                 streak: pd.Series | None = None) -> CostEstimate:
+    def estimate(
+        self,
+        trades_usd: pd.Series,
+        snapshot: SnapshotLike,
+        venue: str | None = VENUE_ROUTED,
+        streak: pd.Series | None = None,
+    ) -> CostEstimate:
         if self.zero:
             return CostEstimate.zero(trades_usd.index, venue or VENUE_ROUTED)
         return self._tcm.estimate(trades_usd, snapshot, venue=venue, streak=streak)

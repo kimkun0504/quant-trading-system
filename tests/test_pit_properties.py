@@ -13,6 +13,7 @@ read anything stamped after ``t``.  Covered: every raw panel of
 The market is a small time-varying universe (60 names x 420 days, top-45 by
 cap) so that eligibility enters every cross-section.
 """
+
 from __future__ import annotations
 
 import warnings
@@ -37,16 +38,31 @@ N_DAYS = 420
 HORIZON = 20
 UCFG = UniverseConfig(top_n_by_mcap=45)
 
-FAST = settings(max_examples=15, deadline=None, derandomize=True,
-                suppress_health_check=[HealthCheck.too_slow], database=None)
-MEDIUM = settings(max_examples=8, deadline=None, derandomize=True,
-                  suppress_health_check=[HealthCheck.too_slow], database=None)
-SLOW = settings(max_examples=6, deadline=None, derandomize=True,
-                suppress_health_check=[HealthCheck.too_slow], database=None)
+FAST = settings(
+    max_examples=15,
+    deadline=None,
+    derandomize=True,
+    suppress_health_check=[HealthCheck.too_slow],
+    database=None,
+)
+MEDIUM = settings(
+    max_examples=8,
+    deadline=None,
+    derandomize=True,
+    suppress_health_check=[HealthCheck.too_slow],
+    database=None,
+)
+SLOW = settings(
+    max_examples=6,
+    deadline=None,
+    derandomize=True,
+    suppress_health_check=[HealthCheck.too_slow],
+    database=None,
+)
 
 # cut positions: leave >= 1 day after the cut so the truncation is real
 cut_pos = st.integers(min_value=40, max_value=N_DAYS - 2)
-late_cut_pos = st.integers(min_value=200, max_value=N_DAYS - 2)   # risk/alpha need history
+late_cut_pos = st.integers(min_value=200, max_value=N_DAYS - 2)  # risk/alpha need history
 
 
 def _eq(a, b, what: str, rtol: float | None = None) -> None:
@@ -90,7 +106,7 @@ def test_features_pit(md, acfg, full_features, p):
     fb = FeatureBuilder(acfg)
     cut = md.slice_until(t)
     raw_cut = fb.build(cut)
-    assert list(raw_cut) == list(raw_full)            # same registered panels
+    assert list(raw_cut) == list(raw_full)  # same registered panels
     for name, panel in raw_full.items():
         _eq(raw_cut[name], panel.loc[:t], f"feature {name!r} cut at {t.date()}")
     X_cut = fb.process(raw_cut, cut, valid=cut.eligibility())
@@ -151,7 +167,10 @@ def test_risk_as_of_pit(md, risk_full, p):
     m_full = BarraStyleRiskModel(RiskConfig(**RISK_CFG), warmup_days=60)
     m_full.md, m_full.exposures = risk_full.md, risk_full.exposures
     m_full.factor_returns, m_full.specific_returns, m_full.r2 = (
-        risk_full.factor_returns, risk_full.specific_returns, risk_full.r2)
+        risk_full.factor_returns,
+        risk_full.specific_returns,
+        risk_full.r2,
+    )
     a, b = m_full.as_of(t), m_cut.as_of(t)
     _eq(b.exposures, a.exposures, f"risk exposures at {t.date()}")
     _eq(b.specific_var, a.specific_var, f"specific_var at {t.date()}")
@@ -176,8 +195,12 @@ def test_alpha_as_of_pit(md, acfg, alpha_full, p):
     # (it follows when names entered the universe), and with it the float summation
     # order of the cross-sectional z-score: compare sorted, to 1e-12.
     _eq(b.score.sort_index(), a.score.sort_index(), f"alpha score at {t.date()}", rtol=1e-12)
-    _eq(b.expected_return.sort_index(), a.expected_return.sort_index(), f"expected return at {t.date()}",
-        rtol=1e-12)
+    _eq(
+        b.expected_return.sort_index(),
+        a.expected_return.sort_index(),
+        f"expected return at {t.date()}",
+        rtol=1e-12,
+    )
     assert a.ic_estimate == pytest.approx(b.ic_estimate, rel=1e-12, nan_ok=True)
     assert a.half_life_days == pytest.approx(b.half_life_days, rel=1e-12)
     assert set(a.components) == set(b.components)
@@ -192,12 +215,22 @@ def _perturb_after(md: MarketData, p: int, seed: int) -> MarketData:
     rng = np.random.default_rng(seed)
     close = md.close.copy()
     mult = rng.uniform(0.7, 1.3, size=close.shape[1])
-    close.iloc[p + 1:] = close.iloc[p + 1:].to_numpy() * mult[None, :]
-    return MarketData(close=close, volume=md.volume, market_cap=md.market_cap, industry=md.industry,
-                      spread_bps=md.spread_bps, short_interest_ratio=md.short_interest_ratio,
-                      borrow_fee=md.borrow_fee, book_to_price=md.book_to_price,
-                      earnings_yield=md.earnings_yield, gross_profitability=md.gross_profitability,
-                      asset_growth=md.asset_growth, extra=md.extra, eligible=md.eligible)
+    close.iloc[p + 1 :] = close.iloc[p + 1 :].to_numpy() * mult[None, :]
+    return MarketData(
+        close=close,
+        volume=md.volume,
+        market_cap=md.market_cap,
+        industry=md.industry,
+        spread_bps=md.spread_bps,
+        short_interest_ratio=md.short_interest_ratio,
+        borrow_fee=md.borrow_fee,
+        book_to_price=md.book_to_price,
+        earnings_yield=md.earnings_yield,
+        gross_profitability=md.gross_profitability,
+        asset_growth=md.asset_growth,
+        extra=md.extra,
+        eligible=md.eligible,
+    )
 
 
 @MEDIUM

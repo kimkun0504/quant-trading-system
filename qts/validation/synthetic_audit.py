@@ -20,6 +20,7 @@ second half.
 forward ``horizon``-day return.  A scikit-learn estimator can be wrapped as
 ``lambda Xtr, ytr, Xte: est.fit(Xtr, ytr).predict(Xte)``.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -57,7 +58,7 @@ def lagged_design(returns: pd.DataFrame, n_lags: int, horizon: int):
     fwd = (np.exp(np.log1p(returns).rolling(horizon).sum().shift(-horizon)) - 1).to_numpy()
     rows_t, Xs, ys = [], [], []
     for t in range(n_lags, T - horizon):
-        Xs.append(R[t - n_lags + 1:t + 1][::-1].T)   # N x n_lags, lag1 first
+        Xs.append(R[t - n_lags + 1 : t + 1][::-1].T)  # N x n_lags, lag1 first
         ys.append(fwd[t])
         rows_t.append(np.full(N, t))
     X = np.concatenate(Xs, axis=0)
@@ -75,10 +76,17 @@ def recency_weighted_mean(X_lags: np.ndarray, half_life: float = 10.0) -> np.nda
     return X_lags @ w
 
 
-def nagel_collapse_test(model_predict_fn: Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray],
-                        n_assets: int = 100, n_days: int = 1000, seed: int = 0, n_lags: int = 60,
-                        horizon: int = 20, half_life: float = 10.0,
-                        max_abs_ic_t: float = 3.0, max_abs_corr: float = 0.5) -> dict[str, float]:
+def nagel_collapse_test(
+    model_predict_fn: Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray],
+    n_assets: int = 100,
+    n_days: int = 1000,
+    seed: int = 0,
+    n_lags: int = 60,
+    horizon: int = 20,
+    half_life: float = 10.0,
+    max_abs_ic_t: float = 3.0,
+    max_abs_corr: float = 0.5,
+) -> dict[str, float]:
     """Fit on the first half of a noise panel, evaluate on the second half.
 
     Returns ``ic_mean``, ``ic_tstat``, ``corr_with_recency_mean`` (Pearson
@@ -92,23 +100,29 @@ def nagel_collapse_test(model_predict_fn: Callable[[np.ndarray, np.ndarray, np.n
     ret = generate_noise_panel(n_assets, n_days, seed)
     X, y, t_idx, a_idx = lagged_design(ret, n_lags, horizon)
     T_cut = (n_lags + (n_days - horizon)) // 2
-    tr, te = t_idx < T_cut, t_idx >= T_cut + horizon   # gap so train labels don't reach test
+    tr, te = t_idx < T_cut, t_idx >= T_cut + horizon  # gap so train labels don't reach test
     pred = np.asarray(model_predict_fn(X[tr], y[tr], X[te]), dtype=float).ravel()
     if pred.shape[0] != te.sum():
         raise ValueError("model_predict_fn must return one prediction per test row")
 
     dates = ret.index
+
     def _wide(vals):
         arr = np.full(ret.shape, np.nan)
         arr[t_idx[te], a_idx[te]] = vals
         return pd.DataFrame(arr, index=dates, columns=ret.columns)
+
     pred_w = _wide(pred)
     y_w = _wide(y[te])
     ics = ic_series(pred_w.dropna(how="all"), y_w.dropna(how="all")).dropna()
     # thin to non-overlapping dates for the t-stat
     ics_no = ics.iloc[::horizon]
     ic_mean = float(ics.mean()) if len(ics) else float("nan")
-    ic_t = float(ics_no.mean() / ics_no.std() * np.sqrt(len(ics_no))) if len(ics_no) > 2 and ics_no.std() > 0 else 0.0
+    ic_t = (
+        float(ics_no.mean() / ics_no.std() * np.sqrt(len(ics_no)))
+        if len(ics_no) > 2 and ics_no.std() > 0
+        else 0.0
+    )
 
     rwm = recency_weighted_mean(X[te], half_life)
     sd_p = pred.std()
@@ -118,9 +132,14 @@ def nagel_collapse_test(model_predict_fn: Callable[[np.ndarray, np.ndarray, np.n
     corr_xs_mean = float(corr_xs.mean()) if len(corr_xs) else 0.0
 
     return {
-        "ic_mean": ic_mean, "ic_tstat": ic_t, "n_ic_dates": len(ics),
-        "corr_with_recency_mean": corr, "corr_with_recency_mean_xs": corr_xs_mean,
+        "ic_mean": ic_mean,
+        "ic_tstat": ic_t,
+        "n_ic_dates": len(ics),
+        "corr_with_recency_mean": corr,
+        "corr_with_recency_mean_xs": corr_xs_mean,
         "pred_sd": float(sd_p),
         "collapsed": bool(abs(corr) > max_abs_corr or abs(corr_xs_mean) > max_abs_corr),
-        "passed": bool(abs(ic_t) < max_abs_ic_t and abs(corr) <= max_abs_corr and abs(corr_xs_mean) <= max_abs_corr),
+        "passed": bool(
+            abs(ic_t) < max_abs_ic_t and abs(corr) <= max_abs_corr and abs(corr_xs_mean) <= max_abs_corr
+        ),
     }

@@ -38,6 +38,7 @@ its last close times ``(1 + delisting_return)`` (default -30 %, see
 ``CostConfig.delisting_haircut``) instead of NaN, so delisting outcomes reach
 the training set and every IC/decile statistic.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -55,8 +56,16 @@ from .features import _winsorize_rows, industry_segments, rolling_market_beta
 
 ExposuresFn = Callable[[pd.Timestamp], pd.DataFrame]
 
-__all__ = ["ALPHA_THEME_FEATURES", "DEFAULT_STYLE_EXPOSURES", "RISK_ONLY_STYLES", "ExposuresFn",
-           "default_exposures", "forward_returns", "industry_dummies", "residualize_forward_returns"]
+__all__ = [
+    "ALPHA_THEME_FEATURES",
+    "DEFAULT_STYLE_EXPOSURES",
+    "RISK_ONLY_STYLES",
+    "ExposuresFn",
+    "default_exposures",
+    "forward_returns",
+    "industry_dummies",
+    "residualize_forward_returns",
+]
 
 #: Risk-only style proxies used by the built-in residualiser (D1: the alpha-layer
 #: features proxying ``RISK_ONLY_STYLES``).  Never contains an alpha theme;
@@ -67,7 +76,9 @@ DEFAULT_STYLE_EXPOSURES = RISK_ONLY_FEATURES
 DEFAULT_DELISTING_RETURN = CostConfig().delisting_haircut
 
 
-def forward_returns(md: MarketData, horizon: int, delisting_return: float | None = DEFAULT_DELISTING_RETURN) -> Wide:
+def forward_returns(
+    md: MarketData, horizon: int, delisting_return: float | None = DEFAULT_DELISTING_RETURN
+) -> Wide:
     """``close_{t+h} / close_t - 1`` aligned at ``t``.
 
     Delisting handling: if the name's *last ever* close is inside ``(t, t+h]``
@@ -84,7 +95,7 @@ def forward_returns(md: MarketData, horizon: int, delisting_return: float | None
     if delisting_return:
         # dead at date d: no close at d, had one before, and none after (true delisting)
         dead = c.isna() & last.notna() & c.bfill().isna()
-        dead_by_end = dead.shift(-horizon).fillna(False).astype(bool)   # dead at t+h  <=> delisted in (t, t+h]
+        dead_by_end = dead.shift(-horizon).fillna(False).astype(bool)  # dead at t+h  <=> delisted in (t, t+h]
         fwd = fwd.where(~dead_by_end, (1.0 + fwd) * (1.0 + float(delisting_return)) - 1.0)
     return fwd.where(c.notna())
 
@@ -171,8 +182,13 @@ def residualize_forward_returns(
         Dm = industry_dummies(labels, tickers).to_numpy(dtype=float)
         for i in dates.get_indexer(seg_dates):
             D_of_row[int(i)] = Dm
-    S = np.stack([styles[k].reindex(index=dates, columns=tickers).to_numpy(dtype=float)
-                  for k in styles], axis=2) if styles else np.zeros((len(dates), len(tickers), 0))
+    S = (
+        np.stack(
+            [styles[k].reindex(index=dates, columns=tickers).to_numpy(dtype=float) for k in styles], axis=2
+        )
+        if styles
+        else np.zeros((len(dates), len(tickers), 0))
+    )
     ones = np.ones((len(tickers), 1))
     rows = np.flatnonzero(valid_rows)
     external = {}

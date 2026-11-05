@@ -18,6 +18,7 @@ Protocol
 * Only out-of-sample predictions are returned; dates before the first fit are
   NaN.
 """
+
 from __future__ import annotations
 
 import logging
@@ -74,8 +75,13 @@ class WalkForwardTrainer:
             return []
         return list(range(first, len(dates), self.cfg.refit_frequency_days))
 
-    def run(self, X: Long, y: pd.Series, model_factory: Callable[[], object],
-            dates: pd.DatetimeIndex | None = None) -> Wide:
+    def run(
+        self,
+        X: Long,
+        y: pd.Series,
+        model_factory: Callable[[], object],
+        dates: pd.DatetimeIndex | None = None,
+    ) -> Wide:
         """Return a wide (date x ticker) panel of strictly out-of-sample predictions.
 
         Rows with any NaN feature are dropped up front (``FeatureBuilder.process``
@@ -120,17 +126,29 @@ class WalkForwardTrainer:
                 pred_rows &= all_dates.isin(dates)
             if pred_rows.any():
                 preds.append(model.predict(X[pred_rows]))
-            self.folds_.append(FoldInfo(
-                pred_start=uniq[p0], pred_end=uniq[p1 - 1], train_start=uniq[train_pos.min()],
-                train_end=uniq[last_train_pos],
-                valid_start=uniq[valid_start_pos] if valid_mask_arr.any() else None,
-                n_train_rows=int(fit_ok.sum() if valid_mask_arr.any() else train_rows.sum()),
-                n_valid_rows=int(valid_mask_arr.sum()),
-                extra={"feature_hash": feature_signature(X.columns)}))
+            self.folds_.append(
+                FoldInfo(
+                    pred_start=uniq[p0],
+                    pred_end=uniq[p1 - 1],
+                    train_start=uniq[train_pos.min()],
+                    train_end=uniq[last_train_pos],
+                    valid_start=uniq[valid_start_pos] if valid_mask_arr.any() else None,
+                    n_train_rows=int(fit_ok.sum() if valid_mask_arr.any() else train_rows.sum()),
+                    n_valid_rows=int(valid_mask_arr.sum()),
+                    extra={"feature_hash": feature_signature(X.columns)},
+                )
+            )
             f = self.folds_[-1]
-            log.log(logging.INFO if self.verbose else logging.DEBUG,
-                    "fold %d: train %s..%s (valid from %s) -> predict %s..%s", k, f.train_start.date(),
-                    f.train_end.date(), f.valid_start, f.pred_start.date(), f.pred_end.date())
+            log.log(
+                logging.INFO if self.verbose else logging.DEBUG,
+                "fold %d: train %s..%s (valid from %s) -> predict %s..%s",
+                k,
+                f.train_start.date(),
+                f.train_end.date(),
+                f.valid_start,
+                f.pred_start.date(),
+                f.pred_end.date(),
+            )
         if not preds:
             return pd.DataFrame(np.nan, index=uniq, columns=X.index.get_level_values("ticker").unique())
         long = pd.concat(preds).sort_index()

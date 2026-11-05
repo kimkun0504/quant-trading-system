@@ -2,6 +2,7 @@
 IC decay, signal half-life and incremental IC.  All rank correlations are
 vectorised across dates.
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -71,6 +72,7 @@ class ICReport:
     kept for backward compatibility during the transition; new code should use
     attributes.
     """
+
     n: int = 0
     mean_ic: float = float("nan")
     ic_sd: float = float("nan")
@@ -117,13 +119,19 @@ class ICReport:
 class IncrementalICReport(ICReport):
     """:func:`incremental_ic` result: the IC report of the residualised score plus
     the standalone and composite mean ICs."""
+
     standalone_mean_ic: float = float("nan")
     composite_mean_ic: float = float("nan")
 
 
-def ic_report(pred: Wide, target: Wide, periods_per_year: float | None = None,
-              trading_days_per_year: int = 252, overlap: int = 1,
-              decay_targets: Mapping[int, Wide] | None = None) -> ICReport:
+def ic_report(
+    pred: Wide,
+    target: Wide,
+    periods_per_year: float | None = None,
+    trading_days_per_year: int = 252,
+    overlap: int = 1,
+    decay_targets: Mapping[int, Wide] | None = None,
+) -> ICReport:
     """Mean rank IC, sd, ICIR (annualised), t-stats, hit rate, by-year table and
     an optional IC-decay section -> :class:`ICReport`.
 
@@ -138,12 +146,19 @@ def ic_report(pred: Wide, target: Wide, periods_per_year: float | None = None,
     rank IC of ``pred`` against ``decay_targets[h]``.
     """
     ic = rank_ic_series(pred, target).dropna()
-    decay = pd.Series({int(h): float(rank_ic_series(pred, t).mean()) for h, t in (decay_targets or {}).items()},
-                      dtype=float, name="mean_rank_ic").sort_index()
+    decay = pd.Series(
+        {int(h): float(rank_ic_series(pred, t).mean()) for h, t in (decay_targets or {}).items()},
+        dtype=float,
+        name="mean_rank_ic",
+    ).sort_index()
     decay.index.name = "horizon"
     if len(ic) == 0:
         return ICReport(ic_series=ic, decay=decay)
-    ppy = float(periods_per_year) if periods_per_year is not None else infer_periods_per_year(ic.index, trading_days_per_year)
+    ppy = (
+        float(periods_per_year)
+        if periods_per_year is not None
+        else infer_periods_per_year(ic.index, trading_days_per_year)
+    )
     mean, sd = float(ic.mean()), float(ic.std(ddof=1))
     by_year = ic.groupby(ic.index.year).agg(["mean", "std", "count"])
     by_year["t_stat"] = by_year["mean"] / by_year["std"] * np.sqrt(by_year["count"])
@@ -167,16 +182,22 @@ def ic_report(pred: Wide, target: Wide, periods_per_year: float | None = None,
 # ----------------------------------------------------------------------------- decile spread
 @dataclass
 class DecileSpreadResult:
-    returns: pd.Series            # per-date long-short period return (top minus bottom decile)
+    returns: pd.Series  # per-date long-short period return (top minus bottom decile)
     mean: float
-    sharpe: float                 # annualised, assuming ``periods_per_year`` non-overlapping periods
-    t_stat: float                 # Newey-West, lags = newey_west_lags(T, horizon)
+    sharpe: float  # annualised, assuming ``periods_per_year`` non-overlapping periods
+    t_stat: float  # Newey-West, lags = newey_west_lags(T, horizon)
     horizon: int
     nw_lags: int = 0
 
 
-def decile_spread(pred: Wide, fwd_raw: Wide, n: int = 10, weights: Wide | None = None,
-                  horizon: int = 1, periods_per_year: int = 252) -> DecileSpreadResult:
+def decile_spread(
+    pred: Wide,
+    fwd_raw: Wide,
+    n: int = 10,
+    weights: Wide | None = None,
+    horizon: int = 1,
+    periods_per_year: int = 252,
+) -> DecileSpreadResult:
     """Top-minus-bottom decile forward return per formation date.
 
     ``fwd_raw`` is the (raw) forward return over ``horizon`` days aligned at the
@@ -192,12 +213,18 @@ def decile_spread(pred: Wide, fwd_raw: Wide, n: int = 10, weights: Wide | None =
     p = pred.loc[idx, cols].where(fwd_raw.loc[idx, cols].notna())
     r = fwd_raw.loc[idx, cols]
     pct = p.rank(axis=1, pct=True)
-    top = (pct > 1 - 1 / n)
-    bot = (pct <= 1 / n)
-    w = pd.DataFrame(1.0, index=idx, columns=cols) if weights is None else weights.reindex(index=idx, columns=cols).fillna(0.0)
+    top = pct > 1 - 1 / n
+    bot = pct <= 1 / n
+    w = (
+        pd.DataFrame(1.0, index=idx, columns=cols)
+        if weights is None
+        else weights.reindex(index=idx, columns=cols).fillna(0.0)
+    )
+
     def port(mask):
         ww = (w * mask).where(r.notna()).fillna(0.0)
         return (ww * r.fillna(0.0)).sum(axis=1) / ww.sum(axis=1).replace(0, np.nan)
+
     spread = (port(top) - port(bot)).dropna()
     spread.name = "decile_spread"
     mean = float(spread.mean())
@@ -210,13 +237,20 @@ def decile_spread(pred: Wide, fwd_raw: Wide, n: int = 10, weights: Wide | None =
 
 
 # ----------------------------------------------------------------------------- decay / half-life
-def ic_decay_curve(score: Wide, md: MarketData, horizons: Sequence[int] = (1, 5, 10, 20, 40, 60, 120),
-                   residualized: bool = True, features=None) -> pd.Series:
+def ic_decay_curve(
+    score: Wide,
+    md: MarketData,
+    horizons: Sequence[int] = (1, 5, 10, 20, 40, 60, 120),
+    residualized: bool = True,
+    features=None,
+) -> pd.Series:
     """Mean rank IC of ``score`` against forward returns at each horizon
     (cumulative, not marginal).  Residualised targets by default."""
     out = {}
     for h in horizons:
-        tgt = residualize_forward_returns(md, h, features=features) if residualized else forward_returns(md, h)
+        tgt = (
+            residualize_forward_returns(md, h, features=features) if residualized else forward_returns(md, h)
+        )
         out[h] = float(rank_ic_series(score, tgt).mean())
     s = pd.Series(out, name="mean_rank_ic")
     s.index.name = "horizon"
@@ -272,17 +306,20 @@ def residualize_on(new_score: Wide, existing: Wide) -> Wide:
     a, b = a.where(m), b.where(m)
     am, bm = a.mean(axis=1), b.mean(axis=1)
     ac, bc = a.sub(am, axis=0), b.sub(bm, axis=0)
-    beta = (ac * bc).sum(axis=1) / (bc ** 2).sum(axis=1).replace(0, np.nan)
+    beta = (ac * bc).sum(axis=1) / (bc**2).sum(axis=1).replace(0, np.nan)
     return ac - bc.mul(beta, axis=0)
 
 
-def incremental_ic(new_score: Wide, existing_composite: Wide, target: Wide,
-                   overlap: int = 1) -> IncrementalICReport:
+def incremental_ic(
+    new_score: Wide, existing_composite: Wide, target: Wide, overlap: int = 1
+) -> IncrementalICReport:
     """IC report of ``new_score`` after residualising it on the existing composite
     (Gate 2 hurdle: incremental rank IC > 0.005 and positive in >= 2/3 of folds)."""
     resid = residualize_on(new_score, existing_composite)
     rep = ic_report(resid, target, overlap=overlap)
     vals = {f.name: getattr(rep, f.name) for f in fields(ICReport)}
-    return IncrementalICReport(**vals,
-                               standalone_mean_ic=float(rank_ic_series(new_score, target).mean()),
-                               composite_mean_ic=float(rank_ic_series(existing_composite, target).mean()))
+    return IncrementalICReport(
+        **vals,
+        standalone_mean_ic=float(rank_ic_series(new_score, target).mean()),
+        composite_mean_ic=float(rank_ic_series(existing_composite, target).mean()),
+    )

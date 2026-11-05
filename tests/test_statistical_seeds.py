@@ -4,6 +4,7 @@ A threshold tuned on a single seed passes or fails with that seed's sampling
 noise.  Here each check runs over several seeds and requires a majority, plus
 a tighter bound on the across-seed mean (whose noise shrinks with sqrt(#seeds)).
 """
+
 from __future__ import annotations
 
 import warnings

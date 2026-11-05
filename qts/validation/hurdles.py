@@ -25,6 +25,7 @@ missing is *skipped* and only fails ``overall`` if it is in
 (list of :class:`GateResult`).  Dict-style access (``res["status"]``,
 ``res["overall"]``...) is kept for backward compatibility during the transition.
 """
+
 from __future__ import annotations
 
 import math
@@ -46,12 +47,12 @@ SUSPECT_SHARPE = 2.0
 @dataclass
 class GateResult:
     name: str
-    passed: bool | None          # None when skipped
+    passed: bool | None  # None when skipped
     value: object
     threshold: object
     reason: str
-    applied: bool = True            # False == skipped (input missing or gate not applicable)
-    required: bool = False          # a skipped *required* gate fails ``overall``
+    applied: bool = True  # False == skipped (input missing or gate not applicable)
+    required: bool = False  # a skipped *required* gate fails ``overall``
 
     @property
     def status(self) -> str:
@@ -60,9 +61,16 @@ class GateResult:
         return "PASS" if self.passed else "FAIL"
 
     def to_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "status": self.status, "passed": self.passed, "value": _json_scalar(self.value),
-                "threshold": _json_scalar(self.threshold), "reason": self.reason, "applied": self.applied,
-                "required": self.required}
+        return {
+            "name": self.name,
+            "status": self.status,
+            "passed": self.passed,
+            "value": _json_scalar(self.value),
+            "threshold": _json_scalar(self.threshold),
+            "reason": self.reason,
+            "applied": self.applied,
+            "required": self.required,
+        }
 
 
 def _json_scalar(v: Any) -> Any:
@@ -86,6 +94,7 @@ class HurdleResult:
     ``gates`` (name -> True/False/None), ``status``, ``details``, ``reasons``,
     ``failed``, ``skipped``, ``required``.
     """
+
     overall: bool
     phase: int
     gates: list[GateResult]
@@ -108,8 +117,17 @@ class HurdleResult:
 
     @property
     def details(self) -> dict[str, dict[str, Any]]:
-        return {g.name: {"value": g.value, "threshold": g.threshold, "reason": g.reason,
-                         "applied": g.applied, "required": g.required, "status": g.status} for g in self.gates}
+        return {
+            g.name: {
+                "value": g.value,
+                "threshold": g.threshold,
+                "reason": g.reason,
+                "applied": g.applied,
+                "required": g.required,
+                "status": g.status,
+            }
+            for g in self.gates
+        }
 
     @property
     def reasons(self) -> list[str]:
@@ -144,8 +162,12 @@ class HurdleResult:
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-safe dict (``hurdles.json`` in a run directory)."""
-        return {"overall": bool(self.overall), "phase": int(self.phase), "required": list(self.required),
-                "gates": [g.to_dict() for g in self.gates]}
+        return {
+            "overall": bool(self.overall),
+            "phase": int(self.phase),
+            "required": list(self.required),
+            "gates": [g.to_dict() for g in self.gates],
+        }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> HurdleResult:
@@ -154,9 +176,23 @@ class HurdleResult:
             val, thr = g.get("value"), g.get("threshold")
             val = float(val) if isinstance(val, str) and val in ("nan", "inf", "-inf") else val
             thr = float(thr) if isinstance(thr, str) and thr in ("nan", "inf", "-inf") else thr
-            gates.append(GateResult(g["name"], g.get("passed"), val, thr, g.get("reason", ""),
-                                    applied=bool(g.get("applied", True)), required=bool(g.get("required", False))))
-        return cls(overall=bool(d["overall"]), phase=int(d["phase"]), gates=gates, required=list(d.get("required", [])))
+            gates.append(
+                GateResult(
+                    g["name"],
+                    g.get("passed"),
+                    val,
+                    thr,
+                    g.get("reason", ""),
+                    applied=bool(g.get("applied", True)),
+                    required=bool(g.get("required", False)),
+                )
+            )
+        return cls(
+            overall=bool(d["overall"]),
+            phase=int(d["phase"]),
+            gates=gates,
+            required=list(d.get("required", [])),
+        )
 
     def format(self) -> str:
         return HurdleReport.format(self)
@@ -177,6 +213,7 @@ class HurdleReport:
     when a configuration grid was run (``SystemConfig.pipeline_pbo_configs``),
     otherwise the PBO gate is skipped.
     """
+
     cfg: ValidationConfig = field(default_factory=ValidationConfig)
 
     # ------------------------------------------------------------------ helpers
@@ -194,13 +231,21 @@ class HurdleReport:
         return GateResult(name, None, value, threshold, reason, applied=False)
 
     # ------------------------------------------------------------------ main
-    def evaluate_signal(self, ic_by_fold: pd.Series | None = None, decile_tstat: float | None = None,
-                        incremental_ic_by_fold: pd.Series | None = None,
-                        net_sharpe_delta_by_fold: pd.Series | None = None,
-                        breakeven_cost_bps: float | None = None, modeled_cost_bps: float | None = None,
-                        dsr: float | None = None, pbo: float | None = None, phase: int = 1,
-                        net_sharpe: float | None = None, standalone: bool = True,
-                        required: Iterable[str] | None = None) -> HurdleResult:
+    def evaluate_signal(
+        self,
+        ic_by_fold: pd.Series | None = None,
+        decile_tstat: float | None = None,
+        incremental_ic_by_fold: pd.Series | None = None,
+        net_sharpe_delta_by_fold: pd.Series | None = None,
+        breakeven_cost_bps: float | None = None,
+        modeled_cost_bps: float | None = None,
+        dsr: float | None = None,
+        pbo: float | None = None,
+        phase: int = 1,
+        net_sharpe: float | None = None,
+        standalone: bool = True,
+        required: Iterable[str] | None = None,
+    ) -> HurdleResult:
         cfg = self.cfg
         gates: list[GateResult] = []
         frac_req = cfg.min_fold_pass_fraction
@@ -211,38 +256,74 @@ class HurdleReport:
 
         # 1. decile long-short t-stat (standalone only)
         if not standalone:
-            gates.append(self._skip("t_stat", cfg.hurdle_t_stat, "not applied (incremental feature)", decile_tstat))
+            gates.append(
+                self._skip("t_stat", cfg.hurdle_t_stat, "not applied (incremental feature)", decile_tstat)
+            )
         elif not _finite(decile_tstat):
             gates.append(self._skip("t_stat", cfg.hurdle_t_stat, "decile t-stat not supplied"))
         else:
             ok = float(decile_tstat) > cfg.hurdle_t_stat
-            gates.append(GateResult("t_stat", ok, float(decile_tstat), cfg.hurdle_t_stat,
-                                    f"decile L/S t = {float(decile_tstat):.2f} {'>' if ok else '<='} {cfg.hurdle_t_stat}"))
+            gates.append(
+                GateResult(
+                    "t_stat",
+                    ok,
+                    float(decile_tstat),
+                    cfg.hurdle_t_stat,
+                    f"decile L/S t = {float(decile_tstat):.2f} {'>' if ok else '<='} {cfg.hurdle_t_stat}",
+                )
+            )
 
         # 1b. standalone IC positivity (mean IC by fold > 0 in 2/3 folds)
         if ic_by_fold is not None and len(ic_by_fold):
             frac, ok_n, n = self._fold_fraction(ic_by_fold, 0.0, strict=True)
-            gates.append(GateResult("ic_sign", frac >= frac_req, frac, frac_req,
-                                    f"IC > 0 in {ok_n}/{n} folds (need >= {frac_req:.2f})"))
+            gates.append(
+                GateResult(
+                    "ic_sign",
+                    frac >= frac_req,
+                    frac,
+                    frac_req,
+                    f"IC > 0 in {ok_n}/{n} folds (need >= {frac_req:.2f})",
+                )
+            )
         else:
             gates.append(self._skip("ic_sign", frac_req, "IC by fold not supplied"))
 
         # 2. incremental IC
         if incremental_ic_by_fold is not None and len(incremental_ic_by_fold):
             frac, ok_n, n = self._fold_fraction(incremental_ic_by_fold, INCREMENTAL_IC_MIN, strict=True)
-            gates.append(GateResult("incremental_ic", frac >= frac_req, frac, frac_req,
-                                    f"incremental IC > {INCREMENTAL_IC_MIN} in {ok_n}/{n} folds (need >= {frac_req:.2f})"))
+            gates.append(
+                GateResult(
+                    "incremental_ic",
+                    frac >= frac_req,
+                    frac,
+                    frac_req,
+                    f"incremental IC > {INCREMENTAL_IC_MIN} in {ok_n}/{n} folds (need >= {frac_req:.2f})",
+                )
+            )
         else:
-            gates.append(self._skip("incremental_ic", frac_req,
-                                    "not applied (standalone signal)" if standalone
-                                    else "incremental IC by fold not supplied"))
+            gates.append(
+                self._skip(
+                    "incremental_ic",
+                    frac_req,
+                    "not applied (standalone signal)"
+                    if standalone
+                    else "incremental IC by fold not supplied",
+                )
+            )
 
         # 3. net Sharpe delta (standalone: baseline = 0, i.e. "net Sharpe by fold > +0.05")
         if net_sharpe_delta_by_fold is not None and len(net_sharpe_delta_by_fold):
             frac, ok_n, n = self._fold_fraction(net_sharpe_delta_by_fold, NET_SHARPE_DELTA_MIN)
             label = "net Sharpe by fold (vs zero baseline)" if standalone else "net Sharpe delta"
-            gates.append(GateResult("net_sharpe_delta", frac >= frac_req, frac, frac_req,
-                                    f"{label} >= +{NET_SHARPE_DELTA_MIN} in {ok_n}/{n} folds (need >= {frac_req:.2f})"))
+            gates.append(
+                GateResult(
+                    "net_sharpe_delta",
+                    frac >= frac_req,
+                    frac,
+                    frac_req,
+                    f"{label} >= +{NET_SHARPE_DELTA_MIN} in {ok_n}/{n} folds (need >= {frac_req:.2f})",
+                )
+            )
         else:
             gates.append(self._skip("net_sharpe_delta", frac_req, "net Sharpe delta by fold not supplied"))
 
@@ -250,30 +331,70 @@ class HurdleReport:
         if _finite(breakeven_cost_bps) and _finite(modeled_cost_bps):
             need = BREAKEVEN_MULTIPLE * float(modeled_cost_bps)
             ok = float(breakeven_cost_bps) >= need
-            gates.append(GateResult("breakeven_cost", ok, float(breakeven_cost_bps), need,
-                                    f"breakeven {float(breakeven_cost_bps):.1f} bps {'>=' if ok else '<'} 2x modeled {need:.1f} bps"))
-        elif breakeven_cost_bps is not None and np.isinf(float(breakeven_cost_bps)) and _finite(modeled_cost_bps):
-            gates.append(GateResult("breakeven_cost", True, float("inf"), 2 * float(modeled_cost_bps),
-                                    "zero turnover: breakeven undefined (inf)"))
+            gates.append(
+                GateResult(
+                    "breakeven_cost",
+                    ok,
+                    float(breakeven_cost_bps),
+                    need,
+                    f"breakeven {float(breakeven_cost_bps):.1f} bps {'>=' if ok else '<'} 2x modeled {need:.1f} bps",
+                )
+            )
+        elif (
+            breakeven_cost_bps is not None
+            and np.isinf(float(breakeven_cost_bps))
+            and _finite(modeled_cost_bps)
+        ):
+            gates.append(
+                GateResult(
+                    "breakeven_cost",
+                    True,
+                    float("inf"),
+                    2 * float(modeled_cost_bps),
+                    "zero turnover: breakeven undefined (inf)",
+                )
+            )
         else:
-            gates.append(self._skip("breakeven_cost", None, "breakeven/modeled cost not supplied", breakeven_cost_bps))
+            gates.append(
+                self._skip("breakeven_cost", None, "breakeven/modeled cost not supplied", breakeven_cost_bps)
+            )
 
         # 5. DSR
         if not _finite(dsr):
             gates.append(self._skip("dsr", cfg.dsr_threshold, "DSR not supplied", dsr))
         else:
             ok = float(dsr) > cfg.dsr_threshold
-            gates.append(GateResult("dsr", ok, float(dsr), cfg.dsr_threshold,
-                                    f"DSR = {float(dsr):.3f} {'>' if ok else '<='} {cfg.dsr_threshold}"))
+            gates.append(
+                GateResult(
+                    "dsr",
+                    ok,
+                    float(dsr),
+                    cfg.dsr_threshold,
+                    f"DSR = {float(dsr):.3f} {'>' if ok else '<='} {cfg.dsr_threshold}",
+                )
+            )
 
         # 6. PBO
         if not _finite(pbo):
-            gates.append(self._skip("pbo", cfg.pbo_threshold,
-                                    "PBO not supplied (no configuration grid run; set pipeline_pbo_configs)", pbo))
+            gates.append(
+                self._skip(
+                    "pbo",
+                    cfg.pbo_threshold,
+                    "PBO not supplied (no configuration grid run; set pipeline_pbo_configs)",
+                    pbo,
+                )
+            )
         else:
             ok = float(pbo) < cfg.pbo_threshold
-            gates.append(GateResult("pbo", ok, float(pbo), cfg.pbo_threshold,
-                                    f"PBO = {float(pbo):.3f} {'<' if ok else '>='} {cfg.pbo_threshold}"))
+            gates.append(
+                GateResult(
+                    "pbo",
+                    ok,
+                    float(pbo),
+                    cfg.pbo_threshold,
+                    f"PBO = {float(pbo):.3f} {'<' if ok else '>='} {cfg.pbo_threshold}",
+                )
+            )
 
         # 7. phase net Sharpe + suspect flag
         min_sr = cfg.phase1_min_net_sharpe if phase <= 1 else cfg.phase2_min_net_sharpe
@@ -282,16 +403,33 @@ class HurdleReport:
             gates.append(self._skip("suspect", SUSPECT_SHARPE, "net Sharpe not supplied", net_sharpe))
         else:
             ok = float(net_sharpe) >= min_sr
-            gates.append(GateResult("phase_sharpe", ok, float(net_sharpe), min_sr,
-                                    f"phase-{phase} net Sharpe {float(net_sharpe):.2f} {'>=' if ok else '<'} {min_sr}"))
+            gates.append(
+                GateResult(
+                    "phase_sharpe",
+                    ok,
+                    float(net_sharpe),
+                    min_sr,
+                    f"phase-{phase} net Sharpe {float(net_sharpe):.2f} {'>=' if ok else '<'} {min_sr}",
+                )
+            )
             suspect = float(net_sharpe) > SUSPECT_SHARPE
-            gates.append(GateResult("suspect", not suspect, float(net_sharpe), SUSPECT_SHARPE,
-                                    ("SUSPECT: net Sharpe > 2 — check for leakage before trusting DSR"
-                                     if suspect else "net Sharpe within plausible range")))
+            gates.append(
+                GateResult(
+                    "suspect",
+                    not suspect,
+                    float(net_sharpe),
+                    SUSPECT_SHARPE,
+                    (
+                        "SUSPECT: net Sharpe > 2 — check for leakage before trusting DSR"
+                        if suspect
+                        else "net Sharpe within plausible range"
+                    ),
+                )
+            )
 
         for g in gates:
             g.required = g.name in req
-            if not g.applied and g.required:          # a required gate cannot be skipped
+            if not g.applied and g.required:  # a required gate cannot be skipped
                 g.applied, g.passed = True, False
                 g.reason = f"REQUIRED gate skipped: {g.reason}"
         overall = all(bool(g.passed) for g in gates if g.applied)

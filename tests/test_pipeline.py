@@ -1,6 +1,7 @@
 """Production-path smoke test: ``ResearchPipeline`` end to end on the synthetic
 market (universe -> hybrid risk -> alpha -> cost -> optimizer -> simulator ->
 hurdles), plus determinism and the eligibility contract."""
+
 from __future__ import annotations
 
 import warnings
@@ -15,10 +16,28 @@ from qts.pipeline import ResearchPipeline, format_result
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-GATES = {"t_stat", "ic_sign", "incremental_ic", "net_sharpe_delta", "breakeven_cost", "dsr", "pbo",
-         "phase_sharpe", "suspect"}
-CORE = ("sharpe_gross", "sharpe_net", "cagr_net", "ann_vol_net", "max_drawdown_net", "avg_daily_turnover",
-        "avg_cost_bps_per_side", "avg_gross_exposure", "avg_net_exposure")
+GATES = {
+    "t_stat",
+    "ic_sign",
+    "incremental_ic",
+    "net_sharpe_delta",
+    "breakeven_cost",
+    "dsr",
+    "pbo",
+    "phase_sharpe",
+    "suspect",
+}
+CORE = (
+    "sharpe_gross",
+    "sharpe_net",
+    "cagr_net",
+    "ann_vol_net",
+    "max_drawdown_net",
+    "avg_daily_turnover",
+    "avg_cost_bps_per_side",
+    "avg_gross_exposure",
+    "avg_net_exposure",
+)
 
 
 @pytest.fixture(scope="module")
@@ -29,7 +48,7 @@ def md():
 @pytest.fixture(scope="module")
 def cfg():
     c = SystemConfig()
-    c.universe.top_n_by_mcap = 100          # time-varying universe inside the 120 names
+    c.universe.top_n_by_mcap = 100  # time-varying universe inside the 120 names
     return c
 
 
@@ -107,7 +126,9 @@ def test_pipeline_ledger_dedupes_reruns(md, cfg, tmp_path):
     path = str(tmp_path / "ledger.jsonl")
     r1 = ResearchPipeline(cfg, use_ml=False, ledger_path=path).run(md, max_days=60)
     r2 = ResearchPipeline(cfg, use_ml=False, ledger_path=path).run(md, max_days=60)
-    assert r1.dsr_inputs["n_trials_raw"] == 1 and r2.dsr_inputs["n_trials_raw"] == 1   # identical re-run: 1 trial
+    assert (
+        r1.dsr_inputs["n_trials_raw"] == 1 and r2.dsr_inputs["n_trials_raw"] == 1
+    )  # identical re-run: 1 trial
     assert r1.dsr == pytest.approx(r2.dsr)
     cfg2 = SystemConfig()
     cfg2.universe.top_n_by_mcap = 100
@@ -121,6 +142,7 @@ def test_pipeline_ledger_dedupes_reruns(md, cfg, tmp_path):
 def test_pipeline_result_is_typed(result):
     from qts.alpha.evaluation import ICReport
     from qts.validation import HurdleResult
+
     pipe, res = result
     assert isinstance(res.ic_report, ICReport) and isinstance(res.hurdles, HurdleResult)
     assert res.ic_report.n == res.ic_report["n"]
@@ -140,6 +162,7 @@ def test_pipeline_result_is_typed(result):
 def test_pipeline_neutralises_exactly_the_label_set(result):
     """D1: the optimizer's neutral styles and the label's risk-only exposures are one set."""
     from qts.core.roles import ALPHA_THEME_STYLES, RISK_ONLY_STYLES
+
     pipe, _ = result
     assert set(pipe.neutral_styles()) == set(RISK_ONLY_STYLES) & set(pipe.cfg.risk.styles)
     d = pipe.backtest_dates()[-1]
@@ -153,17 +176,43 @@ def test_cli_demo_writes_loadable_run_dir(tmp_path, capsys):
     from qts.cli import main
     from qts.core.config import SystemConfig
     from qts.pipeline import list_runs, load_run
+
     root, ledger = tmp_path / "runs", tmp_path / "ledger.jsonl"
-    rc = main(["demo", "--stocks", "60", "--days", "650", "--seed", "5", "--max-days", "40",
-               "--runs-root", str(root), "--ledger", str(ledger)])
+    rc = main(
+        [
+            "demo",
+            "--stocks",
+            "60",
+            "--days",
+            "650",
+            "--seed",
+            "5",
+            "--max-days",
+            "40",
+            "--runs-root",
+            str(root),
+            "--ledger",
+            str(ledger),
+        ]
+    )
     assert rc == 0
     out = capsys.readouterr().out
     assert "OVERALL" in out and "run directory" in out
     runs = list_runs(root)
     assert len(runs) == 1
     d = runs[0]
-    for f in ("manifest.json", "config.yaml", "summary.json", "nav.parquet", "weights.parquet", "trades.parquet",
-              "costs.parquet", "ic.parquet", "hurdles.json", "returns.parquet"):
+    for f in (
+        "manifest.json",
+        "config.yaml",
+        "summary.json",
+        "nav.parquet",
+        "weights.parquet",
+        "trades.parquet",
+        "costs.parquet",
+        "ic.parquet",
+        "hurdles.json",
+        "returns.parquet",
+    ):
         assert (d / f).exists(), f
     rec = load_run(d)
     assert rec.run_id == d.name and isinstance(rec.config, SystemConfig)
@@ -174,8 +223,12 @@ def test_cli_demo_writes_loadable_run_dir(tmp_path, capsys):
     assert np.isfinite(rec.summary["backtest"]["sharpe_net"])
     # ledger carries config hash, data hash and code version
     import json
+
     recs = [json.loads(x) for x in ledger.read_text().splitlines() if x.strip()]
-    assert recs[-1]["config_hash"] == rec.manifest.config_hash and recs[-1]["data_hash"] == rec.manifest.data_hash
+    assert (
+        recs[-1]["config_hash"] == rec.manifest.config_hash
+        and recs[-1]["data_hash"] == rec.manifest.data_hash
+    )
     assert recs[-1]["code_version"].startswith(rec.manifest.git_sha)
     # runs list / show / ledger show
     assert main(["runs", "list", "--root", str(root)]) == 0
@@ -192,10 +245,13 @@ def test_signal_lag_is_forwarded_when_supported(md, cfg):
     import inspect
 
     from qts.backtest import DailyBarSimulator
-    if "signal_lag_days" not in inspect.signature(DailyBarSimulator.run).parameters \
-            or not hasattr(cfg.execution, "signal_lag_days"):
+
+    if "signal_lag_days" not in inspect.signature(DailyBarSimulator.run).parameters or not hasattr(
+        cfg.execution, "signal_lag_days"
+    ):
         pytest.skip("simulator / ExecutionConfig without signal_lag_days (D4 not landed yet)")
     from qts.cli import compare_lag_report
+
     c = cfg.with_overrides({"execution.signal_lag_days": 0})
     pipe = ResearchPipeline(c, use_ml=False)
     r0 = pipe.run(md, max_days=40)
@@ -215,20 +271,21 @@ def test_planted_oracle_through_pipeline_is_flagged_suspect():
     gate must fire (DSR alone cannot detect leakage)."""
     from qts.alpha.evaluation import rank_ic_series
     from qts.core.crosssection import zscore
+
     md_o = generate(SyntheticSpec(n_stocks=60, n_days=650, seed=9))
     c = SystemConfig()
     c.universe.top_n_by_mcap = 50
     pipe = ResearchPipeline(c, use_ml=False).fit(md_o)
     am = pipe.alpha
     H = c.alpha.horizon_days
-    oracle = zscore(am.target_)                                  # future residualised H-day return at t
-    am.ml_score_ = oracle                                        # the extra component (ML sleeve slot)
+    oracle = zscore(am.target_)  # future residualised H-day return at t
+    am.ml_score_ = oracle  # the extra component (ML sleeve slot)
     am.composite_weight = 0.0
     am.combined_score_ = am._combine_history().where(am.eligible_.reindex_like(am.composite_score_))
     am.oos_ic_ = rank_ic_series(am.combined_score_, am.target_)
     am._half_life_cache = {}
     dates = pipe.backtest_dates()
-    dates = dates[dates <= md_o.dates[-H - 2]][-80:]            # oracle exists only where the label is realised
+    dates = dates[dates <= md_o.dates[-H - 2]][-80:]  # oracle exists only where the label is realised
     res = pipe.run(md_o, dates=dates)
     assert res.summary["sharpe_net"] > 2.0
     assert res.hurdles.gate("suspect").status == "FAIL"

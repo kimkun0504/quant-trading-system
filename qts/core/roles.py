@@ -14,6 +14,7 @@ it survives into positions.
 Everything that needs these sets — ``qts.alpha.targets``, ``qts.pipeline`` and
 ``qts.portfolio`` — imports them from here.
 """
+
 from __future__ import annotations
 
 #: Risk-model style factors the optimizer neutralises (beta tightly, the rest
@@ -39,10 +40,20 @@ RISK_ONLY_FEATURES: tuple[str, ...] = tuple(f for s in RISK_ONLY_STYLES for f in
 
 #: Alpha-layer features belonging to traded themes; must never be used to
 #: residualise the label.
-ALPHA_THEME_FEATURES: frozenset[str] = frozenset({
-    "value_bp", "value_ep", "mom_12_1", "mom_6_1", "mom_change", "industry_momentum",
-    "quality_gpa", "investment_ag", "short_interest", "borrow_fee",
-})
+ALPHA_THEME_FEATURES: frozenset[str] = frozenset(
+    {
+        "value_bp",
+        "value_ep",
+        "mom_12_1",
+        "mom_6_1",
+        "mom_change",
+        "industry_momentum",
+        "quality_gpa",
+        "investment_ag",
+        "short_interest",
+        "borrow_fee",
+    }
+)
 
 assert not set(RISK_ONLY_STYLES) & set(ALPHA_THEME_STYLES)
 assert not set(RISK_ONLY_FEATURES) & ALPHA_THEME_FEATURES

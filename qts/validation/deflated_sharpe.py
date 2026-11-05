@@ -36,6 +36,7 @@ the expected maximum Sharpe of ``N`` pure-noise trials is below the target.
 Under the null each noise trial's SR has variance ~ 1/n, so
 ``E[max SR] ~= z_N / sqrt(n)`` and ``n_min = (z_N / target_SR_per_obs)^2``.
 """
+
 from __future__ import annotations
 
 import math
@@ -66,6 +67,7 @@ def sharpe_from_returns(returns, ddof: int = 1) -> float:
 def moments_from_returns(returns):
     """(sr, n, skew, raw kurtosis) of a return series."""
     from scipy.stats import kurtosis, skew
+
     r = np.asarray(returns, dtype=float)
     r = r[~np.isnan(r)]
     return sharpe_from_returns(r), len(r), float(skew(r)), float(kurtosis(r, fisher=False))
@@ -76,11 +78,13 @@ def sharpe_ratio_se(sr: float, n: int, skew: float = 0.0, kurt: float = 3.0) -> 
     """Standard error of a per-observation Sharpe estimate (non-Gaussian aware)."""
     if n <= 1:
         return float("inf")
-    var = (1.0 - skew * sr + (kurt - 1.0) / 4.0 * sr ** 2) / (n - 1)
+    var = (1.0 - skew * sr + (kurt - 1.0) / 4.0 * sr**2) / (n - 1)
     return math.sqrt(max(var, 1e-18))
 
 
-def probabilistic_sharpe(sr: float, sr_benchmark: float, n: int, skew: float = 0.0, kurt: float = 3.0) -> float:
+def probabilistic_sharpe(
+    sr: float, sr_benchmark: float, n: int, skew: float = 0.0, kurt: float = 3.0
+) -> float:
     """P[true SR > sr_benchmark] given the observed per-obs ``sr`` over ``n`` observations."""
     se = sharpe_ratio_se(sr, n, skew, kurt)
     if not np.isfinite(se) or se == 0:
@@ -99,8 +103,9 @@ def expected_max_sharpe(n_trials: int, var_sr: float) -> float:
     return float(sd * ((1.0 - EULER_GAMMA) * z1 + EULER_GAMMA * z2))
 
 
-def deflated_sharpe_ratio(sr_observed: float, n_trials: int, var_trials_sr: float, n_obs: int,
-                          skew: float = 0.0, kurt: float = 3.0) -> float:
+def deflated_sharpe_ratio(
+    sr_observed: float, n_trials: int, var_trials_sr: float, n_obs: int, skew: float = 0.0, kurt: float = 3.0
+) -> float:
     """Deflated Sharpe ratio: PSR of the selected trial against E[max SR] of the search.
 
     Parameters are per-observation (daily SR, variance of daily SRs across
@@ -111,25 +116,39 @@ def deflated_sharpe_ratio(sr_observed: float, n_trials: int, var_trials_sr: floa
     return probabilistic_sharpe(sr_observed, sr_star, n_obs, skew, kurt)
 
 
-def deflated_sharpe_ratio_annual(sr_observed_annual: float, n_trials: int, var_trials_sr_annual: float,
-                                 n_obs: int, skew: float = 0.0, kurt: float = 3.0,
-                                 periods_per_year: int = TRADING_DAYS) -> float:
+def deflated_sharpe_ratio_annual(
+    sr_observed_annual: float,
+    n_trials: int,
+    var_trials_sr_annual: float,
+    n_obs: int,
+    skew: float = 0.0,
+    kurt: float = 3.0,
+    periods_per_year: int = TRADING_DAYS,
+) -> float:
     """Convenience wrapper taking annualized SR and annualized cross-trial variance."""
     return deflated_sharpe_ratio(
-        deannualize_sharpe(sr_observed_annual, periods_per_year), n_trials,
-        var_trials_sr_annual / periods_per_year, n_obs, skew, kurt)
+        deannualize_sharpe(sr_observed_annual, periods_per_year),
+        n_trials,
+        var_trials_sr_annual / periods_per_year,
+        n_obs,
+        skew,
+        kurt,
+    )
 
 
-def min_track_record_length(sr: float, sr_benchmark: float, skew: float = 0.0, kurt: float = 3.0,
-                            prob: float = 0.95) -> float:
+def min_track_record_length(
+    sr: float, sr_benchmark: float, skew: float = 0.0, kurt: float = 3.0, prob: float = 0.95
+) -> float:
     """Observations needed for PSR(sr_benchmark) >= prob given the per-obs ``sr``.  inf if sr <= benchmark."""
     if sr <= sr_benchmark:
         return float("inf")
     z = norm.ppf(prob)
-    return float(1.0 + (1.0 - skew * sr + (kurt - 1.0) / 4.0 * sr ** 2) * (z / (sr - sr_benchmark)) ** 2)
+    return float(1.0 + (1.0 - skew * sr + (kurt - 1.0) / 4.0 * sr**2) * (z / (sr - sr_benchmark)) ** 2)
 
 
-def min_backtest_length(n_trials: int, target_sr_annual: float, periods_per_year: int = TRADING_DAYS) -> float:
+def min_backtest_length(
+    n_trials: int, target_sr_annual: float, periods_per_year: int = TRADING_DAYS
+) -> float:
     """Observations such that E[max SR] of ``n_trials`` noise strategies < ``target_sr_annual``.
 
     Returns the number of *observations* (days for daily data); divide by
@@ -142,11 +161,13 @@ def min_backtest_length(n_trials: int, target_sr_annual: float, periods_per_year
     target = deannualize_sharpe(target_sr_annual, periods_per_year)
     if target <= 0:
         return float("inf")
-    z_n = expected_max_sharpe(n_trials, 1.0)       # E[max] with unit variance
+    z_n = expected_max_sharpe(n_trials, 1.0)  # E[max] with unit variance
     return float((z_n / target) ** 2)
 
 
-def min_backtest_length_years(n_trials: int, target_sr_annual: float, periods_per_year: int = TRADING_DAYS) -> float:
+def min_backtest_length_years(
+    n_trials: int, target_sr_annual: float, periods_per_year: int = TRADING_DAYS
+) -> float:
     return min_backtest_length(n_trials, target_sr_annual, periods_per_year) / periods_per_year
 
 
@@ -159,8 +180,12 @@ def dsr_from_trial_returns(trial_returns: np.ndarray, selected: int | None = Non
     sr, n, sk, ku = moments_from_returns(R[:, j])
     var_sr = float(np.nanvar(srs, ddof=1)) if R.shape[1] > 1 else 0.0
     return {
-        "selected": j, "sr_per_obs": sr, "sr_annual": annualize_sharpe(sr), "n_obs": n,
-        "n_trials": R.shape[1], "var_trials_sr": var_sr,
+        "selected": j,
+        "sr_per_obs": sr,
+        "sr_annual": annualize_sharpe(sr),
+        "n_obs": n,
+        "n_trials": R.shape[1],
+        "var_trials_sr": var_sr,
         "expected_max_sr": expected_max_sharpe(R.shape[1], var_sr),
         "dsr": deflated_sharpe_ratio(sr, R.shape[1], var_sr, n, sk, ku),
     }

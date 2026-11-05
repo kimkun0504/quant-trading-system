@@ -1,4 +1,5 @@
 """SystemConfig serialisation, strictness, hashing and the generated default YAML."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -81,7 +82,7 @@ def test_overrides():
     cfg = SystemConfig()
     c2 = cfg.with_overrides({"portfolio.risk_aversion": 3.0, "alpha.lgbm.num_leaves": 9, "seed": 4})
     assert c2.portfolio.risk_aversion == 3.0 and c2.alpha.lgbm.num_leaves == 9 and c2.seed == 4
-    assert cfg.portfolio.risk_aversion != 3.0 and cfg.seed == 0          # original untouched
+    assert cfg.portfolio.risk_aversion != 3.0 and cfg.seed == 0  # original untouched
     with pytest.raises(KeyError):
         apply_overrides(cfg, {"portfolio.risk_aversio": 1})
     with pytest.raises(KeyError):
@@ -103,12 +104,14 @@ def test_committed_default_yaml_matches_code():
     regenerate it when a config default or field changes."""
     committed = (ROOT / "configs" / "default.yaml").read_text()
     assert committed == dump_default_yaml(), (
-        "configs/default.yaml is stale: run `python -m qts.cli config dump > configs/default.yaml`")
+        "configs/default.yaml is stale: run `python -m qts.cli config dump > configs/default.yaml`"
+    )
     assert SystemConfig.from_yaml(ROOT / "configs" / "default.yaml") == SystemConfig()
 
 
 def test_cli_config_dump_and_validate(tmp_path):
     from qts.cli import main
+
     buf = io.StringIO()
     with redirect_stdout(buf):
         assert main(["config", "dump"]) == 0

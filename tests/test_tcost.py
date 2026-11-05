@@ -31,27 +31,27 @@ def test_fee_schedule_1000_shares_50_dollars():
     assert buy["cat"] == pytest.approx(0.003)
     assert buy["sec"] == 0.0 and buy["taf"] == 0.0
     assert buy["total"] == pytest.approx(3.50 + 0.20 + 0.003)
-    assert sell["sec"] == pytest.approx(50_000 * 20.60 / 1e6)   # 1.03
-    assert sell["taf"] == pytest.approx(0.195)                   # 2026 TAF rate
-    assert sell["exchange"] == 0.0                               # no venue -> no auction fee
+    assert sell["sec"] == pytest.approx(50_000 * 20.60 / 1e6)  # 1.03
+    assert sell["taf"] == pytest.approx(0.195)  # 2026 TAF rate
+    assert sell["exchange"] == 0.0  # no venue -> no auction fee
     assert sell["total"] == pytest.approx(3.50 + 0.20 + 1.03 + 0.195 + 0.003)
     # closing-auction exchange fee applies to auction-venue fills only
     auc = fs.explicit_cost(1000, 50.0, "buy", date="2026-06-15", venue="auction")
     assert auc["exchange"] == pytest.approx(1000 * CostConfig().auction_exchange_fee_per_share)
     assert auc["total"] == pytest.approx(buy["total"] + auc["exchange"])
     rt_bps = fs.round_trip_bps(50_000, 50.0, date="2026-06-15")
-    assert 1.5 <= rt_bps <= 2.5          # "about 2 bp round trip for a $50 stock"
+    assert 1.5 <= rt_bps <= 2.5  # "about 2 bp round trip for a $50 stock"
     assert rt_bps == pytest.approx((buy["total"] + sell["total"]) / 50_000 * 1e4)
 
 
 def test_fee_min_and_cap():
     fs = FeeSchedule(CostConfig())
     tiny = fs.explicit_cost(10, 50.0, "buy")
-    assert tiny["commission"] == pytest.approx(0.35)          # per-order minimum
+    assert tiny["commission"] == pytest.approx(0.35)  # per-order minimum
     penny = fs.explicit_cost(10_000, 0.01, "buy")
     assert penny["commission"] == pytest.approx(0.01 * 100.0)  # 1% of value cap
     big_sell = fs.explicit_cost(100_000, 50.0, "sell", date="2026-06-15")
-    assert big_sell["taf"] == pytest.approx(9.79)              # per-trade TAF cap (2026)
+    assert big_sell["taf"] == pytest.approx(9.79)  # per-trade TAF cap (2026)
     assert fs.explicit_cost(100_000, 50.0, "sell", date="2025-06-15")["taf"] == pytest.approx(8.30)
 
 
@@ -61,13 +61,16 @@ def test_fee_holiday_zeroes_taf():
     assert fs.explicit_cost(1000, 50.0, "sell", date="2026-09-30")["taf"] == pytest.approx(0.195)
     assert fs.explicit_cost(1000, 50.0, "sell", date="2027-01-04")["taf"] == pytest.approx(0.195)
     assert fs.fee_holiday("2026-12-31")["finra_taf_per_share_sold"] == 0.0
-    assert fs.fee_holiday("2026-03-01")["sec_fee_per_dollar_sold"] == 0.0  # SEC rate was 0 2025-05-14..2026-04-03
+    assert (
+        fs.fee_holiday("2026-03-01")["sec_fee_per_dollar_sold"] == 0.0
+    )  # SEC rate was 0 2025-05-14..2026-04-03
     assert finra_taf_rate("2024-06-01") == (0.000166, 8.30)
     assert finra_taf_rate(None, CostConfig()) == (0.000195, 9.79)
 
 
 def test_sec_section31_dated_table():
     fs = FeeSchedule(CostConfig())
+
     def per_m(d):
         return sec_section31_rate(d) * 1e6
 
@@ -81,12 +84,14 @@ def test_sec_section31_dated_table():
     assert per_m("2019-06-15") == pytest.approx(20.70)
     assert per_m("2018-12-01") == pytest.approx(13.00)
     assert per_m("2017-09-01") == pytest.approx(23.10)
-    assert per_m("2010-01-01") > 0.0                      # pre-table dates: then-current rate, never 0
+    assert per_m("2010-01-01") > 0.0  # pre-table dates: then-current rate, never 0
     assert sec_section31_rate(None, CostConfig()) == pytest.approx(20.60 / 1e6)
     # flows through explicit_cost on sells for a historical date
     sell = fs.explicit_cost(1000, 50.0, "sell", date="2021-06-15")
     assert sell["sec"] == pytest.approx(50_000 * 5.10 / 1e6)
-    assert fs.explicit_cost(1000, 50.0, "sell", date="2019-06-15")["sec"] == pytest.approx(50_000 * 20.70 / 1e6)
+    assert fs.explicit_cost(1000, 50.0, "sell", date="2019-06-15")["sec"] == pytest.approx(
+        50_000 * 20.70 / 1e6
+    )
 
 
 # --------------------------------------------------------------------- impact
@@ -95,7 +100,7 @@ def test_impact_sqrt_scaling_and_auction_b():
     c1 = imp.cost_bps(1e5, 1e7, 0.02)
     c2 = imp.cost_bps(2e5, 1e7, 0.02)
     assert c2 / c1 == pytest.approx(np.sqrt(2))
-    assert c1 == pytest.approx(1e4 * 1.0 * 0.02 * np.sqrt(0.01))   # 20 bps
+    assert c1 == pytest.approx(1e4 * 1.0 * 0.02 * np.sqrt(0.01))  # 20 bps
     assert imp.cost_bps(1e5, 1e7, 0.02, venue="auction") == pytest.approx(CostConfig().impact_b_auction * c1)
     # integrated form: average cost per dollar equals cost_bps when a=0
     tot = imp.total_cost_fraction(1e5, 1e7, 0.02, half_spread_bps=0.0)
@@ -111,11 +116,13 @@ def test_participation_cap_and_auction_volume():
     imp = SquareRootImpact(CostConfig())
     assert imp.participation_cap(1e7, 1e6, 0.05) == pytest.approx(0.5)
     assert imp.auction_volume_estimate(1e6, "2026-11-03") == pytest.approx(9e4)
-    assert imp.auction_share_for_date("2026-06-26") == pytest.approx(0.34)   # Russell recon Friday
-    assert imp.auction_share_for_date("2026-03-20") == pytest.approx(0.20)   # quad witching
+    assert imp.auction_share_for_date("2026-06-26") == pytest.approx(0.34)  # Russell recon Friday
+    assert imp.auction_share_for_date("2026-03-20") == pytest.approx(0.20)  # quad witching
     choice = imp.cost_for_venue_choice(1e5, 1e7, 0.02, half_spread_bps=5.0, date="2026-11-03")
     assert set(choice) >= {"continuous_bps", "auction_bps", "venue"}
-    assert choice["auction_bps"] == pytest.approx(1e4 * CostConfig().impact_b_auction * 0.02 * np.sqrt(1e5 / (0.09 * 1e7)))
+    assert choice["auction_bps"] == pytest.approx(
+        1e4 * CostConfig().impact_b_auction * 0.02 * np.sqrt(1e5 / (0.09 * 1e7))
+    )
 
 
 def test_cvx_cost_expression_is_dcp_and_solves():
@@ -126,8 +133,15 @@ def test_cvx_cost_expression_is_dcp_and_solves():
     sigma = rng.uniform(0.01, 0.03, n)
     hs = np.full(n, 2e-4)
     x = cp.Variable(n)
-    expr = imp.cvx_cost_expression(x, nav=1e7, adv_usd=adv, sigma=sigma, half_spread=hs,
-                                   explicit_buy_frac=np.full(n, 1e-4), explicit_sell_frac=np.full(n, 1.5e-4))
+    expr = imp.cvx_cost_expression(
+        x,
+        nav=1e7,
+        adv_usd=adv,
+        sigma=sigma,
+        half_spread=hs,
+        explicit_buy_frac=np.full(n, 1e-4),
+        explicit_sell_frac=np.full(n, 1.5e-4),
+    )
     assert expr.is_dcp() and expr.is_convex()
     alpha = np.array([0.01, -0.01, 0.005, 0.0, -0.003])
     prob = cp.Problem(cp.Minimize(expr - alpha @ x), [cp.norm1(x) <= 1.0])
@@ -147,10 +161,12 @@ def test_borrow_fee_proxy_shape():
     assert borrow_fee_proxy(0.50, cfg=cfg) == pytest.approx(cap)
     f10, f15 = borrow_fee_proxy(0.10, cfg=cfg), borrow_fee_proxy(0.15, cfg=cfg)
     assert gc < f10 < f15 < cap
-    assert (f15 - f10) > (f10 - gc)                     # convex rise
+    assert (f15 - f10) > (f10 - gc)  # convex rise
     assert f10 == pytest.approx(gc + (cap - gc) * (1 / 3) ** 2)
     # small-cap haircut multiplier
-    assert borrow_fee_proxy(0.10, cfg=cfg, market_cap=1e9) == pytest.approx(f10 * cfg.small_cap_borrow_multiplier)
+    assert borrow_fee_proxy(0.10, cfg=cfg, market_cap=1e9) == pytest.approx(
+        f10 * cfg.small_cap_borrow_multiplier
+    )
     assert borrow_fee_proxy(0.10, cfg=cfg, market_cap=5e9) == pytest.approx(f10)
     # days-to-cover tightens; NaN SI -> GC; Series in -> Series out
     assert borrow_fee_proxy(0.01, days_to_cover=10.0, cfg=cfg) == pytest.approx(cap)
@@ -160,6 +176,7 @@ def test_borrow_fee_proxy_shape():
 
 def test_snapshot_uses_borrow_proxy_when_fee_absent(md):
     import dataclasses
+
     tcm = TransactionCostModel(CostConfig())
     date = md.dates[150]
     md_nofee = dataclasses.replace(md, borrow_fee=None)
@@ -171,19 +188,23 @@ def test_snapshot_uses_borrow_proxy_when_fee_absent(md):
     so = md.shares_outstanding.loc[:date].iloc[-1].reindex(md.tickers)
     dtc = si * so / snap["adv_shares"].reindex(md.tickers)
     expected = borrow_fee_proxy(si, days_to_cover=dtc, cfg=tcm.cfg, market_cap=mc)
-    pd.testing.assert_series_equal(snap["borrow_fee"], expected.fillna(tcm.cfg.default_borrow_fee_annual),
-                                   check_names=False)
+    pd.testing.assert_series_equal(
+        snap["borrow_fee"], expected.fillna(tcm.cfg.default_borrow_fee_annual), check_names=False
+    )
     # without a share count the proxy falls back to short interest + size only
     snap_noso = tcm.snapshot_from_market(dataclasses.replace(md_nofee, shares_outstanding=None), date)
     expected_noso = borrow_fee_proxy(si, cfg=tcm.cfg, market_cap=mc)
-    pd.testing.assert_series_equal(snap_noso["borrow_fee"],
-                                   expected_noso.fillna(tcm.cfg.default_borrow_fee_annual), check_names=False)
+    pd.testing.assert_series_equal(
+        snap_noso["borrow_fee"], expected_noso.fillna(tcm.cfg.default_borrow_fee_annual), check_names=False
+    )
     assert (snap["borrow_fee"] >= tcm.cfg.default_borrow_fee_annual - 1e-12).all()
     # data present -> data used
     assert tcm.snapshot_from_market(md, date)["borrow_fee_source"] == "data"
     md_none = dataclasses.replace(md, borrow_fee=None, short_interest_ratio=None)
     s3 = tcm.snapshot_from_market(md_none, date)
-    assert s3["borrow_fee_source"] == "default" and (s3["borrow_fee"] == tcm.cfg.default_borrow_fee_annual).all()
+    assert (
+        s3["borrow_fee_source"] == "default" and (s3["borrow_fee"] == tcm.cfg.default_borrow_fee_annual).all()
+    )
 
 
 def test_holding_cost():
@@ -238,6 +259,7 @@ def test_calibrate_b_recovers_truth():
 def _venue_fill_ledger(b_auction=0.5, b_continuous=1.0, n=200, seed=7):
     """Noise-free fills through FillSimulator: MOC (auction) and ALGO (continuous)."""
     from qts.execution import FillSimulator, Order
+
     cfg = CostConfig(impact_b_auction=b_auction, impact_b_continuous=b_continuous)
     sim = FillSimulator(cfg, auction_share=0.09)
     rng = np.random.default_rng(seed)
@@ -249,14 +271,33 @@ def _venue_fill_ledger(b_auction=0.5, b_continuous=1.0, n=200, seed=7):
         vol = adv * rng.uniform(0.8, 1.2)
         sigma = rng.uniform(0.01, 0.04)
         side = "BUY" if rng.random() < 0.5 else "SELL"
-        realized = pd.DataFrame({"open": px, "close": px, "next_open": px, "volume": vol,
-                                 "sigma_daily": sigma, "half_spread_bps": 2.5, "adv_shares": adv},
-                                index=["AUC", "CON"])
+        realized = pd.DataFrame(
+            {
+                "open": px,
+                "close": px,
+                "next_open": px,
+                "volume": vol,
+                "sigma_daily": sigma,
+                "half_spread_bps": 2.5,
+                "adv_shares": adv,
+            },
+            index=["AUC", "CON"],
+        )
         q_auc = max(1.0, round(rng.uniform(0.001, 0.02) * vol * 0.09))
         q_con = max(1.0, round(rng.uniform(0.002, 0.04) * vol))
-        orders = [Order("AUC", side, q_auc, order_type="MOC", order_id="auc", meta={"decision_px": px}),
-                  Order("CON", side, q_con, order_type="ALGO", algo="Vwap", order_id="con",
-                        algo_params={"maxPctVol": 0.5}, meta={"decision_px": px})]
+        orders = [
+            Order("AUC", side, q_auc, order_type="MOC", order_id="auc", meta={"decision_px": px}),
+            Order(
+                "CON",
+                side,
+                q_con,
+                order_type="ALGO",
+                algo="Vwap",
+                order_id="con",
+                algo_params={"maxPctVol": 0.5},
+                meta={"decision_px": px},
+            ),
+        ]
         sim.simulate(orders, realized, date=date, ledger=led)
     return led
 
@@ -265,7 +306,7 @@ def test_calibrate_b_is_venue_aware():
     led = _venue_fill_ledger(b_auction=0.5, b_continuous=1.0)
     d = led.decompose()
     assert set(d["venue"]) == {"auction", "continuous"}
-    assert len(d) == 400                                        # unique ids across days
+    assert len(d) == 400  # unique ids across days
     by = led.calibrate_b_by_venue(prior_weight=0.0)
     assert abs(by["auction"][1]["b_ols"] - 0.5) < 0.15
     assert abs(by["continuous"][1]["b_ols"] - 1.0) < 0.15
@@ -295,18 +336,22 @@ def test_decomposition_sums_and_signs():
     assert d["impact_bps"] == pytest.approx(80 * (vwap - 100.10) * k)
     assert d["opportunity_bps"] == pytest.approx(20 * 1.0 * k)
     assert d["fees_bps"] == pytest.approx(0.50 * k)
-    assert d["total_is_bps"] == pytest.approx(d["delay_bps"] + d["impact_bps"] + d["opportunity_bps"] + d["fees_bps"])
+    assert d["total_is_bps"] == pytest.approx(
+        d["delay_bps"] + d["impact_bps"] + d["opportunity_bps"] + d["fees_bps"]
+    )
     # Perold: total = filled*(vwap-dec) + unfilled*(close-dec) + fees
     assert d["total_is_bps"] == pytest.approx((80 * (vwap - 100) + 20 * (101 - 100) + 0.5) * k)
     # reversion vs the NEXT CLOSE by default (finding #25); next open is configurable
     assert CostConfig().tca_reversion_reference == "next_close"
     assert d["reversion_bps"] == pytest.approx(80 * (vwap - 100.2) * k)
-    led_open = TCALedger(orders=led.orders, fills=led.fills,
-                         cost_cfg=CostConfig(tca_reversion_reference="next_open"))
+    led_open = TCALedger(
+        orders=led.orders, fills=led.fills, cost_cfg=CostConfig(tca_reversion_reference="next_open")
+    )
     assert led_open.decompose().loc["x", "reversion_bps"] == pytest.approx(80 * (vwap - 100.8) * k)
     with pytest.raises(ValueError):
-        TCALedger(orders=led.orders, fills=led.fills,
-                  cost_cfg=CostConfig(tca_reversion_reference="vwap")).decompose()
+        TCALedger(
+            orders=led.orders, fills=led.fills, cost_cfg=CostConfig(tca_reversion_reference="vwap")
+        ).decompose()
     assert d["fill_rate"] == pytest.approx(0.8)
     # sell order mirrors signs
     led.record_order("y", "BBB", "sell", 100, 50.0, "2026-06-01 10:00", 49.95, "2026-06-01 10:05")
@@ -314,7 +359,7 @@ def test_decomposition_sums_and_signs():
     led.close_order("y", 49.0, 49.5, adv_shares=10_000, sigma_daily=0.02, fees=0.0)
     e = led.decompose().loc["y"]
     assert e["delay_bps"] > 0 and e["impact_bps"] > 0 and e["opportunity_bps"] == 0
-    assert np.isnan(e["reversion_bps"])               # no next close given: NaN, never a silent 0
+    assert np.isnan(e["reversion_bps"])  # no next close given: NaN, never a silent 0
     summ = led.summary()
     assert not summ.empty and np.isfinite(summ["total_is_bps"]).all()
 
@@ -359,17 +404,23 @@ def test_snapshot_point_in_time_and_estimate(md):
 
     trades = pd.Series(0.0, index=md.tickers)
     trades.iloc[:5] = [50_000, -50_000, 10_000, -200_000, 0.0]
-    est = tcm.estimate(trades, snap)                          # default venue: routed
+    est = tcm.estimate(trades, snap)  # default venue: routed
     assert isinstance(est, CostEstimate) and est.venue == "routed"
-    assert list(est.frame.columns) == ["spread_usd", "impact_usd", "fees_usd", "total_usd", "venue",
-                                       "persistence_mult"]
+    assert list(est.frame.columns) == [
+        "spread_usd",
+        "impact_usd",
+        "fees_usd",
+        "total_usd",
+        "venue",
+        "persistence_mult",
+    ]
     assert (est.frame[["spread_usd", "impact_usd", "fees_usd"]] >= 0).all().all()
     assert est.frame.loc[trades.index[4], "total_usd"] == 0.0
     np.testing.assert_allclose(est["total_usd"], est["spread_usd"] + est["impact_usd"] + est["fees_usd"])
     tot = est.totals()
     assert tot["total"] == pytest.approx(est["total_usd"].sum())
     est_a = tcm.estimate(trades, snap, "auction")
-    assert (est_a["spread_usd"] == 0).all()                  # auction: no spread crossing
+    assert (est_a["spread_usd"] == 0).all()  # auction: no spread crossing
     est_c = tcm.estimate(trades, snap, venue="continuous")
     assert (est_c["spread_usd"][trades != 0] > 0).all()
     # explicit bps in a plausible range (sub-10 bp for these prices)
@@ -413,20 +464,30 @@ def test_estimate_prices_requested_venue_and_real_spreads(md):
 def test_routed_venue_hand_computed():
     """D3: q_a = min(q, kappa*phi*ADV) at the auction, the rest continuous; the
     continuous leg is the increment C(q) - C(q_a) of the day's metaorder."""
-    cfg = CostConfig(impact_b_auction=0.4)            # != D2 so the auction leg is distinguishable
+    cfg = CostConfig(impact_b_auction=0.4)  # != D2 so the auction leg is distinguishable
     tcm = TransactionCostModel(cfg)
     idx = pd.Index(["A"])
-    snap = LiquiditySnapshot(date=pd.Timestamp("2026-06-15"), tickers=idx, price=50.0, adv_usd=5e7,
-                             adv_shares=1e6, sigma_daily=0.02, half_spread=3e-4, borrow_fee=0.005,
-                             auction_share=0.09)
-    K = 0.02 * 0.09 * 5e7                              # 90,000 USD auction cap
+    snap = LiquiditySnapshot(
+        date=pd.Timestamp("2026-06-15"),
+        tickers=idx,
+        price=50.0,
+        adv_usd=5e7,
+        adv_shares=1e6,
+        sigma_daily=0.02,
+        half_spread=3e-4,
+        borrow_fee=0.005,
+        auction_share=0.09,
+    )
+    K = 0.02 * 0.09 * 5e7  # 90,000 USD auction cap
     q = 500_000.0
     est = tcm.estimate(pd.Series([q], index=idx), snap, "routed")
     qa, qc = K, q - K
-    imp_auc = 0.4 * 0.02 * qa ** 1.5 / (0.09 * 5e7) ** 0.5
-    imp_cont = 1.0 * 0.02 * (q ** 1.5 - qa ** 1.5) / 5e7 ** 0.5
-    fees = (tcm.fees.explicit_cost(qa / 50.0, 50.0, "buy", "2026-06-15", "auction")["total"]
-            + tcm.fees.explicit_cost(qc / 50.0, 50.0, "buy", "2026-06-15", "continuous")["total"])
+    imp_auc = 0.4 * 0.02 * qa**1.5 / (0.09 * 5e7) ** 0.5
+    imp_cont = 1.0 * 0.02 * (q**1.5 - qa**1.5) / 5e7**0.5
+    fees = (
+        tcm.fees.explicit_cost(qa / 50.0, 50.0, "buy", "2026-06-15", "auction")["total"]
+        + tcm.fees.explicit_cost(qc / 50.0, 50.0, "buy", "2026-06-15", "continuous")["total"]
+    )
     assert est["spread_usd"].iloc[0] == pytest.approx(3e-4 * qc, rel=1e-12)
     assert est["impact_usd"].iloc[0] == pytest.approx(imp_auc + imp_cont, rel=1e-12)
     assert est["fees_usd"].iloc[0] == pytest.approx(fees, rel=1e-12)
@@ -445,8 +506,8 @@ def test_routed_venue_hand_computed():
 
 
 def test_impact_persistence_multiplier(md):
-    assert persistence_multiplier([0, 1, 2, 3]) == pytest.approx([1.0, 1.0, 2 ** 1.5 - 1, 3 ** 1.5 - 2 ** 1.5])
-    assert persistence_multiplier(3) == pytest.approx(2.368, abs=5e-4)          # m_3 (finding #23)
+    assert persistence_multiplier([0, 1, 2, 3]) == pytest.approx([1.0, 1.0, 2**1.5 - 1, 3**1.5 - 2**1.5])
+    assert persistence_multiplier(3) == pytest.approx(2.368, abs=5e-4)  # m_3 (finding #23)
     tcm = TransactionCostModel(CostConfig(impact_persistence=True))
     date = md.dates[150]
     snap = tcm.snapshot(md, date)
@@ -457,19 +518,26 @@ def test_impact_persistence_multiplier(md):
     streak = pd.Series(1.0, index=md.tickers)
     streak.iloc[0] = 3.0
     k3 = tcm.estimate(trades, snap, "continuous", streak=streak)
-    m3 = 3 ** 1.5 - 2 ** 1.5
+    m3 = 3**1.5 - 2**1.5
     assert k3["impact_usd"].iloc[0] == pytest.approx(base["impact_usd"].iloc[0] * m3)
     assert k3["persistence_mult"].iloc[0] == pytest.approx(m3)
     assert k3["impact_usd"].iloc[1] == pytest.approx(base["impact_usd"].iloc[1])
-    assert k3["spread_usd"].iloc[0] == base["spread_usd"].iloc[0] and k3["fees_usd"].iloc[0] == base["fees_usd"].iloc[0]
+    assert (
+        k3["spread_usd"].iloc[0] == base["spread_usd"].iloc[0]
+        and k3["fees_usd"].iloc[0] == base["fees_usd"].iloc[0]
+    )
     # incremental cost of a k-day build sums to the metaorder cost b*sigma*(kQ)^1.5/sqrt(V)
     one = trades.iloc[:1]
-    total = sum(tcm.estimate(one, snap, "continuous", streak=pd.Series([k], index=one.index))["impact_usd"].iloc[0]
-                for k in (1, 2, 3))
+    total = sum(
+        tcm.estimate(one, snap, "continuous", streak=pd.Series([k], index=one.index))["impact_usd"].iloc[0]
+        for k in (1, 2, 3)
+    )
     meta = tcm.estimate(one * 3, snap, "continuous")["impact_usd"].iloc[0]
     assert total == pytest.approx(meta, rel=1e-9)
     # switched off -> no scaling
-    off = TransactionCostModel(CostConfig(impact_persistence=False)).estimate(trades, snap, "continuous", streak=streak)
+    off = TransactionCostModel(CostConfig(impact_persistence=False)).estimate(
+        trades, snap, "continuous", streak=streak
+    )
     assert off["impact_usd"].iloc[0] == pytest.approx(base["impact_usd"].iloc[0])
 
 
@@ -478,15 +546,23 @@ def test_impact_exponent_is_wired_and_validated():
         with pytest.raises(ValueError):
             SquareRootImpact(CostConfig(impact_exponent=bad))
     imp = SquareRootImpact(CostConfig(impact_exponent=1.6))
-    assert imp.cost_bps(1e5, 1e7, 0.02) == pytest.approx(1e4 * 0.02 * 0.01 ** 0.6)
-    assert imp.total_cost_fraction(1e5, 1e7, 0.02) == pytest.approx(0.02 * 1e5 ** 1.6 / 1e7 ** 0.6)
+    assert imp.cost_bps(1e5, 1e7, 0.02) == pytest.approx(1e4 * 0.02 * 0.01**0.6)
+    assert imp.total_cost_fraction(1e5, 1e7, 0.02) == pytest.approx(0.02 * 1e5**1.6 / 1e7**0.6)
     tcm = TransactionCostModel(CostConfig(impact_exponent=1.6))
     idx = pd.Index(["A"])
-    snap = LiquiditySnapshot(date=None, tickers=idx, price=50.0, adv_usd=1e7, adv_shares=2e5,
-                             sigma_daily=0.02, half_spread=0.0, borrow_fee=0.0)
+    snap = LiquiditySnapshot(
+        date=None,
+        tickers=idx,
+        price=50.0,
+        adv_usd=1e7,
+        adv_shares=2e5,
+        sigma_daily=0.02,
+        half_spread=0.0,
+        borrow_fee=0.0,
+    )
     est = tcm.estimate(pd.Series([1e5], index=idx), snap, "continuous")
-    assert est["impact_usd"].iloc[0] == pytest.approx(0.02 * 1e5 ** 1.6 / 1e7 ** 0.6)
-    assert persistence_multiplier(2, 1.6) == pytest.approx(2 ** 1.6 - 1)
+    assert est["impact_usd"].iloc[0] == pytest.approx(0.02 * 1e5**1.6 / 1e7**0.6)
+    assert persistence_multiplier(2, 1.6) == pytest.approx(2**1.6 - 1)
     x = cp.Variable(1)
     x.value = np.array([0.1])
     trade, _ = tcm.cvx_terms(x, x, 1e6, snap, "continuous", include_explicit=False)
@@ -498,17 +574,23 @@ def test_auction_share_single_source():
     simulator, dry-run broker and TCA (finding #20)."""
     from qts.core.config import ExecutionConfig
     from qts.execution import DryRunBroker, ExecutionRouter, FillSimulator, Order
+
     assert not hasattr(ExecutionConfig(), "auction_volume_share_default")
     cfg = CostConfig(auction_volume_share_default=0.16)
     imp = SquareRootImpact(cfg)
     assert imp.auction_share_for_date("2026-11-03") == pytest.approx(0.16)
-    assert imp.auction_share_for_date("2026-03-20") == pytest.approx(0.20)       # heavy-day floor
+    assert imp.auction_share_for_date("2026-03-20") == pytest.approx(0.20)  # heavy-day floor
     assert auction_share_for_date("2026-06-26") == pytest.approx(0.34)
-    assert imp.cost_for_venue_choice(1e5, 1e7, 0.02, date="2026-11-03")["auction_share"] == pytest.approx(0.16)
+    assert imp.cost_for_venue_choice(1e5, 1e7, 0.02, date="2026-11-03")["auction_share"] == pytest.approx(
+        0.16
+    )
     # router: missing auction_volume_est -> adv * date-aware share
     r = ExecutionRouter(cost_cfg=cfg)
-    snap = {"adv_shares": pd.Series({"A": 1e6}), "sigma_daily": pd.Series({"A": 0.02}),
-            "indicative_close_px": pd.Series({"A": 50.0})}
+    snap = {
+        "adv_shares": pd.Series({"A": 1e6}),
+        "sigma_daily": pd.Series({"A": 0.02}),
+        "indicative_close_px": pd.Series({"A": 50.0}),
+    }
     o = r.route([Order("A", "BUY", 1_000)], snap, 20.0, date="2026-11-03")[0]
     assert o.meta["pct_of_auction_volume"] == pytest.approx(1_000 / 160_000)
     o_q = r.route([Order("A", "BUY", 1_000)], snap, 20.0, date="2026-03-20")[0]
@@ -517,14 +599,18 @@ def test_auction_share_single_source():
     sim = FillSimulator(cfg)
     realized = pd.DataFrame({"open": 50.0, "close": 50.0, "volume": 1e6, "sigma_daily": 0.02}, index=["A"])
     f = sim.simulate([Order("A", "BUY", 1_000, order_type="MOC")], realized, date="2026-11-03")
-    assert f["impact_bps"].iloc[0] == pytest.approx(1e4 * cfg.impact_b_auction * 0.02 * np.sqrt(1_000 / 160_000))
+    assert f["impact_bps"].iloc[0] == pytest.approx(
+        1e4 * cfg.impact_b_auction * 0.02 * np.sqrt(1_000 / 160_000)
+    )
     br = DryRunBroker(cfg)
     oid = br.place_order(Order("A", "BUY", 1_000, order_type="MOC"))
     fb = br.simulate_fill(oid, ref_px=50.0, adv_shares=1e6, sigma_daily=0.02, ts="2026-11-03 16:00")
     assert fb["impact_bps"] == pytest.approx(1e4 * cfg.impact_b_auction * 0.02 * np.sqrt(1_000 / 160_000))
     # TCA: auction V = share * ADV when no share/venue volume is recorded
     led = TCALedger(cost_cfg=cfg)
-    led.record_order("o", "A", "buy", 1_000, 50.0, "2026-11-03 15:00", 50.0, "2026-11-03 15:50", venue="auction")
+    led.record_order(
+        "o", "A", "buy", 1_000, 50.0, "2026-11-03 15:00", 50.0, "2026-11-03 15:50", venue="auction"
+    )
     led.record_fill("o", 1_000, 50.05, "2026-11-03 16:00")
     led.close_order("o", 50.0, 50.0, adv_shares=1e6, sigma_daily=0.02)
     assert led.decompose().loc["o", "venue_volume"] == pytest.approx(160_000)
@@ -534,18 +620,24 @@ def test_vectorised_fees_match_scalar():
     fs = FeeSchedule(CostConfig())
     rng = np.random.default_rng(4)
     n = 400
-    shares = np.concatenate([rng.integers(1, 200, n // 4), rng.integers(100, 120_000, 3 * n // 4)]).astype(float)
+    shares = np.concatenate([rng.integers(1, 200, n // 4), rng.integers(100, 120_000, 3 * n // 4)]).astype(
+        float
+    )
     price = np.concatenate([rng.uniform(0.005, 2.0, n // 8), rng.uniform(2, 500, n - n // 8)])
     sell = rng.random(n) < 0.5
     auc = rng.random(n) < 0.5
     for date in (None, "2021-06-15", "2026-06-15", "2026-11-03"):
         vec = fs.explicit_cost_vec(shares, price, sell, date, auc)
-        ref = [fs.explicit_cost(q, p, "sell" if s else "buy", date, "auction" if a else "continuous")["total"]
-               for q, p, s, a in zip(shares, price, sell, auc, strict=True)]
+        ref = [
+            fs.explicit_cost(q, p, "sell" if s else "buy", date, "auction" if a else "continuous")["total"]
+            for q, p, s, a in zip(shares, price, sell, auc, strict=True)
+        ]
         np.testing.assert_allclose(vec, ref, rtol=1e-13, atol=1e-12)
         mf = fs.marginal_fraction_vec(price, sell, date, auc)
-        mref = [fs.marginal_fraction(p, "sell" if s else "buy", date, "auction" if a else None)
-                for p, s, a in zip(price, sell, auc, strict=True)]
+        mref = [
+            fs.marginal_fraction(p, "sell" if s else "buy", date, "auction" if a else None)
+            for p, s, a in zip(price, sell, auc, strict=True)
+        ]
         np.testing.assert_allclose(mf, mref, rtol=1e-13)
     assert fs.explicit_cost_vec([0.0, 10.0], [50.0, 0.0], False).tolist() == [0.0, 0.0]
 
@@ -563,8 +655,7 @@ def test_cvx_terms_solve(md):
         assert trade.is_dcp() and trade.is_convex() and hold.is_convex()
     alpha = np.linspace(-0.01, 0.01, n)
     cap = tcm.participation_cap(snap, nav=5e6).values
-    prob = cp.Problem(cp.Minimize(trade + hold - alpha @ x),
-                      [cp.norm1(x) <= 1.0, cp.abs(x) <= cap])
+    prob = cp.Problem(cp.Minimize(trade + hold - alpha @ x), [cp.norm1(x) <= 1.0, cp.abs(x) <= cap])
     prob.solve(solver="CLARABEL")
     assert prob.status in ("optimal", "optimal_inaccurate")
     assert np.all(np.abs(x.value) <= cap + 1e-6)
@@ -576,24 +667,38 @@ def test_benchmark_vectorised_estimate_1500_names():
     """Performance (WORK_PLAN 1.6): the vectorised estimate vs the previous per-name
     Python loops (re-implemented here with the scalar APIs; results must agree)."""
     import time
+
     rng = np.random.default_rng(0)
     n = 1500
     idx = pd.Index([f"S{i:04d}" for i in range(n)])
-    snap = LiquiditySnapshot(date=pd.Timestamp("2026-06-15"), tickers=idx, price=rng.uniform(5, 300, n),
-                             adv_usd=rng.uniform(2e6, 5e8, n), adv_shares=None, sigma_daily=rng.uniform(0.01, 0.04, n),
-                             half_spread=rng.uniform(1e-4, 1e-3, n), borrow_fee=0.005)
+    snap = LiquiditySnapshot(
+        date=pd.Timestamp("2026-06-15"),
+        tickers=idx,
+        price=rng.uniform(5, 300, n),
+        adv_usd=rng.uniform(2e6, 5e8, n),
+        adv_shares=None,
+        sigma_daily=rng.uniform(0.01, 0.04, n),
+        half_spread=rng.uniform(1e-4, 1e-3, n),
+        borrow_fee=0.005,
+    )
     trades = pd.Series(rng.normal(0, 50_000, n), index=idx)
     trades[rng.random(n) < 0.1] = 0.0
     streak = pd.Series(rng.integers(0, 5, n).astype(float), index=idx)
     tcm = TransactionCostModel(CostConfig())
 
-    def loop_reference():   # the pre-refactor algorithm: per-name scalar impact + fee calls
+    def loop_reference():  # the pre-refactor algorithm: per-name scalar impact + fee calls
         P, A, S = snap.price.values, snap.adv_usd.values * snap.auction_share, snap.sigma_daily.values
-        imp = [float(tcm.impact.cost_bps(q, v, s, venue="auction")) if q != 0 else 0.0
-               for q, v, s in zip(trades.values, A, S, strict=True)]
+        imp = [
+            float(tcm.impact.cost_bps(q, v, s, venue="auction")) if q != 0 else 0.0
+            for q, v, s in zip(trades.values, A, S, strict=True)
+        ]
         mult = persistence_multiplier(streak.values)
-        fees = [tcm.fees.explicit_bps(q, p, "buy" if q > 0 else "sell", snap.date, venue="auction") if q != 0 else 0.0
-                for q, p in zip(trades.values, P, strict=True)]
+        fees = [
+            tcm.fees.explicit_bps(q, p, "buy" if q > 0 else "sell", snap.date, venue="auction")
+            if q != 0
+            else 0.0
+            for q, p in zip(trades.values, P, strict=True)
+        ]
         aq = trades.abs().values
         return np.array(imp) * mult * aq / 1e4, np.array(fees) * aq / 1e4
 
@@ -607,12 +712,16 @@ def test_benchmark_vectorised_estimate_1500_names():
 
     t_loop, (imp_ref, fee_ref) = best(loop_reference)
     t_vec, est = best(lambda: tcm.estimate(trades, snap, "auction", streak=streak))
-    np.testing.assert_allclose(est["impact_usd"].values, np.where(trades.values != 0, imp_ref, 0.0), rtol=1e-10)
+    np.testing.assert_allclose(
+        est["impact_usd"].values, np.where(trades.values != 0, imp_ref, 0.0), rtol=1e-10
+    )
     np.testing.assert_allclose(est["fees_usd"].values, fee_ref, rtol=1e-10, atol=1e-12)
     x = cp.Variable(n)
     t_cvx, _ = best(lambda: tcm.cvx_terms(x, x, 1e7, snap, "routed"))
-    print(f"\n[benchmark] estimate on {n} names: per-name loops {t_loop * 1e3:.1f} ms, "
-          f"vectorised {t_vec * 1e3:.2f} ms ({t_loop / t_vec:.0f}x); cvx_terms build {t_cvx * 1e3:.1f} ms")
+    print(
+        f"\n[benchmark] estimate on {n} names: per-name loops {t_loop * 1e3:.1f} ms, "
+        f"vectorised {t_vec * 1e3:.2f} ms ({t_loop / t_vec:.0f}x); cvx_terms build {t_cvx * 1e3:.1f} ms"
+    )
 
 
 # ----------------------------------------------------------------------------- raw prices across splits (#34)
@@ -627,6 +736,7 @@ def test_snapshot_adv_and_fees_use_as_traded_prices_across_splits():
     * per-share fees use the raw price: before a k:1 split the share count is 1/k of what
       the adjusted price would imply."""
     import dataclasses
+
     spec = {"n_stocks": 30, "n_days": 300, "seed": 7}
     base = generate(SyntheticSpec(**spec))
     md = generate(SyntheticSpec(**spec, n_splits=3))
@@ -638,8 +748,9 @@ def test_snapshot_adv_and_fees_use_as_traded_prices_across_splits():
         for d in md.dates[[pos - 2, pos - 1, pos, pos + 1, min(pos + 70, len(md.dates) - 1)]]:
             s, s0 = tcm.snapshot(md, d), tcm.snapshot(base, d)
             np.testing.assert_allclose(s.adv_usd.to_numpy(), s0.adv_usd.to_numpy(), rtol=1e-12)
-            np.testing.assert_allclose((s.adv_shares * s.price).to_numpy(), (s0.adv_shares * s0.price).to_numpy(),
-                                       rtol=1e-12)
+            np.testing.assert_allclose(
+                (s.adv_shares * s.price).to_numpy(), (s0.adv_shares * s0.price).to_numpy(), rtol=1e-12
+            )
             np.testing.assert_allclose(s.sigma_daily.to_numpy(), s0.sigma_daily.to_numpy(), rtol=1e-12)
             assert s.price[tk] == pytest.approx(md.close_raw.loc[d, tk], rel=1e-12)
         # ADV in USD has no jump of size k across the split
@@ -652,13 +763,15 @@ def test_snapshot_adv_and_fees_use_as_traded_prices_across_splits():
         trade[tk] = 1e6
         fees = tcm.estimate(trade, snap, venue="continuous")["fees_usd"][tk]
         P_raw = md.close_raw.loc[d, tk]
-        expected = tcm.fees.explicit_cost_vec(np.array([1e6 / P_raw]), np.array([P_raw]), np.array([False]),
-                                              d, is_auction=False)[0]
+        expected = tcm.fees.explicit_cost_vec(
+            np.array([1e6 / P_raw]), np.array([P_raw]), np.array([False]), d, is_auction=False
+        )[0]
         assert fees == pytest.approx(expected, rel=1e-12)
         P_adj = md.close.loc[d, tk]
-        legacy = tcm.fees.explicit_cost_vec(np.array([1e6 / P_adj]), np.array([P_adj]), np.array([False]),
-                                            d, is_auction=False)[0]
-        assert P_raw == pytest.approx(k * P_adj) and legacy > fees    # adjusted price overstated shares by k
+        legacy = tcm.fees.explicit_cost_vec(
+            np.array([1e6 / P_adj]), np.array([P_adj]), np.array([False]), d, is_auction=False
+        )[0]
+        assert P_raw == pytest.approx(k * P_adj) and legacy > fees  # adjusted price overstated shares by k
 
     # re-adjustment of history leaves every dollar quantity unchanged
     rescale = pd.Series(1.0, index=md.tickers)

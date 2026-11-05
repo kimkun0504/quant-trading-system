@@ -1,4 +1,5 @@
 """RunManifest and the all-panel data hash (handbook fix #37)."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -24,8 +25,10 @@ def test_data_hash_deterministic(md):
     assert len(hash_market_data(md)) == 16
 
 
-@pytest.mark.parametrize("panel", ["close", "volume", "market_cap", "spread_bps", "borrow_fee",
-                                   "short_interest_ratio", "book_to_price"])
+@pytest.mark.parametrize(
+    "panel",
+    ["close", "volume", "market_cap", "spread_bps", "borrow_fee", "short_interest_ratio", "book_to_price"],
+)
 def test_data_hash_covers_every_panel(md, panel):
     base = hash_market_data(md)
     v = getattr(md, panel)
@@ -55,7 +58,9 @@ def test_data_hash_covers_optional_extra_industry_and_eligibility(md):
 
 
 def test_manifest_round_trip(tmp_path):
-    m = RunManifest.create(config_hash="abc123", data_hash="def456", timings={"fit": 1.5}, seeds={"system": 0})
+    m = RunManifest.create(
+        config_hash="abc123", data_hash="def456", timings={"fit": 1.5}, seeds={"system": 0}
+    )
     assert m.run_id.endswith("_abc123") and m.created_at
     assert set(library_versions()) <= set(m.versions)
     for lib in ("numpy", "pandas", "scipy", "sklearn", "lightgbm", "cvxpy", "clarabel"):

@@ -42,6 +42,7 @@ supports read-only mapping access (``snap["adv_usd"]``, ``"date" in snap``,
 :meth:`LiquiditySnapshot.from_mapping` converts an old dict.  Cost models accept
 either form in ``cvx_terms`` / ``estimate`` (see :func:`as_snapshot`).
 """
+
 from __future__ import annotations
 
 import datetime as _dt
@@ -96,19 +97,24 @@ def auction_share_for_date(date: DateLike, share_default: float = AUCTION_SHARE_
         return max(share_default, RUSSELL_RECON_DATES[d])
     if d.weekday() != 4:
         return float(share_default)
-    if d.month == 6:                     # Russell: last Friday of June (approximation)
+    if d.month == 6:  # Russell: last Friday of June (approximation)
         last_day = d + pd.offsets.MonthEnd(0)
         last_friday = last_day - pd.Timedelta(days=(last_day.weekday() - 4) % 7)
         if d == last_friday.normalize():
             return max(share_default, 0.34)
-    if d.month in (3, 6, 9, 12) and 15 <= d.day <= 21:   # third Friday of quarter-end months
+    if d.month in (3, 6, 9, 12) and 15 <= d.day <= 21:  # third Friday of quarter-end months
         return max(share_default, 0.20)
     return float(share_default)
 
 
 # --------------------------------------------------------------------------- snapshot
-_FILL_DEFAULTS = {"price": 100.0, "adv_usd": 1e6, "sigma_daily": 0.02, "half_spread": 2e-4,
-                  "borrow_fee": 0.005}
+_FILL_DEFAULTS = {
+    "price": 100.0,
+    "adv_usd": 1e6,
+    "sigma_daily": 0.02,
+    "half_spread": 2e-4,
+    "borrow_fee": 0.005,
+}
 _FLOORS = {"price": 0.01, "adv_usd": 1e3, "sigma_daily": 1e-4, "half_spread": 0.0, "borrow_fee": 0.0}
 _SERIES_FIELDS = ("price", "adv_usd", "adv_shares", "sigma_daily", "half_spread", "borrow_fee")
 
@@ -150,8 +156,8 @@ class LiquiditySnapshot:
     adv_usd: pd.Series
     adv_shares: pd.Series
     sigma_daily: pd.Series
-    half_spread: pd.Series            # fraction of price
-    borrow_fee: pd.Series             # annual fraction
+    half_spread: pd.Series  # fraction of price
+    borrow_fee: pd.Series  # annual fraction
     auction_share: float = AUCTION_SHARE_NORMAL_DAY
     borrow_fee_source: str = "default"
     nav: float | None = None
@@ -205,10 +211,16 @@ class LiquiditySnapshot:
     def to_dict(self) -> dict[str, Any]:
         """Old dict-of-Series form (keys as consumed before the typed contract)."""
         d: dict[str, Any] = {
-            "adv_usd": self.adv_usd, "adv_shares": self.adv_shares, "sigma_daily": self.sigma_daily,
-            "half_spread": self.half_spread, "half_spread_bps": self.half_spread_bps,
-            "price": self.price, "borrow_fee": self.borrow_fee, "date": self.date,
-            "auction_share": self.auction_share, "borrow_fee_source": self.borrow_fee_source,
+            "adv_usd": self.adv_usd,
+            "adv_shares": self.adv_shares,
+            "sigma_daily": self.sigma_daily,
+            "half_spread": self.half_spread,
+            "half_spread_bps": self.half_spread_bps,
+            "price": self.price,
+            "borrow_fee": self.borrow_fee,
+            "date": self.date,
+            "auction_share": self.auction_share,
+            "borrow_fee_source": self.borrow_fee_source,
         }
         if self.nav is not None:
             d["nav"] = self.nav
@@ -238,18 +250,24 @@ class LiquiditySnapshot:
 
     # ------------------------------------------------------------- adapters
     @classmethod
-    def from_mapping(cls, d: Mapping[str, Any], tickers: pd.Index | None = None,
-                     share_default: float = AUCTION_SHARE_NORMAL_DAY,
-                     default_half_spread_bps: float = 2.0) -> LiquiditySnapshot:
+    def from_mapping(
+        cls,
+        d: Mapping[str, Any],
+        tickers: pd.Index | None = None,
+        share_default: float = AUCTION_SHARE_NORMAL_DAY,
+        default_half_spread_bps: float = 2.0,
+    ) -> LiquiditySnapshot:
         """Convert an old dict snapshot.  ``half_spread_bps`` wins over
         ``half_spread`` (as the old ``estimate`` did); ``auction_share`` defaults
         to :func:`auction_share_for_date` of ``d['date']``.  Per-ticker ``venue``
         keys are ignored: the venue is a call argument of the cost model."""
         if tickers is None:
             first = d.get("adv_usd")
-            ref: pd.Series | None = (cast(pd.Series, first) if isinstance(first, pd.Series) else
-                                     next((cast(pd.Series, v) for v in d.values() if isinstance(v, pd.Series)),
-                                          None))
+            ref: pd.Series | None = (
+                cast(pd.Series, first)
+                if isinstance(first, pd.Series)
+                else next((cast(pd.Series, v) for v in d.values() if isinstance(v, pd.Series)), None)
+            )
             if ref is None:
                 raise ValueError("cannot infer tickers from a snapshot with no Series")
             tickers = ref.index
@@ -267,21 +285,30 @@ class LiquiditySnapshot:
         if share is None or not np.isfinite(float(share)):
             share = auction_share_for_date(date, share_default)
         nav = d.get("nav")
-        return cls(date=date, tickers=tickers, price=_as_series(d.get("price"), tickers),
-                   adv_usd=_as_series(d.get("adv_usd"), tickers),
-                   adv_shares=_as_series(d.get("adv_shares"), tickers),
-                   sigma_daily=_as_series(d.get("sigma_daily"), tickers), half_spread=hs,
-                   borrow_fee=_as_series(d.get("borrow_fee"), tickers), auction_share=float(share),
-                   borrow_fee_source=str(d.get("borrow_fee_source", "default")),
-                   nav=None if nav is None else float(nav))
+        return cls(
+            date=date,
+            tickers=tickers,
+            price=_as_series(d.get("price"), tickers),
+            adv_usd=_as_series(d.get("adv_usd"), tickers),
+            adv_shares=_as_series(d.get("adv_shares"), tickers),
+            sigma_daily=_as_series(d.get("sigma_daily"), tickers),
+            half_spread=hs,
+            borrow_fee=_as_series(d.get("borrow_fee"), tickers),
+            auction_share=float(share),
+            borrow_fee_source=str(d.get("borrow_fee_source", "default")),
+            nav=None if nav is None else float(nav),
+        )
 
 
 SnapshotLike = LiquiditySnapshot | Mapping[str, Any]
 
 
-def as_snapshot(snap: SnapshotLike, tickers: pd.Index | None = None,
-                share_default: float = AUCTION_SHARE_NORMAL_DAY,
-                default_half_spread_bps: float = 2.0) -> LiquiditySnapshot:
+def as_snapshot(
+    snap: SnapshotLike,
+    tickers: pd.Index | None = None,
+    share_default: float = AUCTION_SHARE_NORMAL_DAY,
+    default_half_spread_bps: float = 2.0,
+) -> LiquiditySnapshot:
     """Adapter: a :class:`LiquiditySnapshot` (reindexed to ``tickers`` if given)
     or an old dict snapshot converted with :meth:`LiquiditySnapshot.from_mapping`."""
     if isinstance(snap, LiquiditySnapshot):
@@ -338,8 +365,14 @@ class CostEstimate:
     def totals(self) -> pd.Series:
         """Sums over tickers: ``spread, impact, fees, total`` (USD)."""
         f = self.frame
-        return pd.Series({"spread": float(f["spread_usd"].sum()), "impact": float(f["impact_usd"].sum()),
-                          "fees": float(f["fees_usd"].sum()), "total": float(f["total_usd"].sum())})
+        return pd.Series(
+            {
+                "spread": float(f["spread_usd"].sum()),
+                "impact": float(f["impact_usd"].sum()),
+                "fees": float(f["fees_usd"].sum()),
+                "total": float(f["total_usd"].sum()),
+            }
+        )
 
     def bps(self) -> pd.DataFrame:
         """Per-ticker cost in bps of ``|trade_usd|`` (0 where no trade)."""
@@ -352,16 +385,31 @@ class CostEstimate:
         return pd.DataFrame(out, index=self.frame.index)
 
     @classmethod
-    def from_components(cls, index: pd.Index, venue: str, trade_usd: pd.Series, spread: ArrayLike,
-                        impact: ArrayLike, fees: ArrayLike, persistence_mult: ArrayLike = 1.0,
-                        auction_fraction: pd.Series | None = None) -> CostEstimate:
+    def from_components(
+        cls,
+        index: pd.Index,
+        venue: str,
+        trade_usd: pd.Series,
+        spread: ArrayLike,
+        impact: ArrayLike,
+        fees: ArrayLike,
+        persistence_mult: ArrayLike = 1.0,
+        auction_fraction: pd.Series | None = None,
+    ) -> CostEstimate:
         spread = np.asarray(spread, dtype=float) * np.ones(len(index))
         impact = np.asarray(impact, dtype=float) * np.ones(len(index))
         fees = np.asarray(fees, dtype=float) * np.ones(len(index))
-        frame = pd.DataFrame({"spread_usd": spread, "impact_usd": impact, "fees_usd": fees,
-                              "total_usd": spread + impact + fees, "venue": venue,
-                              "persistence_mult": np.asarray(persistence_mult, dtype=float) * np.ones(len(index))},
-                             index=index)
+        frame = pd.DataFrame(
+            {
+                "spread_usd": spread,
+                "impact_usd": impact,
+                "fees_usd": fees,
+                "total_usd": spread + impact + fees,
+                "venue": venue,
+                "persistence_mult": np.asarray(persistence_mult, dtype=float) * np.ones(len(index)),
+            },
+            index=index,
+        )
         return cls(frame=frame, venue=venue, trade_usd=trade_usd, auction_fraction=auction_fraction)
 
     @classmethod
@@ -387,10 +435,16 @@ class CostModel(Protocol):
 
     def snapshot(self, md: Any, date: Any) -> LiquiditySnapshot: ...
 
-    def estimate(self, trades_usd: pd.Series, snap: SnapshotLike, venue: str | None = None,
-                 streak: pd.Series | None = None) -> CostEstimate: ...
+    def estimate(
+        self,
+        trades_usd: pd.Series,
+        snap: SnapshotLike,
+        venue: str | None = None,
+        streak: pd.Series | None = None,
+    ) -> CostEstimate: ...
 
-    def cvx_terms(self, x: Any, w_post: Any, nav: float, snap: SnapshotLike,
-                  venue: str | None = None) -> tuple[Any, Any]: ...
+    def cvx_terms(
+        self, x: Any, w_post: Any, nav: float, snap: SnapshotLike, venue: str | None = None
+    ) -> tuple[Any, Any]: ...
 
     def holding_cost_usd(self, w_post: pd.Series, nav: float, snap: SnapshotLike) -> pd.Series: ...
