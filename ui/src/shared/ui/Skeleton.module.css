@@ -1,0 +1,16 @@
+.skeleton {
+  background: color-mix(in srgb, var(--color-rule) 55%, var(--color-sheet));
+  border-radius: 2px;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.lines {
+  display: grid;
+  gap: var(--space-2);
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.55;
+  }
+}

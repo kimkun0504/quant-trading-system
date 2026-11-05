@@ -1,0 +1,118 @@
+.host {
+  width: 100%;
+  min-width: 0;
+}
+
+.svg {
+  display: block;
+  overflow: visible;
+}
+
+.grid {
+  stroke: var(--color-rule);
+  stroke-width: 1;
+}
+
+.zero {
+  stroke: var(--color-graphite);
+  stroke-width: 1;
+}
+
+.tick {
+  fill: var(--color-graphite);
+  font-size: 12px;
+}
+
+.tickSmall {
+  fill: var(--color-graphite);
+  font-size: 11px;
+}
+
+.axisLabel {
+  fill: var(--color-graphite);
+  font-size: 12px;
+}
+
+.value {
+  fill: var(--color-ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pos {
+  fill: var(--color-gain);
+}
+
+.neg {
+  fill: var(--color-loss);
+}
+
+.pos[data-active='true'],
+.neg[data-active='true'] {
+  stroke: var(--color-ink);
+  stroke-width: 1.5;
+}
+
+.hit {
+  fill: transparent;
+}
+
+.threshold {
+  stroke: var(--color-caution);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+}
+
+.thresholdLabel {
+  fill: var(--color-caution-ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.line {
+  fill: none;
+  stroke: var(--color-gain);
+  stroke-width: 2;
+}
+
+.lineMuted {
+  fill: none;
+  stroke: var(--color-graphite);
+  stroke-width: 1.5;
+}
+
+.dot {
+  fill: var(--color-gain);
+  stroke: var(--color-sheet);
+  stroke-width: 2;
+}
+
+.band {
+  fill: var(--color-caution);
+  fill-opacity: 0.14;
+}
+
+.multiples {
+  display: grid;
+  column-gap: 20px;
+  row-gap: var(--space-2);
+}
+
+.multipleLabel {
+  fill: var(--color-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.multipleValue {
+  fill: var(--color-graphite);
+  font-size: 12px;
+}
+
+.multiplesAxis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--color-graphite);
+  padding: var(--space-1) 6px 0 34px;
+}

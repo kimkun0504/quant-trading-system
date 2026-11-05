@@ -1,0 +1,99 @@
+.figure {
+  margin: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.caption {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.title {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: var(--step-1);
+}
+
+.description {
+  color: var(--color-graphite);
+  font-size: var(--step--1);
+  max-width: var(--measure);
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  font-size: var(--step--1);
+  color: var(--color-ink);
+}
+
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.swatch {
+  flex: none;
+}
+
+.plot {
+  background: var(--color-sheet);
+  border-top: var(--hairline);
+  border-bottom: var(--hairline);
+  padding: var(--space-3) var(--space-2) var(--space-2);
+  min-width: 0;
+}
+
+.footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.tableScroll {
+  max-height: 22rem;
+  overflow: auto;
+  border-top: var(--hairline);
+  background: var(--color-sheet);
+}
+
+.table {
+  width: 100%;
+  font-size: var(--step--1);
+}
+
+.tableCaption {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-graphite);
+}
+
+.table th,
+.table td {
+  padding: var(--space-1) var(--space-3);
+  border-bottom: var(--hairline);
+  text-align: left;
+  font-weight: 400;
+}
+
+.table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--color-sheet);
+  font-weight: 600;
+  color: var(--color-graphite);
+}
+
+.table .num {
+  text-align: right;
+}

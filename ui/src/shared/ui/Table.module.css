@@ -1,0 +1,82 @@
+/* Shared table look: hairlines, tabular figures, right-aligned numbers. */
+.scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.table {
+  width: 100%;
+  font-size: 0.9375rem;
+  background: var(--color-sheet);
+}
+
+.caption {
+  text-align: left;
+  caption-side: top;
+  padding-bottom: var(--space-2);
+  color: var(--color-graphite);
+  font-size: var(--step--1);
+}
+
+.table th,
+.table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--hairline);
+  text-align: left;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+
+.table thead th {
+  font-weight: 600;
+  color: var(--color-graphite);
+  font-size: var(--step--1);
+  border-bottom: 1px solid var(--color-graphite);
+  vertical-align: bottom;
+}
+
+.table tbody tr:hover {
+  background: var(--color-wash);
+}
+
+.rowHeader {
+  font-weight: 400;
+}
+
+.table .end {
+  text-align: right;
+}
+
+.sort {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: baseline;
+}
+
+.sort:hover {
+  color: var(--color-ink);
+}
+
+.arrow {
+  display: inline-block;
+  width: 0.8em;
+  font-size: 0.7em;
+}
+
+.highlight td,
+.highlight th {
+  background: var(--color-wash);
+  font-weight: 600;
+}
+
+.more {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: var(--space-2);
+}

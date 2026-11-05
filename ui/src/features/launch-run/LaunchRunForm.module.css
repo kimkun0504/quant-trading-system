@@ -1,0 +1,128 @@
+.form {
+  display: grid;
+  gap: var(--space-5);
+  max-width: 44rem;
+}
+
+.fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.label {
+  font-weight: 600;
+  padding: 0;
+}
+
+.choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: var(--space-2) var(--space-5);
+}
+
+.choice {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: var(--space-2);
+  align-items: baseline;
+}
+
+.choice .hint {
+  grid-column: 2;
+}
+
+.choice input,
+.check input {
+  width: 1.05rem;
+  height: 1.05rem;
+  accent-color: var(--color-gain);
+  margin: 0;
+  transform: translateY(0.15em);
+}
+
+.check {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: var(--space-4) var(--space-5);
+  align-items: start;
+}
+
+.field {
+  display: grid;
+  gap: var(--space-1);
+  align-content: start;
+}
+
+.input {
+  width: 100%;
+  min-height: 2.5rem;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--color-graphite);
+  border-radius: var(--radius-control);
+  background: var(--color-sheet);
+  font-size: var(--step-0);
+}
+
+.input[aria-invalid='true'] {
+  border-color: var(--color-loss);
+  border-width: 2px;
+}
+
+.hint {
+  font-size: var(--step--1);
+  color: var(--color-graphite);
+}
+
+.error {
+  font-size: var(--step--1);
+  font-weight: 600;
+  color: var(--color-loss);
+}
+
+.summary {
+  padding: var(--space-3) var(--space-4);
+  border-left: 4px solid var(--color-loss);
+  background: var(--color-loss-wash);
+}
+
+.summary ul {
+  margin: var(--space-2) 0 0;
+  padding-left: 1.2em;
+}
+
+.summary a {
+  color: var(--color-loss);
+}
+
+.summaryTitle {
+  font-size: var(--step-1);
+}
+
+.details {
+  border-top: var(--hairline);
+  padding-top: var(--space-3);
+}
+
+.details summary {
+  cursor: pointer;
+  font-weight: 600;
+  margin-bottom: var(--space-3);
+}
+
+.details[open] .row {
+  margin-top: var(--space-3);
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-3);
+}

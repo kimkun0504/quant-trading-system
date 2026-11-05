@@ -1,0 +1,22 @@
+.state {
+  padding: var(--space-6) 0;
+  border-top: var(--hairline);
+  display: grid;
+  gap: var(--space-3);
+  justify-items: start;
+}
+
+.title {
+  font-size: var(--step-2);
+}
+
+.body {
+  font-family: var(--font-serif);
+  line-height: var(--leading-serif);
+  color: var(--color-graphite);
+  max-width: 60ch;
+}
+
+.action {
+  margin-top: var(--space-2);
+}

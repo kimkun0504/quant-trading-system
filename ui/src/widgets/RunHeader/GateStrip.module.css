@@ -1,0 +1,94 @@
+.strip {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+  gap: var(--space-2) var(--space-5);
+}
+
+.gate {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: var(--space-2);
+  row-gap: 0;
+  padding: var(--space-1) 0;
+  border-bottom: var(--hairline);
+  font-size: 0.9375rem;
+}
+
+.name {
+  font-weight: 600;
+}
+
+.status {
+  grid-column: 2;
+  color: var(--color-graphite);
+  font-size: var(--step--1);
+  line-height: 1.3;
+}
+
+.gate[data-status='FAIL'] .status {
+  color: var(--color-loss);
+  font-weight: 600;
+}
+
+.gate[data-status='skipped'] .name {
+  font-weight: 400;
+  color: var(--color-graphite);
+}
+
+.required {
+  font-weight: 400;
+}
+
+.marker {
+  display: block;
+}
+
+.fillPass {
+  fill: var(--color-gain);
+}
+
+.fillFail {
+  fill: var(--color-loss);
+}
+
+.tick {
+  fill: none;
+  stroke: var(--color-on-accent);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.skip {
+  fill: none;
+  stroke: var(--color-caution);
+  stroke-width: 1.5;
+  stroke-dasharray: 2.5 2;
+}
+
+/* The orchestrated moment: markers fill left to right after the NAV line has drawn. */
+.animate .marker {
+  animation: fill 220ms var(--ease-out) both;
+  animation-delay: calc(var(--motion-draw) + var(--i) * var(--motion-gate-step));
+}
+
+@keyframes fill {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate .marker {
+    animation: none;
+  }
+}

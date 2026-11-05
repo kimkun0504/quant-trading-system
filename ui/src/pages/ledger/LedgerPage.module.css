@@ -1,0 +1,39 @@
+.prose {
+  display: grid;
+  gap: var(--space-3);
+  font-family: var(--font-serif);
+  line-height: var(--leading-serif);
+  font-size: 1.0625rem;
+}
+
+.families {
+  margin: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.families div {
+  display: grid;
+  grid-template-columns: minmax(10rem, max-content) 1fr;
+  gap: var(--space-4);
+}
+
+.families dt {
+  font-weight: 600;
+}
+
+.families dd {
+  margin: 0;
+}
+
+.muted {
+  color: var(--color-graphite);
+}
+
+.gain {
+  color: var(--color-gain);
+}
+
+.loss {
+  color: var(--color-loss);
+}

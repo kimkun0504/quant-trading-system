@@ -1,0 +1,103 @@
+/*
+ * Design tokens (ui/DESIGN.md). Every colour in the app comes from here.
+ * Light is the default; dark applies with [data-theme='dark'] or, when no explicit
+ * theme is stored, with prefers-color-scheme: dark.
+ */
+:root {
+  /* colour — light */
+  --color-paper: #f2f4f6;
+  --color-sheet: #ffffff;
+  --color-ink: #17212b;
+  --color-graphite: #5a6573;
+  --color-rule: #d3d9e0;
+  --color-gain: #1f5f8b;
+  --color-loss: #9b2f52;
+  --color-caution: #b8860b;
+  --color-caution-ink: #7d5b00; /* caution as text: #B8860B fails AA on paper */
+  --color-focus: #3b82c4;
+  --color-on-accent: #ffffff;
+  --color-wash: color-mix(in srgb, var(--color-gain) 6%, var(--color-sheet));
+  --color-caution-wash: color-mix(in srgb, var(--color-caution) 14%, var(--color-sheet));
+  --color-loss-wash: color-mix(in srgb, var(--color-loss) 8%, var(--color-sheet));
+  --drawdown-fill-opacity: 0.18;
+
+  /* type */
+  --font-serif: 'Source Serif 4', 'Source Serif Pro', Georgia, serif;
+  --font-sans: 'Source Sans 3', 'Source Sans Pro', system-ui, sans-serif;
+  --step--1: 0.833rem; /* 13.3 */
+  --step-0: 1rem; /* 16 */
+  --step-1: 1.2rem; /* 19.2 */
+  --step-2: 1.44rem; /* 23 */
+  --step-3: 1.728rem; /* 27.6 */
+  --step-4: 2.074rem; /* 33.2 */
+  --leading-serif: 1.55;
+  --leading-sans: 1.45;
+  --leading-tight: 1.2;
+  --measure: 72ch;
+
+  /* space */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4rem;
+
+  /* layout */
+  --rail-width: 13rem;
+  --reading-max: 840px;
+  --margin-min: 240px;
+  --margin-max: 300px;
+  --gutter: 2.5rem;
+  --radius-control: 4px;
+  --hairline: 1px solid var(--color-rule);
+
+  /* motion */
+  --motion-draw: 600ms;
+  --motion-gate-step: 70ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --color-paper: #10161d;
+    --color-sheet: #161e27;
+    --color-ink: #e6ebf0;
+    --color-graphite: #9aa6b4;
+    --color-rule: #2a3542;
+    --color-gain: #6fa8d6;
+    --color-loss: #d97a9a;
+    --color-caution: #d9b25c;
+    --color-caution-ink: #d9b25c;
+    --color-focus: #6fa8d6;
+    --color-on-accent: #10161d;
+    --color-wash: color-mix(in srgb, var(--color-gain) 8%, var(--color-sheet));
+    --color-caution-wash: color-mix(in srgb, var(--color-caution) 12%, var(--color-sheet));
+    --color-loss-wash: color-mix(in srgb, var(--color-loss) 10%, var(--color-sheet));
+    --drawdown-fill-opacity: 0.22;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  --color-paper: #10161d;
+  --color-sheet: #161e27;
+  --color-ink: #e6ebf0;
+  --color-graphite: #9aa6b4;
+  --color-rule: #2a3542;
+  --color-gain: #6fa8d6;
+  --color-loss: #d97a9a;
+  --color-caution: #d9b25c;
+  --color-caution-ink: #d9b25c;
+  --color-focus: #6fa8d6;
+  --color-on-accent: #10161d;
+  --color-wash: color-mix(in srgb, var(--color-gain) 8%, var(--color-sheet));
+  --color-caution-wash: color-mix(in srgb, var(--color-caution) 12%, var(--color-sheet));
+  --color-loss-wash: color-mix(in srgb, var(--color-loss) 10%, var(--color-sheet));
+  --drawdown-fill-opacity: 0.22;
+  color-scheme: dark;
+}

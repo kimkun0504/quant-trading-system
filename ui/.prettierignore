@@ -1,0 +1,6 @@
+dist
+node_modules
+public/mockServiceWorker.js
+docs/screenshots
+playwright-report
+test-results

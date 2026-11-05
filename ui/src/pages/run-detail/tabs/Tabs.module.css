@@ -1,0 +1,126 @@
+.prose {
+  display: grid;
+  gap: var(--space-3);
+  font-family: var(--font-serif);
+  line-height: var(--leading-serif);
+  font-size: 1.0625rem;
+}
+
+.prose p {
+  max-width: var(--measure);
+}
+
+.list {
+  margin: 0;
+  padding-left: 1.2em;
+  display: grid;
+  gap: var(--space-2);
+  font-family: var(--font-serif);
+  line-height: var(--leading-serif);
+  max-width: var(--measure);
+}
+
+.gateName {
+  display: grid;
+  gap: 0.1rem;
+  white-space: normal;
+  min-width: 12rem;
+}
+
+.gateTest {
+  font-size: var(--step--1);
+  color: var(--color-graphite);
+}
+
+.reason {
+  white-space: normal !important;
+  min-width: 16rem;
+  color: var(--color-graphite);
+}
+
+.statusPASS,
+.statusFAIL,
+.statusskipped {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 600;
+}
+
+.statusPASS rect {
+  fill: var(--color-gain);
+}
+
+.statusFAIL {
+  color: var(--color-loss);
+}
+
+.statusFAIL rect {
+  fill: var(--color-loss);
+}
+
+.statusskipped {
+  color: var(--color-graphite);
+  font-weight: 400;
+}
+
+.statusskipped rect {
+  fill: none;
+  stroke: var(--color-caution);
+  stroke-dasharray: 2 2;
+}
+
+.dl {
+  margin-top: var(--space-5) !important;
+  padding-top: var(--space-3);
+  border-top: var(--hairline);
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-5);
+  margin: 0;
+  font-size: 0.9375rem;
+}
+
+.dl dt {
+  color: var(--color-graphite);
+}
+
+.dl dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.select {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--step--1);
+  color: var(--color-graphite);
+}
+
+.select select {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-control);
+  background: var(--color-sheet);
+  color: var(--color-ink);
+}
+
+.gain {
+  color: var(--color-gain);
+}
+
+.loss {
+  color: var(--color-loss);
+}
+
+.yaml {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-sheet);
+  border: var(--hairline);
+  font-size: var(--step--1);
+  overflow-x: auto;
+  white-space: pre;
+  font-family: var(--font-sans);
+}

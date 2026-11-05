@@ -1,0 +1,17 @@
+.host {
+  width: 100%;
+  position: relative;
+}
+
+.host :global(.u-legend) {
+  display: none;
+}
+
+.host :global(.u-cursor-x),
+.host :global(.u-cursor-y) {
+  border-color: var(--color-graphite) !important;
+}
+
+.host :global(.u-select) {
+  background: color-mix(in srgb, var(--color-gain) 10%, transparent);
+}

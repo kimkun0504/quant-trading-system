@@ -1,0 +1,60 @@
+.scroll {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  font-size: var(--step--1);
+  background: var(--color-sheet);
+  border-collapse: separate;
+  border-spacing: 2px;
+}
+
+.caption {
+  text-align: left;
+  color: var(--color-graphite);
+  padding-bottom: var(--space-2);
+}
+
+.table th,
+.table td {
+  padding: var(--space-1) var(--space-2);
+  text-align: left;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.table thead th {
+  color: var(--color-graphite);
+  font-weight: 600;
+}
+
+.table tbody th {
+  font-weight: 600;
+}
+
+.table .num {
+  text-align: right;
+}
+
+.table td {
+  border-radius: 2px;
+}
+
+.year {
+  font-weight: 600 !important;
+  border-left: 1px solid var(--color-rule);
+}
+
+.caption {
+  font-size: var(--step--1);
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
