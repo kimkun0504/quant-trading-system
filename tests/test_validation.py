@@ -11,11 +11,28 @@ from qts.core.config import ValidationConfig
 from qts.core.types import MarketData
 from qts.data.synthetic import SyntheticSpec, generate
 from qts.validation import (
-    CombinatorialPurgedCV, HurdleReport, LeakageError, PurgedKFold, PurgedWalkForward, TrialLedger,
-    annualize_sharpe, check_no_overlap, deflated_sharpe_ratio, dsr_from_trial_returns, expected_max_sharpe,
-    feature_registry, label_overlap_check, label_windows_overlap, min_backtest_length, min_track_record_length,
-    nagel_collapse_test, pit_shift_test, planted_oracle_test, probabilistic_sharpe,
-    probability_of_backtest_overfitting, sharpe_ratio_se,
+    CombinatorialPurgedCV,
+    HurdleReport,
+    LeakageError,
+    PurgedKFold,
+    PurgedWalkForward,
+    TrialLedger,
+    annualize_sharpe,
+    check_no_overlap,
+    deflated_sharpe_ratio,
+    dsr_from_trial_returns,
+    expected_max_sharpe,
+    feature_registry,
+    label_overlap_check,
+    label_windows_overlap,
+    min_backtest_length,
+    min_track_record_length,
+    nagel_collapse_test,
+    pit_shift_test,
+    planted_oracle_test,
+    probabilistic_sharpe,
+    probability_of_backtest_overfitting,
+    sharpe_ratio_se,
 )
 
 DATES = pd.bdate_range("2015-01-01", periods=1500)
@@ -328,3 +345,47 @@ def test_nagel_collapse_test_runs_and_sane():
     res2 = nagel_collapse_test(lambda Xtr, ytr, Xte: recency_weighted_mean(Xte, 10.0),
                                n_assets=40, n_days=600, seed=0, n_lags=20, horizon=10)
     assert res2["collapsed"] and res2["corr_with_recency_mean"] > 0.99
+
+
+# --------------------------------------------------------------------------- typed hurdle results (1.5) and #26
+def test_hurdle_result_is_typed_and_round_trips():
+    import json
+
+    from qts.validation import GateResult, HurdleResult
+    hr = HurdleReport(ValidationConfig())
+    r = hr.evaluate_signal(decile_tstat=4.0, breakeven_cost_bps=50.0, modeled_cost_bps=10.0, dsr=0.98,
+                           phase=1, net_sharpe=0.8, net_sharpe_delta_by_fold=pd.Series([0.1, 0.2, -0.1]))
+    assert isinstance(r, HurdleResult) and all(isinstance(g, GateResult) for g in r.gates)
+    assert r.overall is True and r.gate("dsr").status == "PASS" and r.status["pbo"] == "skipped"
+    # legacy dict access
+    assert r["status"] == r.status and r["gates"]["dsr"] is True and r["skipped"] == r.skipped
+    assert set(r.keys()) >= {"overall", "phase", "gates", "status", "details", "reasons", "failed", "skipped"}
+    d = json.loads(json.dumps(r.to_dict()))                 # JSON-safe
+    back = HurdleResult.from_dict(d)
+    assert back.status == r.status and back.overall == r.overall and back.reasons == r.reasons
+    assert r.format() == HurdleReport.format(r)
+
+
+def test_hurdle_operators_match_plan_text():
+    """#26: incremental IC strictly > 0.005, net Sharpe delta >= +0.05, IC sign strictly > 0."""
+    hr = HurdleReport(ValidationConfig())
+    at = hr.evaluate_signal(incremental_ic_by_fold=pd.Series([0.005] * 3),
+                            net_sharpe_delta_by_fold=pd.Series([0.05] * 3),
+                            ic_by_fold=pd.Series([0.0] * 3), standalone=False, required=[])
+    assert at.gate("incremental_ic").passed is False             # 0.005 is not > 0.005
+    assert at.gate("net_sharpe_delta").passed is True            # 0.05 >= 0.05
+    assert at.gate("ic_sign").passed is False                    # 0 is not > 0
+    for g in at.gates:
+        if g.applied:
+            assert ">" in g.reason or "<" in g.reason or "skipped" in g.reason, g.reason
+
+
+def test_purged_fold_blocks():
+    from qts.pipeline import purged_fold_blocks
+    d = pd.bdate_range("2020-01-01", periods=130)
+    b = purged_fold_blocks(d, n_splits=6, embargo_days=20, label_horizon=20, min_fold_days=20)
+    assert len(b) == 6 and sum(len(x) for x in b) == 130
+    assert all(b[i][-1] < b[i + 1][0] for i in range(5))           # contiguous, ordered, disjoint
+    b2 = purged_fold_blocks(d[:70], n_splits=6, embargo_days=20, label_horizon=20, min_fold_days=20)
+    assert len(b2) == 3 and min(len(x) for x in b2) >= 20          # splits reduced to keep blocks >= 20 days
+    assert purged_fold_blocks(d[:10], 6, 20, 20, 20) == []

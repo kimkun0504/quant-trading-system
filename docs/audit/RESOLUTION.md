@@ -41,7 +41,7 @@ not written the code. This file records what was found and what was done.
 | BUILD | `.gitignore` pattern `data/` excluded `qts/data/` from the first commit | pattern anchored to `/data/` |
 
 ## Still open (tracked)
-- `nu` calibration must be run once optimized-book bias statistics exist.
-- Synthetic planted score is contemporaneous with the month's returns (PIT-fair but optimistic; oracle band loose).
+- ~~`nu` uncalibrated~~ — calibrated on three synthetic seeds, default `alignment_nu_scale=0.25` (docs/notes/alignment_nu_calibration.md); recalibrate on real data.
+- ~~Synthetic planted score contemporaneous~~ — fixed 2026-11-04: `SyntheticSpec.alpha_lag_days=1` (daily AR(1) score known at t−1).
 - Code-quality refactors from `code_quality.md` (single cost contract, `AsOf` view, config serialisation, run manifest, lint/type CI, golden tests) — scheduled, not done.
 - Pyright: remaining errors are pandas-stub noise; real Optional-deref items fixed.

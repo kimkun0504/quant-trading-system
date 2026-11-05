@@ -3,9 +3,20 @@ import pandas as pd
 import pytest
 
 from qts.core.config import CostConfig, ExecutionConfig
-from qts.execution import (DryRunBroker, ExecutionRouter, FillSimulator, Order, almgren_chriss_schedule,
-                           auction_deadline, intraday_volume_curve, pov_schedule, targets_to_orders,
-                           to_ib_order_dict, urgency_from_half_life, vwap_schedule)
+from qts.execution import (
+    DryRunBroker,
+    ExecutionRouter,
+    FillSimulator,
+    Order,
+    almgren_chriss_schedule,
+    auction_deadline,
+    intraday_volume_curve,
+    pov_schedule,
+    targets_to_orders,
+    to_ib_order_dict,
+    urgency_from_half_life,
+    vwap_schedule,
+)
 from qts.tcost import TCALedger
 
 
@@ -67,9 +78,15 @@ def test_router_tactics(snapshot):
     assert rev.order_type == "LMT" and rev.limit_px < 100.0 and rev.algo is None
     assert huge.order_type == "ALGO" and huge.meta.get("multi_day") is True
     assert "WARNING" in huge.meta["routing_reason"]
-    # medium urgency -> Vwap rather than ClosePx
+    # medium urgency -> Vwap rather than ClosePx (Vwap documents noTakeLiq; ClosePx does not)
     routed2 = r.route([Order("BIG", "SELL", 10_000)], snapshot, signal_half_life_days=6.0)
     assert routed2[0].algo == "Vwap" and routed2[0].algo_params["noTakeLiq"] is False
+    assert "noTakeLiq" not in big.algo_params
+    # participation: urgency_from_half_life clipped to [1%, algo_max_pct_adv]
+    assert routed2[0].algo_params["maxPctVol"] == pytest.approx(urgency_from_half_life(6.0))
+    assert big.algo_params["maxPctVol"] == pytest.approx(urgency_from_half_life(20.0))
+    assert fast.algo_params["maxPctVol"] == pytest.approx(cfg.algo_max_pct_adv)       # capped
+    assert r.participation(None) == cfg.algo_max_pct_adv and r.participation(1e4) == pytest.approx(0.01)
     # all orders carry a reason string
     assert all(isinstance(o.meta.get("routing_reason"), str) and o.meta["routing_reason"] for o in routed)
     tbl = r.routing_table(routed)
@@ -98,7 +115,9 @@ def test_loc_limit_rounds_to_tick_in_favourable_direction():
 
 
 def test_order_ids_unique_across_days():
-    w_t = pd.Series({"A": 0.05}); w_c = pd.Series({"A": 0.0}); px = pd.Series({"A": 50.0})
+    w_t = pd.Series({"A": 0.05})
+    w_c = pd.Series({"A": 0.0})
+    px = pd.Series({"A": 50.0})
     o1 = targets_to_orders(w_t, w_c, 1e6, px, decision_ts="2026-06-01")[0]
     o2 = targets_to_orders(w_t, w_c, 1e6, px, decision_ts="2026-06-02")[0]
     assert o1.order_id != o2.order_id and o1.order_id.startswith("20260601-")
@@ -130,7 +149,10 @@ def test_ib_payloads(snapshot):
     assert algo["algoStrategy"] in ("ClosePx", "Vwap") and algo["orderType"] == "MKT"
     tags = {p["tag"]: p["value"] for p in algo["algoParams"]}
     assert "maxPctVol" in tags and float(tags["maxPctVol"]) <= 0.05
-    assert tags.get("noTakeLiq") in ("0", "1")
+    # ClosePx documents maxPctVol/riskAversion/startTime/forceCompletion only: no noTakeLiq (#22)
+    assert algo["algoStrategy"] == "ClosePx" and "noTakeLiq" not in tags
+    # participation from the signal half-life (urgency_from_half_life, #21)
+    assert float(tags["maxPctVol"]) == pytest.approx(urgency_from_half_life(20.0))
     arr = to_ib_order_dict(routed[2])
     assert arr["algoStrategy"] == "ArrivalPx"
     arr_tags = {p["tag"]: p["value"] for p in arr["algoParams"]}
@@ -192,6 +214,7 @@ def test_fill_simulator_roundtrip_with_ledger(snapshot):
     realized = pd.DataFrame({
         "open": 100.0, "close": [100.02, 100.1, 100.1, 99.5, 100.1], "next_open": 100.3,
         "volume": 1_000_000.0, "sigma_daily": 0.02, "half_spread_bps": 3.0, "adv_shares": 1_000_000.0,
+        "next_close": 100.25,
     }, index=["SMALL", "BIG", "FAST", "REV", "HUGE"])
     led = TCALedger()
     sim = FillSimulator(CostConfig())
@@ -202,7 +225,9 @@ def test_fill_simulator_roundtrip_with_ledger(snapshot):
     assert f.loc["s1", "fill_px"] <= routed[0].limit_px
     assert f.loc["b1", "status"] == "filled" and f.loc["b1", "fill_px"] < 100.1
     assert f.loc["r1", "status"] == "filled" and f.loc["r1", "fill_px"] == routed[3].limit_px
-    assert f.loc["h1", "status"] == "partial" and f.loc["h1", "filled_qty"] == pytest.approx(50_000)
+    # HUGE (10% ADV, half-life 20d) is capped at urgency_from_half_life(20) ~1.3% of the day's volume
+    assert f.loc["h1", "status"] == "partial"
+    assert f.loc["h1", "filled_qty"] == pytest.approx(urgency_from_half_life(20.0) * 1_000_000)
     assert (f["fees_usd"] >= 0).all() and f.loc["s1", "fees_usd"] > 0
     d = led.decompose()
     assert len(d) == 5

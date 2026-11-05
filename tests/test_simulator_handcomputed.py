@@ -249,7 +249,7 @@ def test_constant_bps_costs_and_borrow():
 
 
 # ----------------------------------------------------------------------------- delisting
-TARGETS_CONST = {d: W_LS for d in DATES[:4]}
+TARGETS_CONST = dict.fromkeys(DATES[:4], W_LS)
 
 
 def test_delisting_long_haircut_and_liquidation_cost():
@@ -299,8 +299,9 @@ def test_delisting_long_haircut_and_liquidation_cost():
     assert C["impact"] == pytest.approx(2e-4 * np.abs(x2).sum() * nav2, rel=NAV_RTOL)   # no liq impact
     assert C["fees"] == pytest.approx(1e-4 * np.abs(x2).sum() * nav2 + 1e-4 * 0.175 * nav2, rel=NAV_RTOL)
     assert C["total"] == pytest.approx(c2_trade + c2_borrow + c2_liq, rel=NAV_RTOL)
-    # liquidation priced on the continuous venue; regular trades on the auction
-    assert cost.venues == ["auction", "auction", "auction", "continuous", "auction"]
+    # liquidation priced on the continuous venue; regular trades on the simulator's
+    # default venue, "routed" (design decision D3; was "auction")
+    assert cost.venues == ["routed", "routed", "routed", "continuous", "routed"]
     # optimizer told not to trade C on d3
     assert opt.calls[3]["no_trade"] == ["C"]
     (ev,) = res.diagnostics["delistings"]
@@ -354,3 +355,23 @@ def test_nav_nonpositive_stops_early():
     # d0: gross 0, nav1 = 1e6; d1: gross = 3 * -.4 = -1.2 -> nav2 = -200,000 -> stop
     np.testing.assert_allclose(res.nav.to_numpy(), [NAV0, NAV0, -0.2 * NAV0], rtol=NAV_RTOL)
     assert len(res.returns) == 2 and len(res.weights) == 2
+
+
+# ----------------------------------------------------------------------------- half-life forwarding (fix #5)
+class HalfLifeAwareOptimizer(PresetOptimizer):
+    """Declares ``alpha_half_life_days`` so the simulator forwards it."""
+
+    def solve(self, alpha_half_life_days=None, **kw):
+        kw["alpha_half_life_days"] = alpha_half_life_days
+        return super().solve(**kw)
+
+
+def test_half_life_forwarded_only_when_solve_accepts_it():
+    md = make_md()
+    sim = DailyBarSimulator(SystemConfig(), ConstantBpsCost())
+    aware = HalfLifeAwareOptimizer(TARGETS)
+    sim.run(md, DATES, alpha_fn, risk_fn, aware, nav0=NAV0)
+    assert aware.calls and all(c["alpha_half_life_days"] == 60.0 for c in aware.calls)
+    plain = PresetOptimizer(TARGETS)                 # solve(**kw): no named parameter -> not passed
+    sim.run(md, DATES, alpha_fn, risk_fn, plain, nav0=NAV0)
+    assert plain.calls and all("alpha_half_life_days" not in c for c in plain.calls)

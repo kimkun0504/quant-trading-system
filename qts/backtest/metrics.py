@@ -1,10 +1,12 @@
 """Performance metrics for daily return series."""
 from __future__ import annotations
 
-from typing import Dict, Iterable, Optional
+from collections.abc import Iterable
 
 import numpy as np
 import pandas as pd
+
+from qts.core import stats
 
 
 def _clean(r: pd.Series) -> pd.Series:
@@ -37,7 +39,7 @@ def _autocorr(r: np.ndarray, k: int) -> float:
 
 
 def annualized_sharpe(returns: pd.Series, periods_per_year: int = 252, rf: float = 0.0,
-                      lo_adjust: bool = False, lags: Optional[int] = None) -> float:
+                      lo_adjust: bool = False, lags: int | None = None) -> float:
     """Sharpe ratio annualised by sqrt(q).  With ``lo_adjust`` the Lo (2002)
     correction for serial correlation is used:
     ``SR_q = SR_1 * q / sqrt(q + 2 * sum_{k=1}^{q-1} (q-k) rho_k)`` (rho_k
@@ -69,23 +71,11 @@ def sharpe_t_stat(returns: pd.Series) -> float:
     return sr / np.sqrt((1.0 + 0.5 * sr ** 2) / T)
 
 
-def newey_west_tstat(returns: pd.Series, lags: Optional[int] = None) -> float:
-    """t-stat of the mean with a Newey-West (Bartlett kernel) long-run variance.
+def newey_west_tstat(returns: pd.Series, lags: int | None = None) -> float:
+    """t-stat of the mean with a Newey-West (Bartlett kernel) long-run variance
+    (:func:`qts.core.stats.newey_west_tstat`, at least 5 observations).
     ``lags`` defaults to ``floor(4 (T/100)^(2/9))``."""
-    r = _clean(returns).values
-    T = len(r)
-    if T < 5:
-        return float("nan")
-    if lags is None:
-        lags = int(np.floor(4 * (T / 100.0) ** (2.0 / 9.0)))
-    x = r - r.mean()
-    s = float(x @ x) / T
-    for k in range(1, lags + 1):
-        wk = 1.0 - k / (lags + 1.0)
-        s += 2.0 * wk * float(x[k:] @ x[:-k]) / T
-    if s <= 0:
-        return float("nan")
-    return float(r.mean() / np.sqrt(s / T))
+    return stats.newey_west_tstat(_clean(returns).to_numpy(), lags, min_obs=5)
 
 
 def drawdown_series(returns: pd.Series) -> pd.Series:
@@ -122,7 +112,7 @@ def hit_rate(returns: pd.Series) -> float:
     return float((r > 0).mean()) if len(r) else float("nan")
 
 
-def turnover_stats(turnover_series: pd.Series, periods_per_year: int = 252) -> Dict[str, float]:
+def turnover_stats(turnover_series: pd.Series, periods_per_year: int = 252) -> dict[str, float]:
     """Two-sided daily turnover statistics (fraction of NAV)."""
     to = _clean(turnover_series)
     if len(to) == 0:

@@ -4,8 +4,10 @@ suffices for an auction-centric system).
 
 Realized data per ticker (dict of Series or a DataFrame indexed by ticker)
 with columns ``open, close, next_open, volume, sigma_daily`` and optionally
-``auction_volume`` (shares; default ``volume * auction_share``) and
-``half_spread_bps``.
+``auction_volume`` (shares; default ``volume * auction_share``, where the
+share is ``auction_share`` if given, else :func:`qts.core.costs.auction_share_for_date`
+of the trade date with ``CostConfig.auction_volume_share_default``),
+``half_spread_bps`` and ``next_close`` (TCA reversion reference).
 
 Fill rules
 ----------
@@ -31,12 +33,11 @@ works immediately.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Union
-
 import numpy as np
 import pandas as pd
 
 from qts.core.config import CostConfig
+from qts.core.costs import auction_share_for_date
 from qts.execution.orders import Order
 from qts.tcost.fees import FeeSchedule
 from qts.tcost.impact import VENUE_AUCTION, VENUE_CONTINUOUS, SquareRootImpact
@@ -47,7 +48,7 @@ FILL_COLS = ["order_id", "ticker", "side", "order_type", "algo", "qty", "filled_
 
 
 class FillSimulator:
-    def __init__(self, cfg_cost: Optional[CostConfig] = None, auction_share: float = 0.09,
+    def __init__(self, cfg_cost: CostConfig | None = None, auction_share: float | None = None,
                  default_max_pct_vol: float = 0.05):
         self.cfg = cfg_cost or CostConfig()
         self.fees = FeeSchedule(self.cfg)
@@ -56,16 +57,18 @@ class FillSimulator:
         self.default_max_pct_vol = default_max_pct_vol
 
     @staticmethod
-    def _row(realized: Union[pd.DataFrame, Dict], ticker: str) -> Dict[str, float]:
+    def _row(realized: pd.DataFrame | dict, ticker: str) -> dict[str, float]:
         if isinstance(realized, pd.DataFrame):
             r = realized.loc[ticker].to_dict()
         else:
             r = {k: (v.get(ticker) if isinstance(v, (pd.Series, dict)) else v) for k, v in realized.items()}
         return r
 
-    def simulate(self, orders: List[Order], realized: Union[pd.DataFrame, Dict], date=None,
-                 ledger: Optional[TCALedger] = None, decision_ts=None) -> pd.DataFrame:
+    def simulate(self, orders: list[Order], realized: pd.DataFrame | dict, date=None,
+                 ledger: TCALedger | None = None, decision_ts=None) -> pd.DataFrame:
         date = pd.Timestamp(date) if date is not None else pd.Timestamp.today().normalize()
+        share = (float(self.auction_share) if self.auction_share is not None
+                 else auction_share_for_date(date, self.cfg.auction_volume_share_default))
         rows = []
         for o in orders:
             r = self._row(realized, o.ticker)
@@ -81,7 +84,7 @@ class FillSimulator:
             hs_bps = float(r.get("half_spread_bps", self.cfg.default_half_spread_bps))
             auc_vol = float(r.get("auction_volume", np.nan))
             if not np.isfinite(auc_vol):
-                auc_vol = vol * self.auction_share
+                auc_vol = vol * share
             s = o.sign
             filled, fill_px, impact_bps, spread_bps, venue, status, reason = 0.0, np.nan, 0.0, 0.0, "", "", ""
 
@@ -122,10 +125,10 @@ class FillSimulator:
                 filled, status, reason = o.qty, "filled", "market at open"
 
             fees_usd = self.fees.explicit_cost(filled, fill_px, o.side, date, venue=venue)["total"] if filled > 0 else 0.0
-            rows.append(dict(order_id=o.order_id, ticker=o.ticker, side=o.side, order_type=o.order_type,
-                             algo=o.algo, qty=o.qty, filled_qty=filled, fill_px=fill_px, venue=venue,
-                             impact_bps=impact_bps, spread_bps=spread_bps, fees_usd=fees_usd,
-                             status=status, reason=reason))
+            rows.append({"order_id": o.order_id, "ticker": o.ticker, "side": o.side, "order_type": o.order_type,
+                             "algo": o.algo, "qty": o.qty, "filled_qty": filled, "fill_px": fill_px, "venue": venue,
+                             "impact_bps": impact_bps, "spread_bps": spread_bps, "fees_usd": fees_usd,
+                             "status": status, "reason": reason})
 
             if ledger is not None:
                 oid = o.order_id or f"{date:%Y%m%d}-{o.ticker}-{o.side}"
@@ -144,6 +147,8 @@ class FillSimulator:
                     adv = vol                       # fallback: day's realised volume (audit #16)
                 # V the fill was priced on: realised auction volume / realised day volume
                 venue_vol = auc_vol if venue == VENUE_AUCTION else vol
+                nc = r.get("next_close", np.nan)
+                nc = float(nc) if nc is not None and np.isfinite(float(nc)) else None
                 ledger.close_order(oid, close, next_open, adv, sigma, fees_usd,
-                                   half_spread_bps=spread_bps, venue_volume=venue_vol)
+                                   half_spread_bps=spread_bps, venue_volume=venue_vol, next_close_px=nc)
         return pd.DataFrame(rows, columns=FILL_COLS)

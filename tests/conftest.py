@@ -59,7 +59,7 @@ class StandInRiskModel:
         self.ind_cols = list(inds)
         D = pd.get_dummies(md.industry).reindex(columns=inds).astype(float).reindex(md.tickers)
         self.D = D
-        self.factors = ["beta", "size"] + inds
+        self.factors = ["beta", "size", *inds]
         # cross-sectional regressions: r_t on exposures as of t-1
         dates = md.dates
         fr = np.full((len(dates), len(self.factors)), np.nan)
@@ -142,7 +142,7 @@ def test_date(md) -> pd.Timestamp:
 #: (tests/test_golden.py) and the pipeline determinism test (tests/test_determinism.py).
 #: Changing any of these invalidates tests/golden/pipeline_summary.json
 #: (regenerate with ``pytest tests/test_golden.py --update-golden``).
-GOLDEN_SPEC = dict(n_stocks=100, n_days=700, seed=11, ic_true=0.08)
+GOLDEN_SPEC = {"n_stocks": 100, "n_days": 700, "seed": 11, "ic_true": 0.08}
 GOLDEN_TOP_N = 80
 GOLDEN_MAX_DAYS = 60
 

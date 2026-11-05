@@ -26,22 +26,22 @@ Classes
 """
 from __future__ import annotations
 
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from itertools import combinations
 from math import comb
-from typing import Iterator, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 
-IdxPair = Tuple[np.ndarray, np.ndarray]
+IdxPair = tuple[np.ndarray, np.ndarray]
 
 
 def _n(dates) -> int:
     return len(dates)
 
 
-def purge_train(train_pos: np.ndarray, test_blocks: Sequence[Tuple[int, int]],
+def purge_train(train_pos: np.ndarray, test_blocks: Sequence[tuple[int, int]],
                 label_horizon: int, embargo_days: int, n: int) -> np.ndarray:
     """Remove training positions whose label window overlaps any test block.
 
@@ -92,7 +92,7 @@ class PurgedWalkForward:
     def get_n_splits(self, X=None, y=None, groups=None) -> int:
         return self.n_splits
 
-    def test_blocks(self, dates) -> List[Tuple[int, int]]:
+    def test_blocks(self, dates) -> list[tuple[int, int]]:
         n = _n(dates)
         start = int(self.min_train_days)
         if n - start < self.n_splits:
@@ -124,7 +124,7 @@ class PurgedKFold:
     def get_n_splits(self, X=None, y=None, groups=None) -> int:
         return self.n_splits
 
-    def test_blocks(self, dates) -> List[Tuple[int, int]]:
+    def test_blocks(self, dates) -> list[tuple[int, int]]:
         n = _n(dates)
         edges = np.linspace(0, n, self.n_splits + 1).astype(int)
         return [(int(edges[i]), int(edges[i + 1]) - 1) for i in range(self.n_splits)]
@@ -176,12 +176,12 @@ class CombinatorialPurgedCV:
         return self.n_splits * self.k_test // self.n_groups
 
     # -- structure --------------------------------------------------------
-    def group_blocks(self, dates) -> List[Tuple[int, int]]:
+    def group_blocks(self, dates) -> list[tuple[int, int]]:
         n = _n(dates)
         edges = np.linspace(0, n, self.n_groups + 1).astype(int)
         return [(int(edges[g]), int(edges[g + 1]) - 1) for g in range(self.n_groups)]
 
-    def test_combinations(self) -> List[Tuple[int, ...]]:
+    def test_combinations(self) -> list[tuple[int, ...]]:
         return list(combinations(range(self.n_groups), self.k_test))
 
     def split(self, dates, y=None, groups=None) -> Iterator[IdxPair]:
@@ -194,9 +194,9 @@ class CombinatorialPurgedCV:
             train = purge_train(train, test_blocks, self.label_horizon, self.embargo, n)
             yield train, test
 
-    def split_with_groups(self, dates) -> Iterator[Tuple[int, Tuple[int, ...], IdxPair]]:
+    def split_with_groups(self, dates) -> Iterator[tuple[int, tuple[int, ...], IdxPair]]:
         """Like ``split`` but also yields (split_id, test_group_tuple)."""
-        for i, (combo, pair) in enumerate(zip(self.test_combinations(), self.split(dates))):
+        for i, (combo, pair) in enumerate(zip(self.test_combinations(), self.split(dates), strict=True)):
             yield i, combo, pair
 
     def backtest_paths(self) -> np.ndarray:
@@ -220,7 +220,7 @@ class CombinatorialPurgedCV:
             raise RuntimeError("path assembly incomplete (should not happen)")
         return paths
 
-    def assemble_paths(self, dates, oos_predictions: Sequence[pd.Series]) -> List[pd.Series]:
+    def assemble_paths(self, dates, oos_predictions: Sequence[pd.Series]) -> list[pd.Series]:
         """Stitch per-split OOS prediction series (indexed by position) into
         ``n_paths`` complete series.  ``oos_predictions[i]`` must be indexed by
         the integer test positions of split ``i``."""
@@ -237,10 +237,7 @@ class CombinatorialPurgedCV:
         return out
 
 
-def check_no_overlap(splitter, dates, label_horizon: Optional[int] = None) -> bool:
+def check_no_overlap(splitter, dates, label_horizon: int | None = None) -> bool:
     """Exhaustive check: for every fold, no train label window overlaps the test windows."""
-    h = label_horizon if label_horizon is not None else getattr(splitter, "label_horizon")
-    for train, test in splitter.split(dates):
-        if label_windows_overlap(train, test, h):
-            return False
-    return True
+    h = label_horizon if label_horizon is not None else splitter.label_horizon
+    return all(not label_windows_overlap(train, test, h) for train, test in splitter.split(dates))

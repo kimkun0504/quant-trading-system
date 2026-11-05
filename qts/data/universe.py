@@ -4,18 +4,22 @@
 is True when a name is tradable *as of that date* using only information
 available on or before it:
 
-* price >= ``min_price``;
-* trailing ``adv_window``-day average dollar volume >= ``min_adv_usd``;
+* as-traded price (``MarketData.trade_price()``: the unadjusted close when
+  available) >= ``min_price`` -- a split-adjusted close understates the price
+  a name actually traded at before a later split, so screening on it drops
+  names that were tradable at the time;
+* trailing ``adv_window``-day average dollar volume (``MarketData.dollar_volume``
+  = as-traded price x actual shares traded) >= ``min_adv_usd``;
 * market cap above the ``exclude_bottom_size_quantile`` quantile of the
   eligible cross-section (an NYSE-breakpoint proxy: the quantile is computed
   on names that already pass the price/liquidity screens, which drops the
   microcap tail where anomaly returns live but cannot be captured);
 * within the top ``top_n_by_mcap`` by market cap among the survivors.
 
-Membership is refreshed every ``refresh_days`` (default 21 trading days) and
-held constant in between.  To limit turnover, a name that is in the universe
-leaves only after failing ``exit_after_n_fails`` (default 3) consecutive
-refreshes; a name enters as soon as it passes.  A name whose close is NaN
+Membership is refreshed every ``UniverseConfig.refresh_days`` (default 21
+trading days) and held constant in between.  To limit turnover, a name that is
+in the universe leaves only after failing ``UniverseConfig.exit_after_n_fails``
+(default 3) consecutive refreshes; a name enters as soon as it passes.  A name whose close is NaN
 (not yet listed / delisted) is never in the universe regardless of hysteresis.
 
 :func:`survivorship_check` is a cheap sanity test on the *source*: a
@@ -39,9 +43,9 @@ from qts.core.types import MarketData, Wide
 
 def raw_eligibility(md: MarketData, cfg: UniverseConfig) -> Wide:
     """Per-day eligibility *before* refresh/hysteresis (all PIT quantities)."""
-    close, mcap = md.close, md.market_cap
+    price, mcap = md.trade_price(), md.market_cap
     adv = md.dollar_volume.rolling(cfg.adv_window, min_periods=max(5, cfg.adv_window // 2)).mean()
-    base = (close >= cfg.min_price) & (adv >= cfg.min_adv_usd) & mcap.notna() & close.notna()
+    base = (price >= cfg.min_price) & (adv >= cfg.min_adv_usd) & mcap.notna() & md.close.notna()
     m_elig = mcap.where(base)
     q = cfg.exclude_bottom_size_quantile
     if q > 0:
@@ -52,9 +56,16 @@ def raw_eligibility(md: MarketData, cfg: UniverseConfig) -> Wide:
     return (base & (rank <= cfg.top_n_by_mcap)).fillna(False).astype(bool)
 
 
-def build_universe_mask(md: MarketData, cfg: Optional[UniverseConfig] = None, refresh_days: int = 21,
-                        exit_after_n_fails: int = 3) -> Wide:
+def build_universe_mask(md: MarketData, cfg: Optional[UniverseConfig] = None,
+                        refresh_days: Optional[int] = None, exit_after_n_fails: Optional[int] = None) -> Wide:
+    """PIT universe mask (see module docstring).  ``refresh_days`` and
+    ``exit_after_n_fails`` default to ``cfg.refresh_days`` /
+    ``cfg.exit_after_n_fails``; passing them overrides the config."""
     cfg = cfg or UniverseConfig()
+    refresh_days = int(cfg.refresh_days if refresh_days is None else refresh_days)
+    exit_after_n_fails = int(cfg.exit_after_n_fails if exit_after_n_fails is None else exit_after_n_fails)
+    if refresh_days < 1 or exit_after_n_fails < 1:
+        raise ValueError("refresh_days and exit_after_n_fails must be >= 1")
     raw = raw_eligibility(md, cfg)
     dates = raw.index
     refresh_pos = np.arange(0, len(dates), refresh_days)
@@ -78,10 +89,13 @@ def build_universe_mask(md: MarketData, cfg: Optional[UniverseConfig] = None, re
 def apply_mask(md: MarketData, mask: Wide) -> MarketData:
     """Return a MarketData with every panel NaN where ``mask`` is False.
 
-    Prices are kept intact (so returns and labels remain computable for
-    names that just left the universe); market cap, volume and features are
-    masked.  Tickers that are never in the universe are dropped **from the
-    column set only** — that is a storage convenience, not an eligibility
+    Prices (``close`` and ``close_raw``) are kept intact (so returns and labels
+    remain computable for names that just left the universe); market cap,
+    volume, shares outstanding and features are masked.  ``industry_history``
+    (labels) is only column-restricted.  ``extra`` panels whose columns are not
+    tickers (e.g. ``true_style_factor_returns``, date x factor) pass through
+    unchanged.  Tickers that are never in the universe are dropped **from the
+    column set only** -- that is a storage convenience, not an eligibility
     statement.  The per-date membership is stored on ``md.eligible`` and every
     cross-sectional operation downstream must go through
     ``MarketData.eligibility()`` so that a name that enters the universe in
@@ -89,20 +103,31 @@ def apply_mask(md: MarketData, mask: Wide) -> MarketData:
     """
     keep = mask.columns[mask.any(axis=0)]
     m = mask[keep].astype(bool)
+    tickers = set(md.tickers)
 
-    def cut(f):
+    def cut(f: Optional[Wide]) -> Optional[Wide]:
         if f is None:
             return None
         return f[keep].where(m)
 
-    return MarketData(
+    def cut_extra(f: Wide) -> Wide:
+        if not set(f.columns) <= tickers:
+            return f                       # not a ticker panel
+        return f.reindex(columns=keep).where(m)
+
+    ih = md.industry_history
+    return replace(
+        md,
         close=md.close[keep], volume=cut(md.volume), market_cap=cut(md.market_cap),
         industry=md.industry.reindex(keep), spread_bps=cut(md.spread_bps),
         short_interest_ratio=cut(md.short_interest_ratio), borrow_fee=cut(md.borrow_fee),
         book_to_price=cut(md.book_to_price), earnings_yield=cut(md.earnings_yield),
         gross_profitability=cut(md.gross_profitability), asset_growth=cut(md.asset_growth),
-        extra={k: cut(v) for k, v in md.extra.items()},
+        extra={k: cut_extra(v) for k, v in md.extra.items()},
         eligible=m & md.close[keep].notna(),
+        close_raw=None if md.close_raw is None else md.close_raw[keep],
+        shares_outstanding=cut(md.shares_outstanding),
+        industry_history=None if ih is None else ih.reindex(columns=keep),
     )
 
 

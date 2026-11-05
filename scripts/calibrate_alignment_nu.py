@@ -26,7 +26,6 @@ import dataclasses
 import json
 import logging
 import time
-from typing import Dict
 
 import numpy as np
 import pandas as pd
@@ -42,7 +41,7 @@ GRID = (0.0, 0.25, 0.5, 1.0, 2.0, 4.0)
 
 
 def calibrate_seed(seed: int, n_stocks: int, n_days: int, n_dates: int, burn_in: int, nav: float,
-                   n_iter: int, tol: float, md=None) -> Dict[str, object]:
+                   n_iter: int, tol: float, md=None) -> dict[str, object]:
     t0 = time.time()
     md = md if md is not None else generate(SyntheticSpec(n_stocks=n_stocks, n_days=n_days, seed=seed))
     cfg = SystemConfig()
@@ -62,10 +61,10 @@ def calibrate_seed(seed: int, n_stocks: int, n_days: int, n_dates: int, burn_in:
     elig = md_u.eligibility()
     alpha_fn = pipe._eligible_alpha_fn()
     sim = DailyBarSimulator(cfg, pipe.cost)
-    neutral = [s for s in cfg.risk.styles if s in pipe.RISK_ONLY_STYLES]
+    neutral = pipe.neutral_styles()          # D1: qts.core.roles.RISK_ONLY_STYLES
 
-    alpha_cache: Dict[pd.Timestamp, pd.Series] = {}
-    snap_cache: Dict[pd.Timestamp, dict] = {}
+    alpha_cache: dict[pd.Timestamp, pd.Series] = {}
+    snap_cache: dict[pd.Timestamp, dict] = {}
 
     def alpha_at(d: pd.Timestamp) -> pd.Series:
         if d not in alpha_cache:
@@ -87,7 +86,7 @@ def calibrate_seed(seed: int, n_stocks: int, n_days: int, n_dates: int, burn_in:
         # held names that left the eligible universe are exited (the simulator
         # unwinds them over cfg.portfolio.exit_ineligible_days; immediate here)
         inel = alive & ~elig.loc[d].to_numpy() & (w_prev.abs().to_numpy() > 1e-12)
-        force = {tk: 0.0 for tk in tickers[inel]}
+        force = dict.fromkeys(tickers[inel], 0.0)
         res = opt.solve(alpha=a, risk=rm, w_current=w_prev, nav=nav, snapshot=snap_at(d),
                         neutral_styles=neutral, no_trade=dead or None, force_to_zero=force or None)
         if res.status not in ("optimal", "optimal_inaccurate"):
@@ -102,9 +101,9 @@ def calibrate_seed(seed: int, n_stocks: int, n_days: int, n_dates: int, burn_in:
     w_init = w.copy()
 
     # ---- stateful solve_fn: previous book carried, reset at the first date
-    base_var: Dict[pd.Timestamp, float] = {}
-    books: Dict[float, Dict[pd.Timestamp, pd.Series]] = {}
-    shares: Dict[float, list] = {}
+    base_var: dict[pd.Timestamp, float] = {}
+    books: dict[float, dict[pd.Timestamp, pd.Series]] = {}
+    shares: dict[float, list] = {}
     state = {"w": w_init.copy(), "last": None}
 
     def solve_fn(d, rm, a):
@@ -122,7 +121,7 @@ def calibrate_seed(seed: int, n_stocks: int, n_days: int, n_dates: int, burn_in:
 
     # precompute the nu_scale=1 risk models once (calibrate_alignment_nu also
     # calls as_of once per date; cache through a thin proxy so it is not repeated)
-    risk_nu1: Dict[pd.Timestamp, object] = {}
+    risk_nu1: dict[pd.Timestamp, object] = {}
 
     class _CachedRisk:
         def as_of(self, d, alpha=None, nu_scale=None):

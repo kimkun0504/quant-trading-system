@@ -11,15 +11,15 @@
       (to as low as 0.25x) when the trailing 24-month equal-weight market
       return is negative *and* trailing 21-day market vol is above its 80th
       percentile (bear + high-vol state; Daniel-Moskowitz).
-    - **momentum vol targeting**: the momentum theme weight is scaled by
-      ``target_vol / trailing 63d vol of the momentum long-short portfolio``,
-      clipped to [0.5, 1.5].  Only the momentum sleeve is vol-managed
-      (Cederburg et al.).
+    - **momentum vol scaling (bounded, not full targeting)**: the momentum
+      theme weight is scaled by ``target_vol / trailing 63d vol of the
+      momentum long-short portfolio``, clipped to
+      ``AlphaConfig.momentum_vol_scalar_bounds`` = [0.5, 1.5] by default, so
+      the sleeve's realised vol only partially tracks the target.  Only the
+      momentum sleeve is vol-managed (Cederburg et al.).
   All dynamic quantities at date ``t`` use information ``<= t`` only.
 """
 from __future__ import annotations
-
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -28,7 +28,7 @@ from qts.core.config import AlphaConfig
 from qts.core.crosssection import zscore
 from qts.core.types import Long, MarketData, Wide
 
-THEMES: Dict[str, List[Tuple[str, float]]] = {
+THEMES: dict[str, list[tuple[str, float]]] = {
     "value": [("value_bp", 1.0), ("value_ep", 1.0)],
     "momentum": [("mom_12_1", 1.0), ("mom_6_1", 1.0), ("industry_momentum", 1.0)],
     "quality": [("quality_gpa", 1.0)],
@@ -45,7 +45,7 @@ def _long_to_wide(s: pd.Series) -> Wide:
     return w
 
 
-def theme_scores_long(processed: Long, themes: Dict[str, List[Tuple[str, float]]] = THEMES) -> Long:
+def theme_scores_long(processed: Long, themes: dict[str, list[tuple[str, float]]] = THEMES) -> Long:
     """Per-theme signed average of processed features (long frame, one column per theme).
     Themes with no available features are omitted."""
     cols = {}
@@ -58,7 +58,7 @@ def theme_scores_long(processed: Long, themes: Dict[str, List[Tuple[str, float]]
     return pd.DataFrame(cols, index=processed.index)
 
 
-def theme_scores_wide(processed: Long, themes=THEMES) -> Dict[str, Wide]:
+def theme_scores_wide(processed: Long, themes=THEMES) -> dict[str, Wide]:
     """Per-theme z-scored wide panels (date x ticker)."""
     tl = theme_scores_long(processed, themes)
     return {th: zscore(_long_to_wide(tl[th])) for th in tl.columns}
@@ -137,6 +137,15 @@ def momentum_crash_scalar(md: MarketData, date: pd.Timestamp, lookback_days: int
 
 def momentum_vol_scalar_series(theme_returns: pd.DataFrame, target_vol_annual: float,
                                window: int = 63, lo: float = 0.5, hi: float = 1.5) -> pd.Series:
+    """Bounded vol scaling of the momentum sleeve's *weight*:
+    ``clip(target_vol_annual / sigma_63d_annualised, lo, hi)`` (Barroso &
+    Santa-Clara 2015 style).  This is **not** full vol targeting: the clip
+    (``AlphaConfig.momentum_vol_scalar_bounds``, default [0.5, 1.5]) keeps the
+    sleeve weight within a factor 2-3 of its static value, so in very calm or
+    very turbulent regimes the momentum sleeve's realised vol deviates from
+    the target (the crash scalar handles the turbulent bear-market case).  The
+    vol is of the theme's own long-short return, PIT (trailing window, NaN ->
+    scalar 1 during warm-up)."""
     if "momentum" not in theme_returns.columns:
         return pd.Series(1.0, index=theme_returns.index)
     vol = theme_returns["momentum"].rolling(window, min_periods=window).std() * np.sqrt(252)
@@ -147,17 +156,17 @@ def momentum_vol_scalar_series(theme_returns: pd.DataFrame, target_vol_annual: f
 class ThemeComposite:
     """Fixed-theme rank composite with optional dynamic theme weights."""
 
-    def __init__(self, cfg: AlphaConfig, themes: Dict[str, List[Tuple[str, float]]] = THEMES):
+    def __init__(self, cfg: AlphaConfig, themes: dict[str, list[tuple[str, float]]] = THEMES):
         self.cfg = cfg
         self.themes = themes
 
     # -- weights -------------------------------------------------------------
-    def static_weights(self, available: List[str]) -> pd.Series:
+    def static_weights(self, available: list[str]) -> pd.Series:
         w = pd.Series({th: self.cfg.theme_weights.get(th, 0.0) for th in available}, dtype=float)
         return w
 
     def dynamic_weights(self, theme_returns: pd.DataFrame, md: MarketData,
-                        available: List[str]) -> pd.DataFrame:
+                        available: list[str]) -> pd.DataFrame:
         """Date x theme weights = static x factor-momentum tilt x (momentum only:
         crash scalar x vol scalar).  All point-in-time."""
         base = self.static_weights(available)
@@ -169,13 +178,15 @@ class ThemeComposite:
         W = W * tilt.reindex(index=idx, columns=available).fillna(1.0)
         if "momentum" in available:
             crash = momentum_crash_scalar_series(md, self.cfg.momentum_crash_market_lookback_days)
-            volsc = momentum_vol_scalar_series(theme_returns, self.cfg.momentum_vol_target_annual)
+            lo, hi = self.cfg.momentum_vol_scalar_bounds
+            volsc = momentum_vol_scalar_series(theme_returns, self.cfg.momentum_vol_target_annual,
+                                               window=self.cfg.momentum_vol_window, lo=lo, hi=hi)
             W["momentum"] = W["momentum"] * crash.reindex(idx).fillna(1.0) * volsc.reindex(idx).fillna(1.0)
         return W
 
     # -- scoring -------------------------------------------------------------
-    def score_all(self, processed: Long, md: Optional[MarketData] = None,
-                  dynamic: bool = False, theme_returns: Optional[pd.DataFrame] = None,
+    def score_all(self, processed: Long, md: MarketData | None = None,
+                  dynamic: bool = False, theme_returns: pd.DataFrame | None = None,
                   return_components: bool = False):
         """Composite z-score panel for every date in ``processed``.
 
@@ -209,8 +220,8 @@ class ThemeComposite:
             return comp, themes
         return comp
 
-    def score(self, processed: Long, date: pd.Timestamp, md: Optional[MarketData] = None,
-              dynamic: bool = False, theme_returns: Optional[pd.DataFrame] = None) -> pd.Series:
+    def score(self, processed: Long, date: pd.Timestamp, md: MarketData | None = None,
+              dynamic: bool = False, theme_returns: pd.DataFrame | None = None) -> pd.Series:
         """Composite z-score Series (ticker index) for one date — AlphaOutput-ready."""
         sub = processed.loc[processed.index.get_level_values("date") <= date] if dynamic else \
             processed.loc[[date]]

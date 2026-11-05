@@ -10,11 +10,22 @@ import pytest
 from qts.core.config import RiskConfig
 from qts.data.synthetic import SyntheticSpec, generate
 from qts.risk import (
-    BarraStyleRiskModel, alpha_alignment, bias_statistic, build_exposures,
-    estimate_factor_return_history, estimate_factor_returns, ewma_cov,
-    exposure_history, factor_covariance, linear_shrinkage, nonlinear_shrinkage,
-    portfolio_bias_test, qlike, mincer_zarnowitz, min_variance_oos_test,
-    random_long_short_weights, specific_risk,
+    BarraStyleRiskModel,
+    alpha_alignment,
+    bias_statistic,
+    build_exposures,
+    estimate_factor_returns,
+    ewma_cov,
+    exposure_history,
+    factor_covariance,
+    linear_shrinkage,
+    min_variance_oos_test,
+    mincer_zarnowitz,
+    nonlinear_shrinkage,
+    portfolio_bias_test,
+    qlike,
+    random_long_short_weights,
+    specific_risk,
 )
 from qts.risk.exposures import MARKET_FACTOR, split_factor_columns
 from qts.risk.factor_returns import cap_weighted_industry_sum
@@ -85,7 +96,9 @@ def test_factor_returns_market_and_constraint(md, cfg, model):
     c = md.market_cap.shift(1)
     cw_market = ((r * c).sum(axis=1) / c.sum(axis=1)).reindex(fr.index)
     # USE4 identification: with the cap-weighted industry constraint the market
-    # factor *is* the cap-weighted market return.
+    # factor *tracks* the cap-weighted market return closely, but is not equal
+    # to it (style offsets and sqrt-cap regression weights; see the
+    # qts.risk.factor_returns module docstring, finding #14).
     assert fr[MARKET_FACTOR].corr(cw_market) > 0.98
     # Against the latent market factor of the generator.  NOTE: this synthetic
     # universe is extremely concentrated (two names hold ~29% of cap), so the
@@ -150,7 +163,9 @@ def test_nonlinear_shrinkage_beats_sample_cov():
     assert S_qis.shape == (N, N)
     assert _is_psd(S_qis)
     assert np.isclose(np.trace(S_qis), np.trace(np.cov(X.T, ddof=1)), rtol=1e-6)
-    err = lambda S: np.linalg.norm(S - Sigma, "fro")
+    def err(S):
+        return np.linalg.norm(S - Sigma, "fro")
+
     assert err(S_qis) < err(S_sample)
     assert err(S_qis) < 0.8 * err(S_sample)
     assert err(S_lw) < err(S_sample)
@@ -318,7 +333,7 @@ def test_thin_history_blend_use4_formula(md, cfg, model):
     U[gauss] = rng.standard_normal(len(U)) * 0.01
     U[fat] = rng.standard_normal(len(U)) * 0.01
     U.iloc[-30, U.columns.get_loc(fat)] = 1.0          # one 100-sigma outlier
-    var, det = specific_risk(U, B, md.market_cap.loc[d], cfg, return_details=True)
+    _var, det = specific_risk(U, B, md.market_cap.loc[d], cfg, return_details=True)
     g = det["gamma"]
     # Gaussian, long history: Z = |sd_eq/sd_robust - 1| ~ 0 -> gamma = 1 (time-series weight)
     assert g[gauss] == pytest.approx(1.0, abs=0.05)
@@ -349,3 +364,37 @@ def test_calibrate_alignment_nu_smoke(md, cfg, model):
     assert hist[100.0] < hist[0.01]
     assert res["bias_unaligned"] >= hist[0.01] - 1e-9
     assert set(res) >= {"nu_scale", "bias", "bias_unaligned", "lower", "upper", "in_band", "converged"}
+
+
+# --------------------------------------------------------------------------- dated industries (finding #43)
+def test_exposures_follow_dated_industry_classification(cfg):
+    """With md.industry_history the industry block on date t is the dummy matrix of
+    md.industry_as_of(t); styles are unchanged; without it the static fast path
+    applies (one (N, 1+I) block)."""
+    import dataclasses
+
+    from qts.core import stats
+    md0 = generate(SyntheticSpec(n_stocks=40, n_days=560, seed=4))
+    d1, d2 = md0.dates[300], md0.dates[350]
+    lab0 = md0.industry.reindex(md0.tickers)
+    hist = pd.DataFrame([lab0.to_numpy(), lab0.to_numpy()], index=[d1, d2], columns=md0.tickers)
+    hist.iloc[:, :5] = "NEWIND"                 # reclassified on d1 ...
+    hist.iloc[1, 5:8] = np.nan                  # ... later rows may leave names unclassified (-> carried / static)
+    hist.iloc[1, :2] = lab0.iloc[:2].to_numpy()  # two names move back on d2
+    md_h = dataclasses.replace(md0, industry_history=hist)
+    dates = md0.dates[[250, 299, 300, 320, 350, 399]]
+    h0, h = exposure_history(md0, dates, cfg), exposure_history(md_h, dates, cfg)
+    assert h0.industry_codes is None and h.industry_codes is not None
+    assert "NEWIND" in h.factors and "NEWIND" not in h0.factors
+    for d in dates:
+        f, f0 = h[d], h0[d]
+        _, inds, styles = split_factor_columns(f.columns, cfg)
+        expected = stats.industry_dummies(md_h.industry_as_of(d), md_h.tickers).reindex(
+            index=f.index, columns=inds, fill_value=0.0)
+        pd.testing.assert_frame_equal(f[inds], expected, check_names=False)
+        pd.testing.assert_frame_equal(f[styles], f0[styles])
+        assert (f[MARKET_FACTOR] == 1.0).all() and np.allclose(f[inds].sum(axis=1), 1.0)
+    assert (h[md0.dates[299]]["NEWIND"] == 0).all()               # nothing before d1
+    assert h[md0.dates[300]]["NEWIND"].sum() == 5 and h[md0.dates[350]]["NEWIND"].sum() == 3
+    # the dated path also fits end to end
+    BarraStyleRiskModel(cfg).fit(md_h).as_of(md0.dates[-1])

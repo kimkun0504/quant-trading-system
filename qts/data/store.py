@@ -17,7 +17,10 @@ Dataset names understood by :meth:`ParquetStore.as_market_data`:
 
 ==========================  ===========================================
 ``prices_close``            adjusted close (required)
-``prices_volume``           shares traded (required)
+``prices_volume``           actual shares traded (required)
+``prices_close_raw``        as-traded (unadjusted) close -> ``close_raw``
+``shares_outstanding``      actual shares outstanding -> ``shares_outstanding``
+``industry_history``        dated industry labels (wide, string values)
 ``market_cap``              USD market cap (required)
 ``industry``                long table ``ticker, industry`` (required)
 ``spread_bps``              half-spread proxy in bps
@@ -31,6 +34,21 @@ Dataset names understood by :meth:`ParquetStore.as_market_data`:
 
 Any additional wide dataset listed in ``extra_names`` is put in
 ``MarketData.extra``.
+
+Write modes (:meth:`ParquetStore.write_long` / :meth:`ParquetStore.write_wide`)
+-------------------------------------------------------------------------------
+* ``"upsert"`` (default) -- merge into the existing year partitions: rows of
+  the stored partition whose key (``date, ticker`` when present) appears in
+  the new data are replaced, every other stored row is kept.  Appending one
+  day to a year keeps the rest of the year.  For wide panels a NaN cell in the
+  new frame *deletes* the stored value for that key.
+* ``"replace_partition"`` -- every year partition touched by the new data is
+  rewritten with only the new rows (intentional full rewrite of those years).
+* ``"replace"`` -- the whole dataset is dropped and rewritten.
+
+Every parquet file is written to a temporary file in the same directory and
+moved into place with ``os.replace`` (atomic on POSIX), so a crash mid-write
+never leaves a truncated partition.
 """
 from __future__ import annotations
 
@@ -39,9 +57,10 @@ import hashlib
 import json
 import os
 import shutil
-from typing import Dict, Iterable, List, Optional
+import uuid
+import warnings
+from typing import Dict, Iterable, List, Optional, Sequence
 
-import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -51,6 +70,44 @@ from qts.core.types import MarketData, Wide
 REQUIRED = ("prices_close", "prices_volume", "market_cap", "industry")
 OPTIONAL_PANELS = ("spread_bps", "short_interest_ratio", "borrow_fee", "book_to_price",
                    "earnings_yield", "gross_profitability", "asset_growth")
+#: dataset name -> MarketData field for the optional price-level panels
+RAW_PANELS: Dict[str, str] = {"prices_close_raw": "close_raw", "shares_outstanding": "shares_outstanding"}
+WRITE_MODES = ("upsert", "replace_partition", "replace")
+
+
+def _atomic_write_table(table: pa.Table, path: str) -> None:
+    """Write ``table`` to ``path`` via a temp file in the same directory + ``os.replace``."""
+    d = os.path.dirname(path)
+    tmp = os.path.join(d, f".tmp-{uuid.uuid4().hex}.partial")
+    try:
+        pq.write_table(table, tmp, compression="zstd")
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def _normalise_keys(df: pd.DataFrame) -> pd.DataFrame:
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"])
+    if "ticker" in df.columns:
+        df["ticker"] = df["ticker"].astype(str)
+    return df
+
+
+def _upsert(old: pd.DataFrame, new: pd.DataFrame, key: Sequence[str]) -> pd.DataFrame:
+    """Stored rows whose ``key`` appears in ``new`` are dropped; ``new`` is appended."""
+    old = _normalise_keys(old)
+    if not key or old.empty:
+        return new
+    if "date" in old.columns and "date" in new.columns and old["date"].dtype != new["date"].dtype:
+        old["date"] = old["date"].astype(new["date"].dtype)
+    k_old = pd.MultiIndex.from_frame(old[list(key)])
+    k_new = pd.MultiIndex.from_frame(new[list(key)])
+    kept = old[~k_old.isin(k_new)]
+    if kept.empty:
+        return new
+    return pd.concat([kept, new], ignore_index=True)
 
 
 class ParquetStore:
@@ -81,38 +138,75 @@ class ParquetStore:
 
     def _write_meta(self, name: str, meta: dict) -> None:
         os.makedirs(self._dir(name), exist_ok=True)
-        with open(self._meta_path(name), "w") as f:
+        tmp = self._meta_path(name) + f".tmp-{uuid.uuid4().hex}"
+        with open(tmp, "w") as f:
             json.dump(meta, f, indent=1, sort_keys=True)
+        os.replace(tmp, self._meta_path(name))
 
     def drop(self, name: str) -> None:
         if os.path.isdir(self._dir(name)):
             shutil.rmtree(self._dir(name))
 
     # ------------------------------------------------------------------ long
-    def write_long(self, name: str, df: pd.DataFrame, mode: str = "overwrite_partitions", kind: str = "long") -> None:
-        """Write a long table.  If a ``date`` column exists the table is
-        partitioned by year; partitions touched by ``df`` are replaced
-        (``mode='overwrite_partitions'``) or the whole dataset is replaced
-        (``mode='replace'``)."""
+    def write_long(self, name: str, df: pd.DataFrame, mode: str = "upsert", kind: str = "long",
+                   key: Optional[Sequence[str]] = None) -> None:
+        """Write a long table (see the module docstring for ``mode``).
+
+        If a ``date`` column exists the table is partitioned by year.  ``key``
+        (default: the columns among ``("date", "ticker")`` present) identifies a
+        row for ``mode="upsert"``; tables without a ``date`` column are upserted
+        on ``ticker`` if present, otherwise replaced.
+        """
+        self._write_long(name, df, mode=mode, kind=kind, key=key, drop_null=None)
+
+    def _write_long(self, name: str, df: pd.DataFrame, mode: str, kind: str,
+                    key: Optional[Sequence[str]], drop_null: Optional[str]) -> None:
+        if mode == "overwrite_partitions":
+            warnings.warn("mode='overwrite_partitions' is deprecated (it silently dropped the rest of each "
+                          "year); use 'upsert' (merge) or 'replace_partition' (explicit rewrite)",
+                          DeprecationWarning, stacklevel=3)
+            mode = "replace_partition"
+        if mode not in WRITE_MODES:
+            raise ValueError(f"mode must be one of {WRITE_MODES}, got {mode!r}")
         df = df.reset_index() if isinstance(df.index, pd.MultiIndex) or df.index.name in ("date", "ticker") else df.copy()
         if "index" in df.columns and "date" not in df.columns:
             df = df.rename(columns={"index": "date"})
+        df = _normalise_keys(df)
+        if key is None:
+            key = [c for c in ("date", "ticker") if c in df.columns]
+        key = list(key)
+        missing = set(key) - set(df.columns)
+        if missing:
+            raise ValueError(f"key columns {sorted(missing)} not in frame")
+        prev_cols: List[str] = []
         if mode == "replace":
             self.drop(name)
+        elif self.exists(name):
+            prev_cols = list(self.meta(name).get("columns", []))
         os.makedirs(self._dir(name), exist_ok=True)
+
+        def finish(part: pd.DataFrame, path: str) -> None:
+            if mode == "upsert" and os.path.exists(path):
+                part = _upsert(pq.read_table(path).to_pandas(), part, key)
+            if drop_null is not None:
+                part = part[part[drop_null].notna()]
+            sort_cols = [c for c in ("date", "ticker") if c in part.columns]
+            if sort_cols:
+                part = part.sort_values(sort_cols, kind="mergesort")
+            if part.empty:
+                if os.path.exists(path):
+                    os.remove(path)
+                return
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            _atomic_write_table(pa.Table.from_pandas(part.reset_index(drop=True), preserve_index=False), path)
+
         if "date" in df.columns:
-            df["date"] = pd.to_datetime(df["date"])
-            df = df.sort_values(["date"] + (["ticker"] if "ticker" in df.columns else []))
             for year, part in df.groupby(df["date"].dt.year):
-                pdir = os.path.join(self._dir(name), f"year={int(year)}")
-                os.makedirs(pdir, exist_ok=True)
-                pq.write_table(pa.Table.from_pandas(part.reset_index(drop=True), preserve_index=False),
-                               os.path.join(pdir, "data.parquet"), compression="zstd")
+                finish(part, os.path.join(self._dir(name), f"year={int(year)}", "data.parquet"))
         else:
-            pq.write_table(pa.Table.from_pandas(df.reset_index(drop=True), preserve_index=False),
-                           os.path.join(self._dir(name), "all.parquet"), compression="zstd")
-        self._write_meta(name, {"kind": kind, "columns": list(map(str, df.columns)),
-                                "partitioned": "date" in df.columns})
+            finish(df, os.path.join(self._dir(name), "all.parquet"))
+        cols = list(dict.fromkeys(prev_cols + list(map(str, df.columns))))
+        self._write_meta(name, {"kind": kind, "columns": cols, "partitioned": "date" in df.columns})
 
     def read_long(self, name: str, start=None, end=None, columns: Optional[List[str]] = None) -> pd.DataFrame:
         files = self._files(name)
@@ -134,15 +228,18 @@ class ParquetStore:
         return df
 
     # ------------------------------------------------------------------ wide
-    def write_wide(self, name: str, df: Wide, mode: str = "overwrite_partitions") -> None:
-        """Store a wide (date x ticker) panel.  NaNs are dropped (sparse storage)."""
+    def write_wide(self, name: str, df: Wide, mode: str = "upsert") -> None:
+        """Store a wide (date x ticker) panel as ``date, ticker, value`` rows.
+
+        NaN cells are not stored (sparse storage); under ``mode="upsert"`` a NaN
+        cell deletes any stored value for that (date, ticker)."""
         if not isinstance(df.index, pd.DatetimeIndex):
             raise TypeError("wide panel must have a DatetimeIndex")
-        long = df.stack(future_stack=True).dropna()
+        long = df.stack(future_stack=True)
         long.index.names = ["date", "ticker"]
         long = long.rename("value").reset_index()
         long["ticker"] = long["ticker"].astype(str)
-        self.write_long(name, long, mode=mode, kind="wide")
+        self._write_long(name, long, mode=mode, kind="wide", key=("date", "ticker"), drop_null="value")
 
     def read_wide(self, name: str, start=None, end=None, tickers: Optional[Iterable[str]] = None) -> Wide:
         long = self.read_long(name, start, end)
@@ -224,9 +321,19 @@ class ParquetStore:
             earnings_yield=panel("earnings_yield"), gross_profitability=panel("gross_profitability"),
             asset_growth=panel("asset_growth"),
             extra={n: panel(n) for n in extra_names if self.exists(n)},
+            close_raw=panel("prices_close_raw"), shares_outstanding=panel("shares_outstanding"),
+            industry_history=self._industry_history(end, cols),
         )
         md.validate()
         return md
+
+    def _industry_history(self, end, cols: pd.Index) -> Optional[Wide]:
+        """Dated labels up to ``end`` (no ``start`` cut: the label in force at the
+        first panel date may have been set earlier)."""
+        if not self.exists("industry_history"):
+            return None
+        ih = self.read_wide("industry_history", None, end)
+        return ih.reindex(columns=cols)
 
     def write_market_data(self, md: MarketData, include_extra: bool = False) -> None:
         """Persist every panel of a MarketData under the documented dataset names."""
@@ -238,6 +345,12 @@ class ParquetStore:
             f = getattr(md, n)
             if f is not None:
                 self.write_wide(n, f)
+        for n, attr in RAW_PANELS.items():
+            f = getattr(md, attr)
+            if f is not None:
+                self.write_wide(n, f)
+        if md.industry_history is not None:
+            self.write_wide("industry_history", md.industry_history.astype(object))
         if include_extra:
             for k, v in md.extra.items():
                 self.write_wide(k, v)

@@ -14,12 +14,16 @@ shares, ``Q = F + U`` and all quantities in **bps of decision notional**
     total_is     = delay + impact + opportunity + fees
                  = s * [F*(VWAP - P_dec) + U*(P_close - P_dec)] + fees
 
-    reversion    = s * F * (VWAP_fill - P_next_open)   (diagnostic; NOT in total)
+    reversion    = s * F * (VWAP_fill - P_ref)          (diagnostic; NOT in total)
 
+``P_ref`` is the **next close** by default (BUILD_PLAN convention;
+``CostConfig.tca_reversion_reference = "next_close"``, supplied through
+``close_order(next_close_px=)``) or the next open (``"next_open"``).  A
+missing reference price gives NaN reversion, never a silent 0.
 Reversion is positive when the price moved back against the fill after the
-trade (a buy followed by a lower next open), i.e. the part of the impact that
-turned out to be temporary.  It is reported but, per the plan, never credited
-as a benefit in the optimizer.
+trade (a buy followed by a lower reference price), i.e. the part of the impact
+that turned out to be temporary.  It is reported but, per the plan, never
+credited as a benefit in the optimizer.
 
 Calibration regresses, pooled across orders, ``y = s*(VWAP - P_arr)/P_arr -
 half_spread`` (return units) on ``x = sigma * sqrt(F / V)`` through the
@@ -32,21 +36,24 @@ for closing-auction orders (``b_auction`` is defined against auction volume;
 regressing auction fills on full ADV would recover ``b_auction/sqrt(share)``,
 3.3x too large at a 9% share).  The venue comes from ``record_order(venue=)``
 or ``meta['order_type'] in {MOC, LOC}``; the auction share from
-``close_order(auction_share=)``, else ``SquareRootImpact.auction_share_for_date``
-on the decision date; ``close_order(venue_volume=)`` overrides ``V`` outright
+``close_order(auction_share=)``, else :func:`qts.core.costs.auction_share_for_date`
+on the decision date with ``cost_cfg.auction_volume_share_default``; ``close_order(venue_volume=)`` overrides ``V`` outright
 (e.g. the realised auction print).  Use :meth:`TCALedger.calibrate_b_by_venue`
 to update ``impact_b_auction`` and ``impact_b_continuous`` separately.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
 
-from qts.tcost.impact import SquareRootImpact
+from qts.core.config import CostConfig
+from qts.core.costs import auction_share_for_date
+
+REVERSION_REFERENCES = ("next_close", "next_open")
 
 ADV_BUCKETS = [0.0, 0.01, 0.05, 0.10, np.inf]
 ADV_LABELS = ["<1%ADV", "1-5%ADV", "5-10%ADV", ">10%ADV"]
@@ -54,7 +61,7 @@ VOL_BUCKETS = [0.0, 0.015, 0.03, np.inf]
 VOL_LABELS = ["low_vol", "mid_vol", "high_vol"]
 
 ORDER_COLUMNS = ["order_id", "ticker", "side", "qty", "decision_px", "decision_ts", "arrival_px",
-                 "arrival_ts", "close_px", "next_open_px", "adv_shares", "sigma_daily", "fees",
+                 "arrival_ts", "close_px", "next_open_px", "next_close_px", "adv_shares", "sigma_daily", "fees",
                  "half_spread_bps", "venue", "auction_share", "venue_volume", "closed", "meta"]
 VENUE_AUCTION = "auction"
 VENUE_CONTINUOUS = "continuous"
@@ -73,12 +80,15 @@ def _sign(side: str) -> int:
 
 @dataclass
 class TCALedger:
-    orders: Dict[str, dict] = field(default_factory=dict)
-    fills: List[dict] = field(default_factory=list)
+    orders: dict[str, dict] = field(default_factory=dict)
+    fills: list[dict] = field(default_factory=list)
+    #: priors (``calibrate_b_by_venue``), default auction share and the
+    #: reversion reference (``tca_reversion_reference``) come from here
+    cost_cfg: CostConfig = field(default_factory=CostConfig)
 
     # ---------------------------------------------------------------- record
     def record_order(self, order_id: str, ticker: str, side: str, qty: float, decision_px: float,
-                     decision_ts, arrival_px: float, arrival_ts, venue: Optional[str] = None,
+                     decision_ts, arrival_px: float, arrival_ts, venue: str | None = None,
                      **meta) -> None:
         """``venue`` is "auction" or "continuous"; when omitted it is derived from
         ``meta['order_type']`` (MOC/LOC -> auction) and defaults to continuous.
@@ -87,29 +97,33 @@ class TCALedger:
             raise KeyError(f"order {order_id} already recorded")
         if venue is None:
             venue = VENUE_AUCTION if str(meta.get("order_type", "")).upper() in AUCTION_ORDER_TYPES else VENUE_CONTINUOUS
-        self.orders[order_id] = dict(
-            order_id=order_id, ticker=ticker, side=side, qty=abs(float(qty)),
-            decision_px=float(decision_px), decision_ts=pd.Timestamp(decision_ts),
-            arrival_px=float(arrival_px), arrival_ts=pd.Timestamp(arrival_ts),
-            close_px=np.nan, next_open_px=np.nan, adv_shares=np.nan, sigma_daily=np.nan,
-            fees=0.0, half_spread_bps=0.0, venue=str(venue), auction_share=np.nan,
-            venue_volume=np.nan, closed=False, meta=dict(meta),
-        )
+        self.orders[order_id] = {
+            "order_id": order_id, "ticker": ticker, "side": side, "qty": abs(float(qty)),
+            "decision_px": float(decision_px), "decision_ts": pd.Timestamp(decision_ts),
+            "arrival_px": float(arrival_px), "arrival_ts": pd.Timestamp(arrival_ts),
+            "close_px": np.nan, "next_open_px": np.nan, "next_close_px": np.nan, "adv_shares": np.nan, "sigma_daily": np.nan,
+            "fees": 0.0, "half_spread_bps": 0.0, "venue": str(venue), "auction_share": np.nan,
+            "venue_volume": np.nan, "closed": False, "meta": dict(meta),
+        }
 
     def record_fill(self, order_id: str, qty: float, px: float, ts, venue: str = "") -> None:
         if order_id not in self.orders:
             raise KeyError(f"unknown order {order_id}")
-        self.fills.append(dict(order_id=order_id, qty=abs(float(qty)), px=float(px),
-                               ts=pd.Timestamp(ts), venue=venue))
+        self.fills.append({"order_id": order_id, "qty": abs(float(qty)), "px": float(px),
+                               "ts": pd.Timestamp(ts), "venue": venue})
 
     def close_order(self, order_id: str, close_px: float, next_open_px: float, adv_shares: float,
                     sigma_daily: float, fees: float = 0.0, half_spread_bps: float = 0.0,
-                    auction_share: Optional[float] = None, venue_volume: Optional[float] = None) -> None:
+                    auction_share: float | None = None, venue_volume: float | None = None,
+                    next_close_px: float | None = None) -> None:
         """``adv_shares`` is the 63-day ADV (participation denominator).
         ``auction_share`` (auction orders) sets ``V = auction_share * adv_shares``;
-        ``venue_volume`` (shares) overrides ``V`` directly for either venue."""
+        ``venue_volume`` (shares) overrides ``V`` directly for either venue.
+        ``next_close_px`` is the reversion reference under the default
+        ``tca_reversion_reference = "next_close"``."""
         o = self.orders[order_id]
         o.update(close_px=float(close_px), next_open_px=float(next_open_px),
+                 next_close_px=np.nan if next_close_px is None else float(next_close_px),
                  adv_shares=float(adv_shares), sigma_daily=float(sigma_daily),
                  fees=float(fees), half_spread_bps=float(half_spread_bps), closed=True,
                  auction_share=np.nan if auction_share is None else float(auction_share),
@@ -142,7 +156,7 @@ class TCALedger:
 
         Columns: ticker, side, qty, filled_qty, fill_rate, decision_notional,
         delay_bps, impact_bps, opportunity_bps, fees_bps, total_is_bps,
-        reversion_bps, arrival_slippage_bps (unweighted VWAP vs arrival),
+        reversion_bps (vs ``cost_cfg.tca_reversion_reference``), arrival_slippage_bps (unweighted VWAP vs arrival),
         participation (filled / ADV), sigma_daily, adv_bucket, vol_bucket, venue,
         venue_volume (V: ADV for continuous, auction_share*ADV for auction),
         venue_participation (F/V), impact_x (= sigma*sqrt(F/V), the calibration
@@ -153,7 +167,8 @@ class TCALedger:
             o = o[o["closed"].astype(bool)]
         if o.empty:
             return pd.DataFrame()
-        for col, default in (("venue", VENUE_CONTINUOUS), ("auction_share", np.nan), ("venue_volume", np.nan)):
+        for col, default in (("venue", VENUE_CONTINUOUS), ("auction_share", np.nan), ("venue_volume", np.nan),
+                             ("next_close_px", np.nan)):
             if col not in o.columns:          # ledgers saved before venue tracking
                 o[col] = default
         fs = self._fill_stats().reindex(o.index)
@@ -171,14 +186,19 @@ class TCALedger:
         opportunity = s * unfilled * (pclose - pdec) * k
         fees = o["fees"].astype(float) * k
         total = delay + impact + opportunity + fees
-        reversion = (s * filled * (vwap - pnext) * k).fillna(0.0)
+        ref = str(self.cost_cfg.tca_reversion_reference)
+        if ref not in REVERSION_REFERENCES:
+            raise ValueError(f"tca_reversion_reference must be one of {REVERSION_REFERENCES}, got {ref!r}")
+        pref = o["next_close_px"].astype(float) if ref == "next_close" else pnext
+        reversion = (s * filled * (vwap - pref) * k).where(filled > 0, 0.0)
         arr_slip = (s * (vwap - parr) / parr * 1e4)
         adv = o["adv_shares"].astype(float)
         participation = filled / adv
         venue = o["venue"].fillna(VENUE_CONTINUOUS).astype(str)
         is_auc = venue == VENUE_AUCTION
         share = o["auction_share"].astype(float)
-        share_default = pd.Series([SquareRootImpact.auction_share_for_date(ts) for ts in o["decision_ts"]], index=o.index)
+        sd = float(self.cost_cfg.auction_volume_share_default)
+        share_default = pd.Series([auction_share_for_date(ts, sd) for ts in o["decision_ts"]], index=o.index)
         share = share.fillna(share_default)
         venue_vol = adv.where(~is_auc, adv * share)
         venue_vol = o["venue_volume"].astype(float).fillna(venue_vol)
@@ -212,7 +232,11 @@ class TCALedger:
 
         def agg(g: pd.DataFrame) -> pd.Series:
             ww = w.loc[g.index]
-            res = {c: float(np.average(g[c].fillna(0.0), weights=ww)) if ww.sum() > 0 else np.nan for c in cols}
+            res = {}
+            for c in cols:
+                ok = g[c].notna()          # e.g. reversion without a reference price: excluded, not 0
+                wc = ww[ok]
+                res[c] = float(np.average(g.loc[ok, c], weights=wc)) if wc.sum() > 0 else np.nan
             res["n_orders"] = len(g)
             res["notional"] = float(ww.sum())
             res["fill_rate"] = float(np.average(g["fill_rate"], weights=ww)) if ww.sum() > 0 else np.nan
@@ -222,7 +246,7 @@ class TCALedger:
 
     # ------------------------------------------------------------ calibrate
     def calibrate_b(self, prior_b: float = 1.0, prior_weight: float = 20.0,
-                    min_fill_rate: float = 0.5, venue: Optional[str] = None) -> Tuple[float, Dict[str, float]]:
+                    min_fill_rate: float = 0.5, venue: str | None = None) -> tuple[float, dict[str, float]]:
         """Through-the-origin regression of arrival slippage on ``sigma*sqrt(F/V)``.
 
         ``y_i = s_i*(VWAP_i - P_arr_i)/P_arr_i - half_spread_i`` (return units),
@@ -264,22 +288,21 @@ class TCALedger:
         return float(b), {"n": int(n), "b_ols": b_ols, "r2": r2, "se": se,
                           "prior_b": float(prior_b), "prior_weight": float(prior_weight), "venue": venue}
 
-    def calibrate_b_by_venue(self, prior_b: Optional[Dict[str, float]] = None, prior_weight: float = 20.0,
-                             min_fill_rate: float = 0.5) -> Dict[str, Tuple[float, Dict[str, float]]]:
+    def calibrate_b_by_venue(self, prior_b: dict[str, float] | None = None, prior_weight: float = 20.0,
+                             min_fill_rate: float = 0.5) -> dict[str, tuple[float, dict[str, float]]]:
         """:meth:`calibrate_b` once per venue.  ``prior_b`` maps venue -> prior
-        (default ``CostConfig().impact_b_auction`` / ``impact_b_continuous``).
+        (default ``self.cost_cfg.impact_b_auction`` / ``impact_b_continuous``).
         Returns ``{"auction": (b, diag), "continuous": (b, diag)}``; the two
         numbers are the updates for ``impact_b_auction`` and ``impact_b_continuous``."""
         if prior_b is None:
-            from qts.core.config import CostConfig
-            c = CostConfig()
+            c = self.cost_cfg
             prior_b = {VENUE_AUCTION: c.impact_b_auction, VENUE_CONTINUOUS: c.impact_b_continuous}
         return {v: self.calibrate_b(prior_b=prior_b.get(v, 1.0), prior_weight=prior_weight,
                                     min_fill_rate=min_fill_rate, venue=v)
                 for v in (VENUE_AUCTION, VENUE_CONTINUOUS)}
 
     # ------------------------------------------------------------ persist
-    def save(self, path: Union[str, Path], fmt: str = "parquet") -> None:
+    def save(self, path: str | Path, fmt: str = "parquet") -> None:
         """Write ``<path>_orders.<fmt>`` and ``<path>_fills.<fmt>``."""
         import json
         path = Path(path)
@@ -296,7 +319,8 @@ class TCALedger:
             raise ValueError(fmt)
 
     @classmethod
-    def load(cls, path: Union[str, Path], fmt: str = "parquet") -> "TCALedger":
+    def load(cls, path: str | Path, fmt: str = "parquet",
+             cost_cfg: CostConfig | None = None) -> TCALedger:
         import json
         path = Path(path)
         if fmt == "parquet":
@@ -305,7 +329,7 @@ class TCALedger:
         else:
             o = pd.read_csv(path.with_name(path.stem + "_orders.csv"), parse_dates=["decision_ts", "arrival_ts"])
             f = pd.read_csv(path.with_name(path.stem + "_fills.csv"), parse_dates=["ts"])
-        led = cls()
+        led = cls(cost_cfg=cost_cfg or CostConfig())
         for rec in o.to_dict("records"):
             m = rec.get("meta", "{}")
             try:

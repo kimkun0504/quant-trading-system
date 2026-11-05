@@ -1,20 +1,21 @@
-"""Cross-sectional utilities used by alpha, risk and portfolio layers."""
+"""Cross-sectional utilities used by alpha, risk and portfolio layers.
+
+The winsorise / rank-gauss / rank-IC helpers here are thin wrappers kept for
+backward compatibility; the single vectorised implementations live in
+:mod:`qts.core.stats` -- new code should import from there.
+"""
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from numpy.typing import NDArray
 
-
-def winsorize_row(row: pd.Series, pct: float = 0.01) -> pd.Series:
-    x = row.dropna()
-    if len(x) < 10:
-        return row
-    lo, hi = x.quantile(pct), x.quantile(1 - pct)
-    return row.clip(lo, hi)
+from qts.core import stats as _stats
 
 
 def winsorize(wide: pd.DataFrame, pct: float = 0.01) -> pd.DataFrame:
-    return wide.apply(lambda r: winsorize_row(r, pct), axis=1)
+    """Row-wise winsorisation; delegates to :func:`qts.core.stats.winsorize_rows`."""
+    return _stats.winsorize_rows(wide, pct)
 
 
 def zscore(wide: pd.DataFrame, weights: pd.DataFrame | None = None) -> pd.DataFrame:
@@ -31,19 +32,21 @@ def zscore(wide: pd.DataFrame, weights: pd.DataFrame | None = None) -> pd.DataFr
 
 
 def rank_gauss(wide: pd.DataFrame) -> pd.DataFrame:
-    """Row-wise rank -> gaussianised score in (-3, 3)."""
-    from scipy.stats import norm
-    r = wide.rank(axis=1, pct=True)
-    n = wide.notna().sum(axis=1)
-    r = r.mul(n, axis=0).sub(0.5).div(n, axis=0)
-    return pd.DataFrame(norm.ppf(r.clip(1e-4, 1 - 1e-4)), index=wide.index, columns=wide.columns).where(wide.notna())
+    """Row-wise rank -> Gaussianised score ``Phi^{-1}((rank - 0.5) / n)``.
+
+    Bounded by ``+-Phi^{-1}(1 - 0.5 / n)`` for a row with ``n`` non-NaN names
+    (+-2.58 at n = 100), and never beyond ``+-Phi^{-1}(1 - 1e-4) ~= 3.72``
+    because the percentile is clipped to ``[1e-4, 1 - 1e-4]``.  Delegates to
+    :func:`qts.core.stats.rank_gauss`.
+    """
+    return _stats.rank_gauss(wide)
 
 
 def demean_by_group(wide: pd.DataFrame, groups: pd.Series) -> pd.DataFrame:
     """Subtract the per-date mean within each group (e.g. industry)."""
     g = groups.reindex(wide.columns)
     out = wide.copy()
-    for key, cols in g.groupby(g).groups.items():
+    for cols in g.groupby(g).groups.values():
         cols = [c for c in cols if c in wide.columns]
         sub = wide[cols]
         out[cols] = sub.sub(sub.mean(axis=1), axis=0)
@@ -53,28 +56,35 @@ def demean_by_group(wide: pd.DataFrame, groups: pd.Series) -> pd.DataFrame:
 def neutralize(target: pd.Series, exposures: pd.DataFrame, weights: pd.Series | None = None) -> pd.Series:
     """Residualise a cross-section ``target`` on ``exposures`` (ticker x factor) by WLS."""
     idx = target.dropna().index.intersection(exposures.dropna().index)
-    y = target.loc[idx].values
-    X = np.column_stack([np.ones(len(idx)), exposures.loc[idx].values])
+    y = target.loc[idx].to_numpy(dtype=np.float64)
+    X = np.column_stack([np.ones(len(idx)), exposures.loc[idx].to_numpy(dtype=np.float64)])
+    w: NDArray[np.float64]
     if weights is None:
         w = np.ones(len(idx))
     else:
-        w = weights.reindex(idx).fillna(weights.median()).clip(lower=1e-12).values
-    sw = np.sqrt(w)
-    beta, *_ = np.linalg.lstsq(X * sw[:, None], y * sw, rcond=None)
+        w = weights.reindex(idx).fillna(weights.median()).clip(lower=1e-12).to_numpy(dtype=np.float64)
+    sw: NDArray[np.float64] = np.sqrt(w)
+    lhs: NDArray[np.float64] = X * sw[:, None]
+    rhs: NDArray[np.float64] = y * sw
+    beta = np.linalg.lstsq(lhs, rhs, rcond=None)[0]
     res = pd.Series(y - X @ beta, index=idx)
     return res.reindex(target.index)
 
 
 def rank_ic(pred: pd.Series, realized: pd.Series) -> float:
-    idx = pred.dropna().index.intersection(realized.dropna().index)
-    if len(idx) < 20:
-        return np.nan
-    return float(pd.Series(pred.loc[idx]).rank().corr(pd.Series(realized.loc[idx]).rank()))
+    """Spearman correlation of one cross-section (NaN below 20 pairs)."""
+    p = pred.to_frame().T
+    r = realized.to_frame().T
+    r.index = p.index
+    return float(_stats.rank_ic_series(p, r).iloc[0])
 
 
 def ic_series(pred_wide: pd.DataFrame, realized_wide: pd.DataFrame) -> pd.Series:
-    """Per-date rank IC between a wide prediction panel and realized labels."""
-    out = {}
-    for d in pred_wide.index.intersection(realized_wide.index):
-        out[d] = rank_ic(pred_wide.loc[d], realized_wide.loc[d])
-    return pd.Series(out).sort_index()
+    """Per-date rank IC between a wide prediction panel and realized labels.
+
+    Delegates to the vectorised :func:`qts.core.stats.rank_ic_series`
+    (dates sorted, unnamed Series for backward compatibility).
+    """
+    out = _stats.rank_ic_series(pred_wide, realized_wide).sort_index()
+    out.name = None
+    return out

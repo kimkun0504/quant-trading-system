@@ -23,8 +23,8 @@ contract between the alpha layer and the portfolio layer.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from dataclasses import dataclass, field, fields, replace
+from typing import Any, ClassVar, cast
 
 import numpy as np
 import pandas as pd
@@ -35,27 +35,64 @@ Long = pd.DataFrame  # index: MultiIndex(date, ticker), columns: feature
 
 @dataclass
 class MarketData:
-    """Wide daily panels for a universe.  All frames share the same index/columns."""
+    """Wide daily panels for a universe.  All price/volume frames share the same index/columns.
 
-    close: Wide                       # adjusted close
-    volume: Wide                      # shares traded
+    Prices
+    ------
+    ``close`` is the split- **and** dividend-adjusted close: use it for
+    returns (``returns``), momentum, volatility and anything else that
+    compares prices across time.  ``close_raw`` is the *as-traded* close
+    (what was on the tape that day; changes discontinuously at splits): use
+    it, through :meth:`trade_price`, for anything that is a *level* on one
+    date -- the $5 price screen, dollar volume (``volume`` is in actual
+    shares traded that day), share counts, fixed per-share fees, and
+    per-share fundamentals (B/P = book per share / raw close).  When
+    ``close_raw`` is ``None`` (e.g. a source that only has adjusted prices)
+    :meth:`trade_price` falls back to ``close`` -- historically wrong across
+    splits, so real-data loaders should provide it.
+
+    ``shares_outstanding`` is the actual share count on each date (consistent
+    with ``close_raw``: ``market_cap ~= close_raw * shares_outstanding``).
+
+    Industry
+    --------
+    ``industry`` is a static ticker -> label map.  ``industry_history`` is an
+    optional *dated* classification (wide panel date x ticker of labels; a
+    row holds the label in force from that date on).  Consumers (risk
+    exposures, alpha industry demeaning, label residualisation) should call
+    :meth:`industry_as_of` so that a reclassification is not applied before
+    it happened.
+    """
+
+    close: Wide                       # split/dividend-adjusted close
+    volume: Wide                      # shares traded (actual shares, not split-adjusted)
     market_cap: Wide                  # USD
-    industry: pd.Series               # ticker -> industry label (quasi-static)
-    spread_bps: Optional[Wide] = None  # quoted half-spread proxy in bps
-    short_interest_ratio: Optional[Wide] = None  # short interest / shares out
-    borrow_fee: Optional[Wide] = None  # annualised borrow fee (fraction)
-    book_to_price: Optional[Wide] = None
-    earnings_yield: Optional[Wide] = None
-    gross_profitability: Optional[Wide] = None
-    asset_growth: Optional[Wide] = None
-    extra: Dict[str, Wide] = field(default_factory=dict)
+    industry: pd.Series               # ticker -> industry label (static fallback)
+    spread_bps: Wide | None = None  # quoted half-spread proxy in bps
+    short_interest_ratio: Wide | None = None  # short interest / shares out
+    borrow_fee: Wide | None = None  # annualised borrow fee (fraction)
+    book_to_price: Wide | None = None
+    earnings_yield: Wide | None = None
+    gross_profitability: Wide | None = None
+    asset_growth: Wide | None = None
+    extra: dict[str, Wide] = field(default_factory=dict[str, Wide])
     #: Optional boolean panel (date x ticker): True where the name is in the
     #: investable universe *as of that date* (set by ``qts.data.universe.apply_mask``).
     #: ``None`` means "every name with a price is eligible".  Every cross-sectional
     #: statistic in the alpha layer (ranks, z-scores, labels, IC, emitted scores)
     #: is computed over ``eligibility()`` only, so future universe membership can
     #: never leak into the cross-section at ``t``.
-    eligible: Optional[Wide] = None
+    eligible: Wide | None = None
+    #: As-traded (unadjusted) close; see the class docstring.  Aligned with ``close``.
+    close_raw: Wide | None = None
+    #: Actual shares outstanding per date (consistent with ``close_raw``).  Aligned with ``close``.
+    shares_outstanding: Wide | None = None
+    #: Dated industry classification (date x ticker labels, ascending dates; the
+    #: index need not match ``close``).  ``None`` -> the static ``industry`` applies.
+    industry_history: Wide | None = None
+
+    #: Panels that share ``close``'s index/columns (checked by ``validate``).
+    ALIGNED_PANELS: ClassVar[tuple[str, ...]] = ("volume", "market_cap", "close_raw", "shares_outstanding")
 
     # ------------------------------------------------------------------ derived
     def eligibility(self) -> Wide:
@@ -70,25 +107,56 @@ class MarketData:
             return alive
         e = self.eligible.reindex(index=alive.index, columns=alive.columns)
         return e.fillna(False).astype(bool) & alive
+
     @property
     def returns(self) -> Wide:
+        """Simple total returns from the *adjusted* close."""
         return self.close.pct_change(fill_method=None)
+
+    def trade_price(self) -> Wide:
+        """As-traded price: ``close_raw`` if present, else ``close`` (adjusted)."""
+        return self.close_raw if self.close_raw is not None else self.close
 
     @property
     def dollar_volume(self) -> Wide:
-        return self.close * self.volume
+        """USD traded per day = as-traded price x actual shares traded."""
+        return self.trade_price() * self.volume
 
     @property
     def dates(self) -> pd.DatetimeIndex:
-        return self.close.index
+        return self.close.index  # type: ignore[return-value]
 
     @property
     def tickers(self) -> pd.Index:
         return self.close.columns
 
+    def industry_as_of(self, date: pd.Timestamp, fallback: bool = True) -> pd.Series:
+        """Industry label of every ticker in force at ``date`` (point-in-time).
+
+        With ``industry_history`` the label is the last row dated ``<= date``
+        (NaN entries -- not yet classified -- are filled from the static
+        ``industry`` when ``fallback``); without it the static ``industry`` is
+        returned.  Indexed by ``tickers``.
+        """
+        static = self.industry.reindex(self.tickers)
+        if self.industry_history is None:
+            return static
+        hist = self.industry_history.loc[: pd.Timestamp(date)]
+        if hist.empty:
+            row = pd.Series(np.nan, index=self.tickers, dtype=object)
+        else:
+            row = hist.ffill().iloc[-1].reindex(self.tickers)
+        if fallback:
+            row = row.where(row.notna(), static)
+        row.name = "industry"
+        row.index.name = static.index.name
+        return row
+
     def validate(self) -> None:
-        for name in ("volume", "market_cap"):
+        for name in self.ALIGNED_PANELS:
             f = getattr(self, name)
+            if f is None:
+                continue
             if not f.index.equals(self.close.index) or not f.columns.equals(self.close.columns):
                 raise ValueError(f"{name} does not align with close")
         if not self.close.index.is_monotonic_increasing:
@@ -96,20 +164,25 @@ class MarketData:
         missing = set(self.close.columns) - set(self.industry.index)
         if missing:
             raise ValueError(f"industry missing for {sorted(missing)[:5]}...")
+        if self.industry_history is not None:
+            ih = self.industry_history
+            if not isinstance(ih.index, pd.DatetimeIndex) or not ih.index.is_monotonic_increasing:
+                raise ValueError("industry_history needs an ascending DatetimeIndex")
 
-    def slice_until(self, date: pd.Timestamp) -> "MarketData":
-        """Point-in-time view: everything with timestamp <= date."""
-        def cut(f):
+    def slice_until(self, date: pd.Timestamp) -> MarketData:
+        """Point-in-time view: every date-indexed panel cut at ``<= date``."""
+        def cut(f: Wide | None) -> Wide | None:
             return None if f is None else f.loc[:date]
-        return MarketData(
-            close=cut(self.close), volume=cut(self.volume), market_cap=cut(self.market_cap),
-            industry=self.industry, spread_bps=cut(self.spread_bps),
-            short_interest_ratio=cut(self.short_interest_ratio), borrow_fee=cut(self.borrow_fee),
-            book_to_price=cut(self.book_to_price), earnings_yield=cut(self.earnings_yield),
-            gross_profitability=cut(self.gross_profitability), asset_growth=cut(self.asset_growth),
-            extra={k: cut(v) for k, v in self.extra.items()},
-            eligible=cut(self.eligible),
-        )
+        changes: dict[str, Any] = {}
+        for fl in fields(self):
+            v = getattr(self, fl.name)
+            if fl.name == "industry":
+                continue
+            if fl.name == "extra":
+                changes["extra"] = {k: cut(x) for k, x in v.items()}
+            else:
+                changes[fl.name] = cut(v)
+        return replace(self, **changes)
 
 
 @dataclass
@@ -135,9 +208,9 @@ class RiskModelOutput:
     factor_cov: pd.DataFrame
     specific_var: pd.Series
     factor_returns: pd.DataFrame
-    alignment_vector: Optional[pd.Series] = None
+    alignment_vector: pd.Series | None = None
     alignment_var: float = 0.0
-    factor_groups: Dict[str, List[str]] = field(default_factory=dict)
+    factor_groups: dict[str, list[str]] = field(default_factory=dict[str, list[str]])
 
     @property
     def tickers(self) -> pd.Index:
@@ -147,29 +220,30 @@ class RiskModelOutput:
     def factors(self) -> pd.Index:
         return self.exposures.columns
 
-    def covariance(self, tickers: Optional[pd.Index] = None, include_alignment: bool = True) -> pd.DataFrame:
+    def covariance(self, tickers: pd.Index | None = None, include_alignment: bool = True) -> pd.DataFrame:
         t = self.tickers if tickers is None else tickers
         # tickers outside the model universe get zero factor exposure and the
         # median specific variance (conservative; callers should intersect first)
-        B = self.exposures.reindex(t).fillna(0.0).values
-        F = self.factor_cov.loc[self.factors, self.factors].values
-        D = np.diag(self.specific_var.reindex(t).fillna(self.specific_var.median()).values)
-        S = B @ F @ B.T + D
+        B = self.exposures.reindex(t).fillna(0.0).to_numpy(dtype=np.float64)
+        F = self.factor_cov.loc[self.factors, self.factors].to_numpy(dtype=np.float64)
+        D = np.diag(self.specific_var.reindex(t).fillna(self.specific_var.median()).to_numpy(dtype=np.float64))
+        cov = B @ F @ B.T + D
         if include_alignment and self.alignment_vector is not None and self.alignment_var > 0:
-            y = self.alignment_vector.reindex(t).fillna(0.0).values[:, None]
-            S = S + self.alignment_var * (y @ y.T)
-        return pd.DataFrame(S, index=t, columns=t)
+            y = self.alignment_vector.reindex(t).fillna(0.0).to_numpy(dtype=np.float64)[:, None]
+            cov = cov + self.alignment_var * (y @ y.T)
+        return pd.DataFrame(cov, index=t, columns=t)
 
     def portfolio_variance(self, w: pd.Series, include_alignment: bool = True) -> float:
         t = w.index
-        B = self.exposures.reindex(t).fillna(0.0).values
-        F = self.factor_cov.loc[self.factors, self.factors].values
-        d = self.specific_var.reindex(t).fillna(self.specific_var.median()).values
-        fw = B.T @ w.values
-        v = float(fw @ F @ fw + (w.values ** 2 * d).sum())
+        B = self.exposures.reindex(t).fillna(0.0).to_numpy(dtype=np.float64)
+        F = self.factor_cov.loc[self.factors, self.factors].to_numpy(dtype=np.float64)
+        d = self.specific_var.reindex(t).fillna(self.specific_var.median()).to_numpy(dtype=np.float64)
+        wv = w.to_numpy(dtype=np.float64)
+        fw = B.T @ wv
+        v = float(fw @ F @ fw + (wv ** 2 * d).sum())
         if include_alignment and self.alignment_vector is not None and self.alignment_var > 0:
-            y = self.alignment_vector.reindex(t).fillna(0.0).values
-            v += self.alignment_var * float(y @ w.values) ** 2
+            y = self.alignment_vector.reindex(t).fillna(0.0).to_numpy(dtype=np.float64)
+            v += self.alignment_var * float(y @ wv) ** 2
         return v
 
 
@@ -182,7 +256,8 @@ class AlphaOutput:
     per period (``IC * resid_vol * score``), same horizon as the target.
     ``horizon_days`` and ``half_life_days`` are used by the portfolio layer
     for Garleanu-Pedersen shrinkage.  ``components`` optionally keeps the
-    per-sleeve scores for attribution.
+    per-sleeve scores for attribution; ``components_half_life`` holds the
+    per-sleeve signal half-lives (trading days) estimated as of ``date``.
     """
 
     date: pd.Timestamp
@@ -190,13 +265,15 @@ class AlphaOutput:
     expected_return: pd.Series
     horizon_days: int
     half_life_days: float
-    components: Dict[str, pd.Series] = field(default_factory=dict)
+    components: dict[str, pd.Series] = field(default_factory=dict[str, pd.Series])
     ic_estimate: float = float("nan")
+    components_half_life: dict[str, float] = field(default_factory=dict[str, float])
 
 
 def to_long(wide: Wide, name: str) -> pd.Series:
     """Wide (date x ticker) -> long Series indexed by (date, ticker)."""
-    s = wide.stack(future_stack=True)
+    # a DataFrame with a flat column index stacks to a Series (the stubs return Series | DataFrame)
+    s = cast(pd.Series, wide.stack(future_stack=True))
     s.index.names = ["date", "ticker"]
     s.name = name
     return s

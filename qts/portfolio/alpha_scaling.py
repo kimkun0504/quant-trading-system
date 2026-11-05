@@ -20,18 +20,25 @@
 """
 from __future__ import annotations
 
-from typing import Dict, Mapping, Optional
+from collections.abc import Mapping
 
 import numpy as np
 import pandas as pd
 
 
-def shrink_ic(ic_est: float, shrink: float = 0.5, floor: float = 0.0, cap: float = 0.1) -> float:
-    """Shrink an estimated IC toward zero (default 50%) and clip to [floor, cap].
-    NaN estimates become ``floor``."""
+def shrink_ic(ic_est: float, keep: float = 0.5, floor: float = 0.0, cap: float = 0.1) -> float:
+    """Shrunk IC ``clip(keep * ic_est, floor, cap)``.
+
+    ``keep`` is the fraction of the estimate **kept** (design decision D5, the
+    same convention as ``AlphaConfig.ic_shrink`` in the alpha layer: 0.5 =>
+    half, 1.0 => no shrinkage, 0.0 => zero).  NaN estimates become ``floor``.
+    (The former ``shrink`` argument meant the fraction *removed*; it was
+    deleted with D5 so there is one convention.)"""
     if ic_est is None or not np.isfinite(ic_est):
         return float(floor)
-    return float(np.clip((1.0 - shrink) * ic_est, floor, cap))
+    if not 0.0 <= keep <= 1.0:
+        raise ValueError(f"keep must be in [0, 1], got {keep}")
+    return float(np.clip(keep * ic_est, floor, cap))
 
 
 def grinold_alpha(score: pd.Series, resid_vol: pd.Series, ic: float) -> pd.Series:
@@ -90,10 +97,10 @@ def gp_sleeve_shrink_factors(half_lives: Mapping[str, float], cost_implied_holdi
 
 
 def garleanu_pedersen_shrink(
-    alphas: Dict[str, pd.Series],
-    half_lives: Dict[str, float],
+    alphas: dict[str, pd.Series],
+    half_lives: dict[str, float],
     cost_implied_holding_days: float,
-    sleeve_weights: Optional[Dict[str, float]] = None,
+    sleeve_weights: dict[str, float] | None = None,
     renormalize: bool = False,
 ) -> pd.Series:
     """Combine per-sleeve alphas with GP half-life shrinkage.

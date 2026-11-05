@@ -13,35 +13,35 @@
     "atol": 1e-09,
     "regenerate": "python -m pytest tests/test_golden.py --update-golden"
   },
-  "data_hash": "198fb24b43e31b23",
+  "data_hash": "19e097672173ad8f",
   "summary": {
     "start": "2020-06-12",
     "end": "2020-09-04",
     "n_days": 60,
-    "final_nav": 1001389.0136127822,
-    "cagr_gross": 0.035868916938917916,
-    "cagr_net": 0.005846835677013162,
-    "ann_vol_gross": 0.052348405578559645,
-    "ann_vol_net": 0.05232088143540731,
-    "sharpe_gross": 0.6989889894444181,
-    "sharpe_net": 0.13716332586906516,
-    "sharpe_net_lo": 0.13716332586906516,
-    "sharpe_t_stat_net": 0.06692760070472148,
-    "newey_west_t_net": 0.0696564970715415,
-    "max_drawdown_net": -0.02832186805368664,
-    "calmar_net": 0.20644244461311526,
-    "sortino_net": 0.18916962514587332,
-    "hit_rate_net": 0.55,
-    "avg_gross_exposure": 1.2225076761949238,
-    "avg_net_exposure": 0.04148144435899139,
-    "avg_daily_turnover": 0.10112722243775289,
-    "effective_holding_days": 24.177617989012152,
-    "avg_cost_bps_per_side": 10.37628817856938,
-    "avg_daily_cost_bps_of_nav": 1.1672401985835879,
-    "total_costs_usd": 7041.776524370722,
-    "transfer_coefficient_mean": 0.7798408640513581,
-    "realized_vs_exante_vol_ratio": 0.9440101448919622,
-    "breakeven_cost_bps": 14.358371090163137,
+    "final_nav": 992807.3943652539,
+    "cagr_gross": -0.006928139501583663,
+    "cagr_net": -0.02986312378574607,
+    "ann_vol_gross": 0.052867620708908165,
+    "ann_vol_net": 0.052825105564522606,
+    "sharpe_gross": -0.10549375516814465,
+    "sharpe_net": -0.5479101958757969,
+    "sharpe_net_lo": -1.124792935697989,
+    "sharpe_t_stat_net": -0.2672732118026346,
+    "newey_west_t_net": -0.28194941194827877,
+    "max_drawdown_net": -0.03256425510153582,
+    "calmar_net": -0.9170522615251728,
+    "sortino_net": -0.7358419457284652,
+    "hit_rate_net": 0.4666666666666667,
+    "avg_gross_exposure": 1.1068426929683988,
+    "avg_net_exposure": 0.04483854767309609,
+    "avg_daily_turnover": 0.11369333557297197,
+    "effective_holding_days": 19.470669716748564,
+    "avg_cost_bps_per_side": 7.245102475219919,
+    "avg_daily_cost_bps_of_nav": 0.9272305595885819,
+    "total_costs_usd": 5588.785209247694,
+    "transfer_coefficient_mean": 0.8277787805941131,
+    "realized_vs_exante_vol_ratio": 0.9687443039220409,
+    "breakeven_cost_bps": -1.9466190467544502,
     "n_delistings": 0,
     "n_failed_solves": 0
   },
@@ -57,9 +57,9 @@
   "decile": {
     "mean": 0.0307106931725525,
     "sharpe": 2.1042880468290255,
-    "t_stat": 1.2380545168847596
+    "t_stat": 1.2451251690094474
   },
-  "dsr": 0.5264284706831046,
+  "dsr": 0.3950720823515985,
   "hurdles": {
     "overall": false,
     "status": {
@@ -77,16 +77,16 @@
   "backtest": {
     "n_nav": 61,
     "nav_quartiles": [
-      1002011.3005736076,
-      1002276.6325360059,
-      1014460.2488982872
+      1002542.1297791987,
+      1002576.3729114247,
+      1011752.3701760717
     ],
-    "sum_abs_weights": 73.35046057169544,
+    "sum_abs_weights": 66.41056157810392,
     "sum_costs_by_kind": {
-      "spread": 0.0,
-      "impact": 4604.6245035490865,
-      "fees": 1722.962208532392,
-      "borrow": 714.1898122892432
+      "spread": 0.045619168403049984,
+      "impact": 3219.8643371987973,
+      "fees": 1743.012249716241,
+      "borrow": 625.8630031642532
     }
   }
 }

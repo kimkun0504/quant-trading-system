@@ -44,11 +44,12 @@ at +-3 standard deviations.  We apply: cap-weighted z-score -> clip to [-3, 3]
 """
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional
+from collections.abc import Iterable
 
 import numpy as np
 import pandas as pd
 
+from qts.core import stats
 from qts.core.config import RiskConfig
 from qts.core.crosssection import zscore
 from qts.core.types import MarketData
@@ -70,22 +71,7 @@ SUPPORTED_STYLES = [
 
 
 # --------------------------------------------------------------------------- raw styles
-def _rolling_market_regression(returns: pd.DataFrame, window: int, min_periods: int):
-    """Vectorized rolling beta and residual variance of each column on the
-    equal-weighted market return.  Returns ``(beta_hat, resid_var)`` wide frames."""
-    m = returns.mean(axis=1)
-    r_mean = returns.rolling(window, min_periods=min_periods).mean()
-    m_mean = m.rolling(window, min_periods=min_periods).mean()
-    rm_mean = returns.mul(m, axis=0).rolling(window, min_periods=min_periods).mean()
-    r_var = returns.rolling(window, min_periods=min_periods).var(ddof=0)
-    m_var = m.rolling(window, min_periods=min_periods).var(ddof=0).replace(0.0, np.nan)
-    cov = rm_mean - r_mean.mul(m_mean, axis=0)
-    beta_hat = cov.div(m_var, axis=0)
-    resid_var = (r_var - cov.pow(2).div(m_var, axis=0)).clip(lower=0.0)
-    return beta_hat, resid_var
-
-
-def raw_style_panels(md: MarketData, styles: Iterable[str]) -> Dict[str, pd.DataFrame]:
+def raw_style_panels(md: MarketData, styles: Iterable[str]) -> dict[str, pd.DataFrame]:
     """Compute un-standardized style descriptors as wide panels (date x ticker).
 
     Every descriptor is causal (rolling windows / lags only), so slicing a
@@ -94,13 +80,15 @@ def raw_style_panels(md: MarketData, styles: Iterable[str]) -> Dict[str, pd.Data
     unknown = set(styles) - set(SUPPORTED_STYLES)
     if unknown:
         raise ValueError(f"unsupported styles: {sorted(unknown)}")
-    out: Dict[str, pd.DataFrame] = {}
+    out: dict[str, pd.DataFrame] = {}
     returns = md.returns
     need_reg = {"beta", "residual_vol"} & set(styles)
-    beta_hat: Optional[pd.DataFrame] = None
-    resid_var: Optional[pd.DataFrame] = None
+    beta_hat: pd.DataFrame | None = None
+    resid_var: pd.DataFrame | None = None
     if need_reg:
-        beta_hat, resid_var = _rolling_market_regression(returns, BETA_WINDOW, BETA_WINDOW // 4)
+        # regression on the equal-weighted market return (qts.core.stats.rolling_beta)
+        reg = stats.rolling_beta(returns, returns.mean(axis=1), BETA_WINDOW, min_periods=BETA_WINDOW // 4)
+        beta_hat, resid_var = reg.beta, reg.resid_var
     for s in styles:
         if s == "beta":
             assert beta_hat is not None
@@ -147,59 +135,225 @@ def standardize_style(raw: pd.DataFrame, market_cap: pd.DataFrame) -> pd.DataFra
     return z.fillna(0.0)
 
 
-def standardized_style_panels(md: MarketData, styles: Iterable[str]) -> Dict[str, pd.DataFrame]:
+def standardized_style_panels(md: MarketData, styles: Iterable[str]) -> dict[str, pd.DataFrame]:
     raw = raw_style_panels(md, styles)
     return {k: standardize_style(v, md.market_cap) for k, v in raw.items()}
 
 
 # --------------------------------------------------------------------------- assembly
 def industry_dummies(industry: pd.Series, tickers: pd.Index) -> pd.DataFrame:
-    ind = industry.reindex(tickers)
-    d = pd.get_dummies(ind, dtype=float)
-    d = d.reindex(columns=sorted(d.columns))
-    d.index = tickers
-    return d
+    """Ticker x industry 0/1 matrix (:func:`qts.core.stats.industry_dummies`, all industries)."""
+    return stats.industry_dummies(industry, tickers)
 
 
-def factor_names(md: MarketData, cfg: RiskConfig) -> List[str]:
-    inds = sorted(md.industry.reindex(md.tickers).dropna().unique())
-    return [MARKET_FACTOR] + list(inds) + list(cfg.styles)
+def industry_panel(md: MarketData, dates: pd.DatetimeIndex | None = None) -> pd.DataFrame | None:
+    """Dated industry labels (date x ticker) on ``dates`` (default ``md.dates``),
+    or ``None`` when ``md.industry_history`` is absent (static classification).
+
+    Row ``t`` equals ``md.industry_as_of(t)`` (last classification dated
+    ``<= t``, unclassified names filled from the static ``md.industry``) --
+    computed for all dates in one forward-fill instead of one call per date."""
+    ih = md.industry_history
+    if ih is None:
+        return None
+    dates = md.dates if dates is None else pd.DatetimeIndex(dates)
+    ih = ih.reindex(columns=md.tickers)
+    grid = ih.index.union(dates)
+    lab = ih.reindex(grid).ffill().reindex(dates)
+    static = md.industry.reindex(md.tickers)
+    lab = lab.where(lab.notna(), pd.DataFrame([static.to_numpy()] * len(dates), index=dates,
+                                              columns=md.tickers))
+    lab.columns = md.tickers
+    return lab
 
 
-def exposure_history(md: MarketData, dates: Optional[Iterable[pd.Timestamp]] = None,
-                     cfg: Optional[RiskConfig] = None) -> Dict[pd.Timestamp, pd.DataFrame]:
-    """Exposure matrices for many dates.
+def _industry_labels(md: MarketData) -> list[str]:
+    """Every industry label the exposure matrices can carry (static + dated), sorted."""
+    labs = set(md.industry.reindex(md.tickers).dropna().unique())
+    if md.industry_history is not None:
+        labs |= set(pd.unique(md.industry_history.reindex(columns=md.tickers).stack().dropna()))
+    return sorted(labs)
+
+
+def factor_names(md: MarketData, cfg: RiskConfig) -> list[str]:
+    return [MARKET_FACTOR, *_industry_labels(md), *list(cfg.styles)]
+
+
+class ExposureHistory(dict):
+    """Exposure matrices for many dates stored as arrays, not one DataFrame per date.
+
+    Layout (``T`` stored dates, ``N`` tickers, ``S`` styles, ``K = 1 + I + S``):
+
+    * ``static``  -- ``(N, 1 + I)`` market column + industry dummies when the
+      classification is static (``MarketData.industry``), stored once instead
+      of ``T`` times;
+    * ``industry_codes`` -- ``None`` for a static classification; with
+      ``MarketData.industry_history`` (finding #43) a ``(T, N)`` int array of
+      industry indices into ``factors[1:1 + I]`` (``-1`` = unclassified) as of
+      each date (``MarketData.industry_as_of``), and ``static`` is then only the
+      ``(N, 1)`` market column;
+    * ``styles``  -- ``(T, N, S)`` standardised style exposures (``dtype``,
+      float64 by default; float32 halves the memory at ~1e-7 relative error);
+    * ``valid``   -- ``(T, N)`` bool: ticker in the exposure universe on the date
+      (finite close and positive market cap).
+
+    ``hist[date]`` / ``hist.get(date)`` / ``hist.as_of(date)`` rebuild the
+    ``tickers x factors`` DataFrame for one date (``as_of`` = most recent stored
+    date ``<= date``, O(log T) via ``searchsorted``) with exactly the values the
+    former dict-of-DataFrames held.  The class subclasses ``dict`` purely so
+    existing ``isinstance(x, dict)`` / ``.keys()`` / ``.items()`` consumers keep
+    working; no frames are held in the dict storage itself.  At 1,500 names x
+    3,780 days x (1 + 48 + 10) factors the arrays take ~0.5 GB (float64) /
+    ~0.25 GB (float32) against ~2.7 GB for the frames (``memory_report``).
+    """
+
+    def __init__(self, dates: pd.DatetimeIndex, tickers: pd.Index, factors: pd.Index,
+                 static: np.ndarray, styles: np.ndarray, valid: np.ndarray,
+                 industry_codes: np.ndarray | None = None, n_industries: int = 0):
+        super().__init__()
+        self.dates = pd.DatetimeIndex(dates)
+        self.tickers = pd.Index(tickers)
+        self.factors = pd.Index(factors, name="factor")
+        self.static = static
+        self.styles = styles
+        self.valid = valid
+        self.industry_codes = industry_codes
+        self.n_industries = int(n_industries)
+        self._pos = {d: i for i, d in enumerate(self.dates)}
+
+    # ---------------------------------------------------------------- mapping
+    def frame_at(self, i: int) -> pd.DataFrame:
+        mask = self.valid[i]
+        sty = self.styles[i][mask].astype(float, copy=False)
+        if self.industry_codes is None:
+            arr = np.concatenate([self.static[mask], sty], axis=1)
+        else:
+            codes = self.industry_codes[i][mask]
+            ind = np.zeros((len(codes), self.n_industries))
+            ok = codes >= 0
+            ind[np.flatnonzero(ok), codes[ok]] = 1.0
+            arr = np.concatenate([self.static[mask], ind, sty], axis=1)
+        return pd.DataFrame(arr, index=self.tickers[mask], columns=self.factors)
+
+    def __getitem__(self, date) -> pd.DataFrame:
+        i = self._pos.get(pd.Timestamp(date))
+        if i is None:
+            raise KeyError(date)
+        return self.frame_at(i)
+
+    def get(self, date, default=None):
+        i = self._pos.get(pd.Timestamp(date)) if date is not None else None
+        return default if i is None else self.frame_at(i)
+
+    def __contains__(self, date) -> bool:
+        try:
+            return pd.Timestamp(date) in self._pos
+        except (TypeError, ValueError):
+            return False
+
+    def __iter__(self):
+        return iter(self.dates)
+
+    def __len__(self) -> int:
+        return len(self.dates)
+
+    def __bool__(self) -> bool:
+        return len(self.dates) > 0
+
+    def keys(self):  # type: ignore[override]
+        return list(self.dates)
+
+    def values(self):  # type: ignore[override]
+        return (self.frame_at(i) for i in range(len(self.dates)))
+
+    def items(self):  # type: ignore[override]
+        return ((d, self.frame_at(i)) for i, d in enumerate(self.dates))
+
+    def __eq__(self, other) -> bool:  # identity: the dict storage is empty by design
+        return self is other
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def __repr__(self) -> str:
+        return (f"ExposureHistory(T={len(self.dates)}, N={len(self.tickers)}, K={len(self.factors)}, "
+                f"styles dtype={self.styles.dtype}, {self.nbytes / 1e6:.1f} MB)")
+
+    # ---------------------------------------------------------------- extras
+    def as_of(self, date) -> pd.DataFrame:
+        """Exposures on the most recent stored date ``<= date``."""
+        i = int(self.dates.searchsorted(pd.Timestamp(date), side="right")) - 1
+        if i < 0:
+            raise KeyError(f"no exposures on or before {date}")
+        return self.frame_at(i)
+
+    @property
+    def first_date(self) -> pd.Timestamp | None:
+        return self.dates[0] if len(self.dates) else None
+
+    @property
+    def nbytes(self) -> int:
+        codes = 0 if self.industry_codes is None else self.industry_codes.nbytes
+        return int(self.static.nbytes + self.styles.nbytes + self.valid.nbytes + codes)
+
+    def memory_report(self) -> dict[str, float]:
+        """Bytes held by the arrays vs the dict-of-DataFrames they replace
+        (values + index, measured on the stored frames' sizes)."""
+        K = len(self.factors)
+        n_valid = int(self.valid.sum())
+        frames_values = n_valid * K * 8
+        # per-frame overhead: ticker index (object, ~8 B pointer + shared strings) + BlockManager
+        frames_index = n_valid * 8 + len(self.dates) * 2_000
+        return {"tensor_bytes": float(self.nbytes), "frames_bytes_est": float(frames_values + frames_index),
+                "ratio": float((frames_values + frames_index) / max(self.nbytes, 1))}
+
+
+def exposure_history(md: MarketData, dates: Iterable[pd.Timestamp] | None = None,
+                     cfg: RiskConfig | None = None, dtype=np.float64) -> ExposureHistory:
+    """Exposure matrices for many dates, as an :class:`ExposureHistory`.
 
     All rolling statistics are computed *once* on the wide panels (vectorized),
-    stacked into a (T x N x K) array and sliced per date -- no per-date
-    recomputation.  Because every descriptor is causal this is point-in-time
-    correct.  A ticker is included on date ``t`` if it has a finite close and
-    a positive market cap on ``t``."""
+    stacked into a ``(T, N, S)`` style array plus a static ``(N, 1 + I)``
+    market/industry block (or, when ``md.industry_history`` is present, a
+    ``(T, N)`` array of point-in-time industry codes, row ``t`` =
+    ``md.industry_as_of(t)``); ``hist[date]`` rebuilds the per-date frame.  Because
+    every descriptor is causal this is point-in-time correct.  A ticker is
+    included on date ``t`` if it has a finite close and a positive market cap
+    on ``t``.  Dates not in ``md.dates`` are skipped."""
     cfg = cfg or RiskConfig()
     dates = md.dates if dates is None else pd.DatetimeIndex(list(dates))
     styles = list(cfg.styles)
     panels = standardized_style_panels(md, styles)
-    dummies = industry_dummies(md.industry, md.tickers)
-    cols = pd.Index([MARKET_FACTOR] + list(dummies.columns) + styles, name="factor")
     tickers_all = md.tickers
     N = len(tickers_all)
-    static = np.column_stack([np.ones(N)] + [dummies[c].values for c in dummies.columns])
-    style_arr = (np.stack([panels[s].reindex(index=md.dates, columns=tickers_all).values for s in styles], axis=2)
-                 if styles else np.zeros((len(md.dates), N, 0)))
-    valid = (md.close.notna() & (md.market_cap > 0)).values
-    pos = {d: i for i, d in enumerate(md.dates)}
-    out: Dict[pd.Timestamp, pd.DataFrame] = {}
-    for d in dates:
-        i = pos.get(d)
-        if i is None:
-            continue
-        mask = valid[i]
-        arr = np.concatenate([static[mask], style_arr[i][mask]], axis=1)
-        out[d] = pd.DataFrame(arr, index=tickers_all[mask], columns=cols)
-    return out
+    rows = md.dates.get_indexer(dates)
+    keep = rows >= 0
+    rows = rows[keep]
+    sel_dates = dates[keep]
+    codes: np.ndarray | None = None
+    if md.industry_history is None:                      # static classification: fast path
+        dummies = industry_dummies(md.industry, md.tickers)
+        inds = list(dummies.columns)
+        static = np.column_stack([np.ones(N)] + [dummies[c].values for c in dummies.columns])
+    else:                                                # dated classification (finding #43)
+        inds = _industry_labels(md)
+        panel = industry_panel(md, sel_dates)
+        assert panel is not None
+        codes = (pd.Categorical(panel.to_numpy().ravel(), categories=inds).codes
+                 .reshape(len(sel_dates), N).astype(np.int32))
+        static = np.ones((N, 1))
+    cols = pd.Index([MARKET_FACTOR, *inds, *styles], name="factor")
+    if styles:
+        style_arr = np.empty((len(rows), N, len(styles)), dtype=dtype)
+        for j, st in enumerate(styles):
+            style_arr[:, :, j] = panels[st].reindex(index=md.dates, columns=tickers_all).values[rows]
+    else:
+        style_arr = np.zeros((len(rows), N, 0), dtype=dtype)
+    valid = (md.close.notna() & (md.market_cap > 0)).values[rows]
+    return ExposureHistory(sel_dates, tickers_all, cols, static, style_arr, valid,
+                           industry_codes=codes, n_industries=len(inds))
 
 
-def build_exposures(md: MarketData, date: pd.Timestamp, cfg: Optional[RiskConfig] = None) -> pd.DataFrame:
+def build_exposures(md: MarketData, date: pd.Timestamp, cfg: RiskConfig | None = None) -> pd.DataFrame:
     """Exposure matrix (tickers x factors) as of ``date`` using data ``<= date``.
 
     For many dates prefer :func:`exposure_history`, which shares the rolling
@@ -208,7 +362,7 @@ def build_exposures(md: MarketData, date: pd.Timestamp, cfg: Optional[RiskConfig
     date = pd.Timestamp(date)
     sub = md.slice_until(date)
     hist = exposure_history(sub, [sub.dates[-1]], cfg)
-    if not hist:
+    if len(hist) == 0:
         raise ValueError(f"no data on or before {date}")
     return hist[sub.dates[-1]]
 

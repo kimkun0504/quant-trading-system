@@ -15,9 +15,11 @@ fraction of stock ``i``'s (latent + idiosyncratic) residual variance that
 the residual factors explain in the trailing window (``s_i`` the APCA
 specific variance, ``b_i`` the loadings chosen by ``loadings``), and
 ``B_stat~`` is the loading matrix expressed in the fundamental model's
-specific-variance units, ``b~_i = b_i * sqrt(D_fund_i / (b_i' F_stat b_i +
-s_i))``.  Hence ``(B~ F B~')_ii = share_i D_fund_i`` and the hybrid
-diagonal equals the fundamental's **stock by stock**: a diversified random
+specific-variance units, ``b~_i = b_i * sqrt((1 - keep_i) D_fund_i /
+(b_i' F_stat b_i))``.  Hence ``(B~ F B~')_ii = (1 - keep_i) D_fund_i``
+(``= share_i D_fund_i`` unless the 10% floor binds, i.e. ``share_i > 0.9``;
+finding #17) and the hybrid diagonal ``(1 - keep_i) D_fund_i + keep_i
+D_fund_i`` equals the fundamental's **stock by stock**: a diversified random
 book keeps its total predicted variance (the added off-diagonal terms
 average out), while a book aligned with a residual factor picks up the
 covariance the fundamental model cannot see.  The 10% floor keeps every
@@ -61,13 +63,18 @@ recovers the time-stable part of the leak.  Should a residual factor later
 become observable, promoting it to a fundamental style removes it from the
 residual block automatically.
 
-Factor count
-------------
-``k`` is chosen once in ``fit`` by Bai-Ng ``IC_p2`` on the most recent
-``statistical_window`` days of residuals, floored at 1 and capped at
-``cfg.max_statistical_factors``.  In a backtest this single integer is
-chosen with end-of-sample information; set ``cfg.statistical_n_factors`` to
-fix it (fully point-in-time) or re-fit periodically in production.
+Factor count (point in time)
+----------------------------
+``k`` is chosen **at every APCA refit date** by Bai-Ng ``IC_p2`` on that
+refit's trailing ``statistical_window`` days of residuals only, floored at 1
+and capped at ``cfg.max_statistical_factors`` (``StatisticalRiskModel(select_k=
+"bai_ng")``; finding #19 -- the earlier single end-of-sample choice was a
+look-ahead).  The output always carries ``cfg.max_statistical_factors``
+columns ``stat_01..``; slots beyond the refit's ``k`` have zero exposure and
+zero variance, so the ``RiskModelOutput`` shape is stable across refits.
+``cfg.statistical_n_factors`` fixes ``k`` instead (output then has exactly
+that many columns).  ``n_statistical_factors`` is the number of output
+columns; ``factor_count_details["by_refit"]`` holds the per-refit choice.
 
 Alignment factor
 ----------------
@@ -86,7 +93,7 @@ fundamental model does not price".
 """
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 import numpy as np
 import pandas as pd
@@ -97,15 +104,18 @@ from qts.risk.alignment import alpha_alignment
 from qts.risk.covariance import nearest_psd
 from qts.risk.model import BarraStyleRiskModel, factor_groups_for
 from qts.risk.statistical import (
-    StatisticalRiskModel, _prepare_panel, _spectrum, marchenko_pastur_edge, select_n_factors,
+    StatisticalRiskModel,
+    _prepare_panel,
+    _spectrum,
+    marchenko_pastur_edge,
 )
 
 SPECIFIC_FLOOR = 0.10
 
 
 class HybridRiskModel:
-    def __init__(self, fundamental: Optional[BarraStyleRiskModel] = None, cfg: Optional[RiskConfig] = None,
-                 half_life: Optional[float] = None, loadings: str = "total", cross_block: bool = False,
+    def __init__(self, fundamental: BarraStyleRiskModel | None = None, cfg: RiskConfig | None = None,
+                 half_life: float | None = None, loadings: str = "total", cross_block: bool = False,
                  **fundamental_kwargs):
         """``fundamental`` defaults to ``BarraStyleRiskModel(cfg, **fundamental_kwargs)``.
         ``half_life`` is the EWMA half-life of the statistical block (``None`` =
@@ -121,13 +131,13 @@ class HybridRiskModel:
         self.half_life = half_life
         self.loadings = loadings
         self.cross_block = bool(cross_block)
-        self.statistical: Optional[StatisticalRiskModel] = None
+        self.statistical: StatisticalRiskModel | None = None
         self.n_statistical_factors: int = 0
-        self.factor_count_details: Optional[dict] = None
+        self.factor_count_details: dict | None = None
 
     # ------------------------------------------------------------------ passthroughs used by the pipeline
     @property
-    def md(self) -> Optional[MarketData]:
+    def md(self) -> MarketData | None:
         return self.fundamental.md
 
     @property
@@ -150,37 +160,39 @@ class HybridRiskModel:
         """Fundamental exposures (labels are residualised on these)."""
         return self.fundamental.exposures_as_of(date)
 
-    def residual_covariance_as_of(self, date: pd.Timestamp, window: Optional[int] = None) -> pd.DataFrame:
-        return self.fundamental.residual_covariance_as_of(date, window)
+    def residual_covariance_as_of(self, date: pd.Timestamp, window: int | None = None,
+                                  method: str = "qis") -> pd.DataFrame:
+        return self.fundamental.residual_covariance_as_of(date, window, method)
 
     # ------------------------------------------------------------------ fit
-    def fit(self, md: MarketData, dates: Optional[Iterable[pd.Timestamp]] = None) -> "HybridRiskModel":
+    def fit(self, md: MarketData, dates: Iterable[pd.Timestamp] | None = None) -> HybridRiskModel:
         cfg = self.cfg
         self.fundamental.fit(md, dates)
         assert self.fundamental.specific_returns is not None
         U = self.fundamental.specific_returns.dropna(how="all")
         if cfg.statistical_n_factors is not None:
-            k = int(cfg.statistical_n_factors)
-            self.factor_count_details = {"method": "fixed"}
+            k = int(min(max(int(cfg.statistical_n_factors), 1), max(cfg.max_statistical_factors, 1)))
+            select_k = None
         else:
-            k, det = select_n_factors(U.tail(cfg.statistical_window), method="bai_ng",
-                                      max_factors=max(cfg.max_statistical_factors, 1), return_details=True)
-            self.factor_count_details = {"method": "bai_ng", "selected": k, "ic": det["ic"]}
-        k = int(min(max(k, 1), cfg.max_statistical_factors))
+            # PIT: k is re-chosen at every refit from that refit's window (finding #19)
+            k = max(int(cfg.max_statistical_factors), 1)
+            select_k = "bai_ng"
         self.n_statistical_factors = k
         min_obs = min(cfg.statistical_window, max(60, int(0.8 * cfg.statistical_window)))
         self.statistical = StatisticalRiskModel(
             n_factors=k, window=cfg.statistical_window, half_life=self.half_life, min_obs=min_obs,
-            method="apca", apca_iters=3, refit_every=cfg.statistical_refit_every,
+            method="apca", apca_iters=3, refit_every=cfg.statistical_refit_every, select_k=select_k,
         ).fit(U)
+        self.factor_count_details = {"method": "fixed" if select_k is None else "bai_ng_per_refit",
+                                     "n_slots": k, "by_refit": self.statistical.n_factors_by_refit()}
         return self
 
     # ------------------------------------------------------------------ as_of
     def statistical_available(self, date: pd.Timestamp) -> bool:
         return self.statistical is not None and self.statistical.available(date)
 
-    def as_of(self, date: pd.Timestamp, alpha: Optional[pd.Series] = None,
-              nu_scale: Optional[float] = None) -> RiskModelOutput:
+    def as_of(self, date: pd.Timestamp, alpha: pd.Series | None = None,
+              nu_scale: float | None = None) -> RiskModelOutput:
         """Hybrid risk model as of ``date``.  Before the statistical block has
         enough residual history the fundamental output is returned unchanged
         (documented fallback; check :meth:`statistical_available`)."""
@@ -230,7 +242,7 @@ class HybridRiskModel:
         cols = list(fund.factor_cov.columns) + stat_cols
         factor_cov = pd.DataFrame(F, index=cols, columns=cols)
         spec = pd.Series(D_h, index=tickers, name="specific_var")
-        y: Optional[pd.Series] = None
+        y: pd.Series | None = None
         nu = 0.0
         if alpha is not None and cfg.alignment:
             y, nu = alpha_alignment(alpha.reindex(tickers), exposures, spec, nu_scale=nu_scale,
@@ -249,7 +261,11 @@ class HybridRiskModel:
         Fh = st.factor_returns.tail(self.cfg.statistical_window)
         Rw = self.md.returns.reindex(index=Fh.index, columns=tickers)
         R, mask, _ = _prepare_panel(Rw.values)
-        B, _ = _ts_regress(R, mask, Fh.values, self.statistical.min_stock_obs)
+        Fv = Fh.values
+        active = np.any(Fv != 0, axis=0)          # unused slots (k < n_slots) stay at zero loading
+        B = np.zeros((R.shape[1], Fv.shape[1]))
+        if active.any():
+            B[:, active], _ = _ts_regress(R, mask, Fv[:, active], self.statistical.min_stock_obs)
         return B
 
     def _cross_block(self, fr: pd.DataFrame, F_fund: pd.DataFrame, F_stat: pd.DataFrame) -> np.ndarray:
@@ -277,10 +293,10 @@ class HybridRiskModel:
 
 
 # --------------------------------------------------------------------------- monitor
-def missing_factor_monitor(md: MarketData, model, lookback: int = 252, n_pcs: Optional[int] = None,
-                           alarm_share: Optional[float] = None, step: int = 1,
+def missing_factor_monitor(md: MarketData, model, lookback: int = 252, n_pcs: int | None = None,
+                           alarm_share: float | None = None, step: int = 1,
                            min_coverage: float = 0.8, standardize: bool = True,
-                           dates: Optional[Iterable[pd.Timestamp]] = None) -> pd.DataFrame:
+                           dates: Iterable[pd.Timestamp] | None = None) -> pd.DataFrame:
     """Per-date "unmodelled common factor" alarm on the fundamental residuals.
 
     For every ``step``-th date ``t`` (with at least ``lookback // 2`` residual

@@ -12,9 +12,20 @@ then z-scored per date.  The alpha themes (momentum, value, quality,
 investment, short interest) are *never* residualised out: projecting them out
 of the label would define the alpha away (audit finding 2).
 
+Design decision D1 (docs/notes/doc_review_findings.md): **the label is
+residualised on exactly the set of styles the optimizer neutralises** —
+``qts.core.roles.RISK_ONLY_STYLES`` (beta, size, residual_vol, liquidity,
+short_term_reversal) plus market and industries.  Predicting a premium the
+book is then forced to hedge away wastes model capacity, so the linear premium
+of the low-risk theme (beta / residual vol) is *intentionally* removed from
+the ML target even though the rank composite still carries a ``low_risk``
+theme.  ``qts.core.roles`` is the single source of truth for both this module
+and the pipeline/optimizer; nothing here keeps a local copy.
+
 Without a risk model, :func:`residualize_forward_returns` uses a lightweight
 set of exposures computed from ``MarketData`` (``default_exposures``,
-``DEFAULT_STYLE_EXPOSURES``).  Pass ``exposures_fn`` (e.g.
+``DEFAULT_STYLE_EXPOSURES`` = ``roles.RISK_ONLY_FEATURES``, the alpha-layer
+proxies of the risk-only styles).  Pass ``exposures_fn`` (e.g.
 ``lambda d: risk_model.exposures_as_of(d)``) to neutralise against a proper
 risk model; dates for which it returns ``None`` (risk-model warm-up) fall back
 to the same risk-only internal set, so the label definition is consistent.
@@ -24,34 +35,39 @@ cross-sectional winsorisation, regression and z-scoring use those names only.
 
 Delistings: a name whose last close falls inside ``(t, t+h]`` gets the return to
 its last close times ``(1 + delisting_return)`` (default -30 %, see
-``AlphaConfig.delisting_return``) instead of NaN, so delisting outcomes reach
+``CostConfig.delisting_haircut``) instead of NaN, so delisting outcomes reach
 the training set and every IC/decile statistic.
 """
 from __future__ import annotations
 
-from typing import Callable, Dict, Optional
+from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
 
+from qts.core import stats
+from qts.core.config import CostConfig
 from qts.core.crosssection import neutralize, zscore
+from qts.core.roles import ALPHA_THEME_FEATURES, RISK_ONLY_FEATURES, RISK_ONLY_STYLES
 from qts.core.types import MarketData, Wide
 
-from .features import _winsorize_rows, rolling_market_beta
+from .features import _winsorize_rows, industry_segments, rolling_market_beta
 
 ExposuresFn = Callable[[pd.Timestamp], pd.DataFrame]
 
-#: Risk-only styles used by the built-in residualiser.  Must never contain an
-#: alpha theme (mom_12_1, value_bp, quality_gpa, investment_ag, short_interest).
-DEFAULT_STYLE_EXPOSURES = ("beta_252", "log_mcap", "idio_vol_252", "log_dollar_vol_63", "turnover_63", "strev_21")
-ALPHA_THEME_FEATURES = frozenset({"value_bp", "value_ep", "mom_12_1", "mom_6_1", "mom_change", "industry_momentum",
-                                  "quality_gpa", "investment_ag", "short_interest", "borrow_fee"})
-assert not (set(DEFAULT_STYLE_EXPOSURES) & ALPHA_THEME_FEATURES)
+__all__ = ["ALPHA_THEME_FEATURES", "DEFAULT_STYLE_EXPOSURES", "RISK_ONLY_STYLES", "ExposuresFn",
+           "default_exposures", "forward_returns", "industry_dummies", "residualize_forward_returns"]
 
-DEFAULT_DELISTING_RETURN = -0.30
+#: Risk-only style proxies used by the built-in residualiser (D1: the alpha-layer
+#: features proxying ``RISK_ONLY_STYLES``).  Never contains an alpha theme;
+#: both sets are defined once in ``qts.core.roles``.
+DEFAULT_STYLE_EXPOSURES = RISK_ONLY_FEATURES
+
+#: default label delisting haircut = ``CostConfig.delisting_haircut`` (single source)
+DEFAULT_DELISTING_RETURN = CostConfig().delisting_haircut
 
 
-def forward_returns(md: MarketData, horizon: int, delisting_return: Optional[float] = DEFAULT_DELISTING_RETURN) -> Wide:
+def forward_returns(md: MarketData, horizon: int, delisting_return: float | None = DEFAULT_DELISTING_RETURN) -> Wide:
     """``close_{t+h} / close_t - 1`` aligned at ``t``.
 
     Delisting handling: if the name's *last ever* close is inside ``(t, t+h]``
@@ -73,7 +89,7 @@ def forward_returns(md: MarketData, horizon: int, delisting_return: Optional[flo
     return fwd.where(c.notna())
 
 
-def default_exposures(md: MarketData, features: Optional[Dict[str, Wide]] = None) -> Dict[str, Wide]:
+def default_exposures(md: MarketData, features: dict[str, Wide] | None = None) -> dict[str, Wide]:
     """Style exposures (wide panels) used by the built-in residualiser.
 
     Risk-only (``DEFAULT_STYLE_EXPOSURES``): beta, size, idio vol, dollar
@@ -108,19 +124,20 @@ def default_exposures(md: MarketData, features: Optional[Dict[str, Wide]] = None
 
 
 def industry_dummies(industry: pd.Series, tickers: pd.Index) -> pd.DataFrame:
-    """Ticker x (n_industries - 1) dummy matrix (one dropped: intercept present)."""
-    d = pd.get_dummies(industry.reindex(tickers), dtype=float)
-    return d.iloc[:, 1:] if d.shape[1] > 1 else d.iloc[:, :0]
+    """Ticker x (n_industries - 1) dummy matrix (first industry dropped: an
+    intercept is present) -- :func:`qts.core.stats.industry_dummies`."""
+    return stats.industry_dummies(industry, tickers, drop_first=True)
 
 
 def residualize_forward_returns(
     md: MarketData,
     horizon: int,
-    exposures_fn: Optional[ExposuresFn] = None,
-    features: Optional[Dict[str, Wide]] = None,
+    exposures_fn: ExposuresFn | None = None,
+    features: dict[str, Wide] | None = None,
     winsor_pct: float = 0.01,
-    weights: Optional[Wide] = None,
-    delisting_return: Optional[float] = DEFAULT_DELISTING_RETURN,
+    weights: Wide | None = None,
+    delisting_return: float | None = DEFAULT_DELISTING_RETURN,
+    only_dates: pd.DatetimeIndex | None = None,
 ) -> Wide:
     """Per date: neutralise the ``horizon``-day forward return on exposures known
     at ``t`` (intercept + industry dummies + the risk-only styles in
@@ -130,19 +147,30 @@ def residualize_forward_returns(
 
     ``weights`` (e.g. sqrt market cap) makes the neutralisation WLS.
     Rows (dates) whose forward window is not yet complete are NaN.
+    ``only_dates`` restricts the (per-date) regressions to those rows — every
+    other row is NaN; values on the computed rows are identical to the full
+    run (used for cheap multi-horizon IC-decay diagnostics).
     """
     valid = md.eligibility()
     fwd = _winsorize_rows(forward_returns(md, horizon, delisting_return).where(valid), winsor_pct)
     tickers = md.tickers
     dates = md.dates
     out = np.full(fwd.shape, np.nan)
-    valid_rows = (fwd.notna().sum(axis=1) >= 20).to_numpy()
+    valid_rows = (fwd.notna().sum(axis=1) >= 20).to_numpy().copy()
+    if only_dates is not None:
+        valid_rows &= dates.isin(pd.DatetimeIndex(only_dates))
     Y = fwd.to_numpy(dtype=float)
     W = None if weights is None else weights.reindex(index=dates, columns=tickers).to_numpy(dtype=float)
     # Always build the internal (fast) exposures: they are the fallback for dates
     # where an external exposures_fn has no model yet (e.g. risk-model warm-up).
     styles = default_exposures(md, features)
-    D = industry_dummies(md.industry, tickers).to_numpy(dtype=float)
+    # PIT industry dummies: one matrix per block of constant classification
+    # (md.industry_as_of); a single static matrix without industry_history.
+    D_of_row: dict[int, np.ndarray] = {}
+    for seg_dates, labels in industry_segments(md):
+        Dm = industry_dummies(labels, tickers).to_numpy(dtype=float)
+        for i in dates.get_indexer(seg_dates):
+            D_of_row[int(i)] = Dm
     S = np.stack([styles[k].reindex(index=dates, columns=tickers).to_numpy(dtype=float)
                   for k in styles], axis=2) if styles else np.zeros((len(dates), len(tickers), 0))
     ones = np.ones((len(tickers), 1))
@@ -162,6 +190,7 @@ def residualize_forward_returns(
         for i in internal_rows:
             y = Y[i]
             m = np.isfinite(y)
+            D = D_of_row[int(i)]
             X = np.hstack([ones, D, S[i]])[m]
             yy = y[m]
             if W is not None:

@@ -35,11 +35,11 @@ def ctx(md, risk_model, alpha_model, test_date):
     a = alpha_model.as_of(test_date)
     snap = snapshot_from_market(md, test_date)
     w0 = pd.Series(0.0, index=md.tickers)
-    return dict(risk=r, alpha=a.expected_return, snap=snap, w0=w0, date=test_date)
+    return {"risk": r, "alpha": a.expected_return, "snap": snap, "w0": w0, "date": test_date}
 
 
 def ls_cfg(**kw) -> PortfolioConfig:
-    base = dict(book="long_short", risk_aversion=2.0, target_vol_annual=None)
+    base = {"book": "long_short", "risk_aversion": 2.0, "target_vol_annual": None}
     base.update(kw)
     return PortfolioConfig(**base)
 
@@ -167,11 +167,39 @@ def test_no_trade_and_style_band(ctx):
 def test_vol_target_scales_down(ctx):
     hi = SinglePeriodOptimizer(ls_cfg(), SimpleCostModel()).solve(ctx["alpha"] * 5, ctx["risk"], ctx["w0"], 1e6, ctx["snap"])
     target = 0.5 * hi.expected_risk
-    lo = SinglePeriodOptimizer(ls_cfg(target_vol_annual=target), SimpleCostModel()).solve(
+    # without the cost term the projection is the exact scaled book
+    lo = SinglePeriodOptimizer(ls_cfg(target_vol_annual=target, vol_target_mode="projection",
+                                      vol_target_projection_cost_weight=0.0), SimpleCostModel()).solve(
         ctx["alpha"] * 5, ctx["risk"], ctx["w0"], 1e6, ctx["snap"])
     assert lo.vol_scalar == pytest.approx(0.5, rel=1e-3)
     assert lo.expected_risk == pytest.approx(target, rel=1e-3)
     assert lo.w_target.abs().sum() == pytest.approx(0.5 * hi.w_target.abs().sum(), rel=1e-3)
+    # finding #28: with the trade-cost term the projection trades less (never above target)
+    lc = SinglePeriodOptimizer(ls_cfg(target_vol_annual=target, vol_target_mode="projection",
+                                      vol_target_projection_cost_weight=1.0), SimpleCostModel()).solve(
+        ctx["alpha"] * 5, ctx["risk"], ctx["w0"], 1e6, ctx["snap"])
+    assert lc.ok and lc.expected_risk <= target * (1 + 1e-3)
+    assert lc.turnover < lo.turnover
+    assert lc.expected_cost < lo.expected_cost
+
+
+def test_vol_target_constraint_mode_one_solve(ctx):
+    """``vol_target_mode="constraint"``: the SOC cap sits inside the alpha solve."""
+    hi = SinglePeriodOptimizer(ls_cfg(), SimpleCostModel()).solve(ctx["alpha"] * 5, ctx["risk"], ctx["w0"], 1e6, ctx["snap"])
+    target = 0.5 * hi.expected_risk
+    opt = SinglePeriodOptimizer(ls_cfg(target_vol_annual=target, vol_target_mode="constraint"), SimpleCostModel())
+    res = opt.solve(ctx["alpha"] * 5, ctx["risk"], ctx["w0"], 1e6, ctx["snap"])
+    assert res.ok and res.vol_scalar == 1.0
+    assert res.expected_risk == pytest.approx(target, rel=1e-3)     # cap binds
+    assert res.binding_constraints.get("vol_cap") == 1
+    assert not any("projection" in n for n in res.notes)
+    assert opt.n_builds == 1                                         # no second (projection) problem
+    # never worse on the joint objective than the projected book at the same risk
+    proj = SinglePeriodOptimizer(ls_cfg(target_vol_annual=target, vol_target_mode="projection"),
+                                 SimpleCostModel()).solve(ctx["alpha"] * 5, ctx["risk"], ctx["w0"], 1e6, ctx["snap"])
+    assert res.expected_alpha - res.expected_cost >= proj.expected_alpha - proj.expected_cost - 1e-6
+    with pytest.raises(ValueError, match="vol_target_mode"):
+        SinglePeriodOptimizer(ls_cfg(vol_target_mode="bogus"), SimpleCostModel())
 
 
 def test_infeasible_returns_current(ctx):
@@ -251,6 +279,14 @@ def test_combine_and_shrink_ic():
     assert shrink_ic(0.5) == 0.1
     assert shrink_ic(-0.2) == 0.0
     assert shrink_ic(float("nan")) == 0.0
+    # D5: ``keep`` is the fraction kept (same as AlphaConfig.ic_shrink), not removed
+    assert shrink_ic(0.06, keep=0.25) == pytest.approx(0.015)
+    assert shrink_ic(0.06, keep=1.0) == pytest.approx(0.06)
+    assert shrink_ic(0.06, keep=0.0) == 0.0
+    from qts.core.config import AlphaConfig
+    assert shrink_ic(0.04, keep=AlphaConfig().ic_shrink) == pytest.approx(AlphaConfig().ic_shrink * 0.04)
+    with pytest.raises(ValueError):
+        shrink_ic(0.06, keep=1.5)
 
 
 # --------------------------------------------------------------- diagnostics
@@ -303,7 +339,7 @@ def test_brinson_attribution_sums(md, risk_model):
     att = brinson_like_attribution(W, risk_model.factor_returns, expos, total_returns=md.returns)
     assert len(att) == len(dates)
     # with u = r - B f the decomposition is exact: total == w'r
-    for d_dec, d_real in zip(dates, md.dates[401:411]):
+    for d_dec, d_real in zip(dates, md.dates[401:411], strict=True):
         assert att.loc[d_real, "total"] == pytest.approx(float(W.loc[d_dec] @ md.returns.loc[d_real]), rel=1e-9)
     fac_cols = [c for c in att.columns if c not in ("specific", "total")]
     assert np.allclose(att[fac_cols].sum(axis=1) + att["specific"], att["total"])
@@ -335,8 +371,8 @@ def barra_ctx(md):
     B = r.exposures
     alpha = 0.01 * (B["beta"] + 0.5 * pd.Series(rng.standard_normal(len(B)), index=B.index))
     snap = snapshot_from_market(md2, date)
-    return dict(md=md2, model=model, risk=r, alpha=alpha, snap=snap, w0=pd.Series(0.0, index=md2.tickers),
-                date=date)
+    return {"md": md2, "model": model, "risk": r, "alpha": alpha, "snap": snap, "w0": pd.Series(0.0, index=md2.tickers),
+                "date": date}
 
 
 def _exposures(w, risk):
@@ -377,7 +413,7 @@ def test_factor_groups_drive_beta_and_ff48_industry_bands(barra_ctx):
     assert not any("prefix fallback" in n for n in res.notes)
     # the test has teeth: without the constraint the high-beta tilt is large
     free = SinglePeriodOptimizer(ls_cfg(beta_neutral=False, industry_band=0.0), SimpleCostModel(zero=True)) \
-        .solve(barra_ctx["alpha"], r, barra_ctx["w0"], 1e6, barra_ctx["snap"])
+        .solve(barra_ctx["alpha"], r, barra_ctx["w0"], 1e6, barra_ctx["snap"], neutral_styles=[])
     assert abs(_exposures(free.w_target, r)["beta"]) > 3 * opt.beta_band
     assert _exposures(free.w_target, r)[FF48_LIKE].abs().max() > cfg.industry_band
 
@@ -548,3 +584,85 @@ def test_simulator_eligibility_hook_unwinds_and_blocks(md, risk_model, alpha_mod
     md_e = dataclasses.replace(md, eligible=elig)
     res2 = DailyBarSimulator(cfg, cm).run(md_e, dates, alpha_model.as_of, risk_model.as_of, opt, nav0=1e6)
     pd.testing.assert_frame_equal(res2.weights, W, atol=1e-6)
+
+
+# ------------------------------------------------------- DPP reuse, roles, GP (work plan 1.6, D1, #5)
+def test_dpp_reuse_matches_rebuild_across_days(barra_ctx):
+    """The cached DPP problem re-solved with new parameter values gives the same
+    book as a fresh build (to solver tolerance) on several days; the ticker set
+    is unchanged so it is built once.  A changed ticker set triggers a rebuild."""
+    md, model, snap0 = barra_ctx["md"], barra_ctx["model"], barra_ctx["snap"]
+    from qts.tcost import TransactionCostModel
+    cost = TransactionCostModel()
+    cfg = ls_cfg(target_vol_annual=0.08, vol_target_projection_cost_weight=1.0)
+    styles = ["size", "liquidity"]
+    reuse = SinglePeriodOptimizer(cfg, cost, reuse_problem=True)
+    fresh = SinglePeriodOptimizer(cfg, cost, reuse_problem=False)
+    w_prev = barra_ctx["w0"]
+    rng = np.random.default_rng(11)
+    for d in md.dates[-8:-2:2]:
+        r = model.as_of(d)
+        a = 0.01 * pd.Series(rng.standard_normal(len(r.tickers)), index=r.tickers)
+        snap = cost.snapshot_from_market(md, d)
+        x = reuse.solve(a, r, w_prev, 1e7, snap, neutral_styles=styles)
+        y = fresh.solve(a, r, w_prev, 1e7, snap, neutral_styles=styles)
+        assert x.ok and y.ok
+        assert float((x.w_target - y.w_target).abs().max()) < 2e-5
+        assert x.expected_cost == pytest.approx(y.expected_cost, rel=1e-3, abs=1e-8)
+        w_prev = x.w_target
+    assert reuse.n_reuses >= 2 and fresh.n_reuses == 0
+    builds = reuse.n_builds
+    r = model.as_of(md.dates[-2])
+    sub = r.tickers[:-3]                                      # different ticker set -> rebuild
+    r2 = dataclasses.replace(r, exposures=r.exposures.loc[sub], specific_var=r.specific_var.loc[sub])
+    a = 0.01 * pd.Series(rng.standard_normal(len(sub)), index=sub)
+    res = reuse.solve(a, r2, pd.Series(0.0, index=sub), 1e7, {k: (v.reindex(sub) if isinstance(v, pd.Series) else v)
+                                                              for k, v in snap0.items()}, neutral_styles=styles)
+    assert res.ok and not res.problem_reused and reuse.n_builds > builds
+
+
+def test_default_neutral_styles_from_roles(barra_ctx):
+    """D1: ``neutral_styles=None`` bands qts.core.roles.RISK_ONLY_STYLES; ``[]`` bands none."""
+    from qts.core.roles import RISK_ONLY_STYLES
+    r, a = barra_ctx["risk"], barra_ctx["alpha"]
+    # tilt the alpha toward size so an un-banded book is clearly size-exposed
+    a = a + 0.01 * r.exposures["size"]
+    cfg = ls_cfg(style_band_sd=0.05)
+    opt = SinglePeriodOptimizer(cfg, SimpleCostModel(zero=True))
+    dflt = opt.solve(a, r, barra_ctx["w0"], 1e6, barra_ctx["snap"])
+    none = opt.solve(a, r, barra_ctx["w0"], 1e6, barra_ctx["snap"], neutral_styles=[])
+    assert dflt.ok and none.ok
+    banded = [s for s in RISK_ONLY_STYLES if s in r.factor_groups["style"] and s != "beta"]
+    assert banded
+    e_d, e_n = _exposures(dflt.w_target, r), _exposures(none.w_target, r)
+    assert e_d[banded].abs().max() <= cfg.style_band_sd + BARRA_TOL
+    assert abs(e_n["size"]) > cfg.style_band_sd + 0.01                 # the test has teeth
+    assert "style_band" in dflt.binding_constraints
+    # alpha themes are never defaulted into the bands
+    off = SinglePeriodOptimizer(ls_cfg(style_band_sd=0.05, neutralize_risk_only_styles=False),
+                                SimpleCostModel(zero=True)).solve(a, r, barra_ctx["w0"], 1e6, barra_ctx["snap"])
+    assert abs(_exposures(off.w_target, r)["size"]) > cfg.style_band_sd + 0.01
+
+
+def test_gp_shrink_wiring(barra_ctx):
+    """``use_gp_shrink``: alpha scaled by 1 / (1 + h / hl) with the cost-implied
+    holding period h; a faster signal (shorter half-life) is shrunk more; off
+    by default and skipped (with a note) without a half-life."""
+    from qts.tcost import TransactionCostModel
+    r, a, snap = barra_ctx["risk"], barra_ctx["alpha"], barra_ctx["snap"]
+    cost = TransactionCostModel()
+    assert PortfolioConfig().use_gp_shrink is False
+    base = SinglePeriodOptimizer(ls_cfg(), cost).solve(a, r, barra_ctx["w0"], 1e7, snap, alpha_half_life_days=5.0)
+    assert base.gp_shrink == 1.0
+    opt = SinglePeriodOptimizer(ls_cfg(use_gp_shrink=True), cost)
+    slow = opt.solve(a, r, barra_ctx["w0"], 1e7, snap, alpha_half_life_days=200.0)
+    fast = opt.solve(a, r, barra_ctx["w0"], 1e7, snap, alpha_half_life_days=2.0)
+    assert 0 < fast.gp_shrink < slow.gp_shrink < 1.0
+    assert any("GP shrink" in n for n in fast.notes)
+    assert fast.w_target.abs().sum() < slow.w_target.abs().sum()
+    # the factor is exactly gp_sleeve_shrink_factors at the reported holding period
+    import re
+    h = float(re.search(r"holding ([0-9.]+)d", next(n for n in fast.notes if "GP shrink" in n)).group(1))
+    assert fast.gp_shrink == pytest.approx(float(gp_sleeve_shrink_factors({"s": 2.0}, h)["s"]), rel=1e-2)
+    none = opt.solve(a, r, barra_ctx["w0"], 1e7, snap)
+    assert none.gp_shrink == 1.0 and any("no alpha half-life" in n for n in none.notes)

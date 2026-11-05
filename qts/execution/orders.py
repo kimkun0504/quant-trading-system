@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -17,13 +17,13 @@ class Order:
     side: str                       # "BUY" | "SELL"
     qty: float                      # shares, positive
     order_type: str = "MOC"         # one of ORDER_TYPES
-    limit_px: Optional[float] = None
-    algo: Optional[str] = None      # IB algoStrategy: "Vwap" | "ArrivalPx" | "ClosePx" | "Adaptive" | "Twap"
-    algo_params: Dict[str, Any] = field(default_factory=dict)
+    limit_px: float | None = None
+    algo: str | None = None      # IB algoStrategy: "Vwap" | "ArrivalPx" | "ClosePx" | "Adaptive" | "Twap"
+    algo_params: dict[str, Any] = field(default_factory=dict)
     tif: str = "DAY"
-    venue_hint: Optional[str] = None  # "auction" | "continuous" | "open"
-    order_id: Optional[str] = None
-    meta: Dict[str, Any] = field(default_factory=dict)  # sleeve, decision_px, routing_reason, ...
+    venue_hint: str | None = None  # "auction" | "continuous" | "open"
+    order_id: str | None = None
+    meta: dict[str, Any] = field(default_factory=dict)  # sleeve, decision_px, routing_reason, ...
 
     def __post_init__(self):
         self.side = self.side.upper()
@@ -45,14 +45,14 @@ class Order:
     def notional(self, px: float) -> float:
         return self.qty * px
 
-    def with_(self, **changes) -> "Order":
+    def with_(self, **changes) -> Order:
         from dataclasses import replace
         return replace(self, **changes)
 
 
 def targets_to_orders(w_target: pd.Series, w_current: pd.Series, nav: float, prices: pd.Series,
                       lot_size: int = 1, min_notional: float = 200.0,
-                      decision_ts=None, meta: Optional[Dict[str, Dict[str, Any]]] = None) -> List[Order]:
+                      decision_ts=None, meta: dict[str, dict[str, Any]] | None = None) -> list[Order]:
     """Convert weight targets to share orders.
 
     ``w_target``/``w_current`` are weights (fraction of NAV); missing tickers
@@ -67,7 +67,7 @@ def targets_to_orders(w_target: pd.Series, w_current: pd.Series, nav: float, pri
     wc = w_current.reindex(idx).fillna(0.0).astype(float)
     px = prices.reindex(idx).astype(float)
     dw = wt - wc
-    orders: List[Order] = []
+    orders: list[Order] = []
     for t in idx:
         p = px.loc[t]
         if not np.isfinite(p) or p <= 0:

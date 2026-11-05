@@ -15,7 +15,7 @@
 """
 from __future__ import annotations
 
-from typing import Callable, Dict, Iterable, Optional, Union
+from collections.abc import Callable, Iterable
 
 import numpy as np
 import pandas as pd
@@ -51,12 +51,12 @@ def mean_rolling_absolute_deviation(rolling_bias: pd.Series) -> float:
     return float((rolling_bias.dropna() - 1.0).abs().mean())
 
 
-PortfolioSpec = Union[pd.Series, Callable[[pd.Timestamp, pd.Index], pd.Series]]
+PortfolioSpec = pd.Series | Callable[[pd.Timestamp, pd.Index], pd.Series]
 
 
-def portfolio_bias_test(model, md: MarketData, portfolios: Dict[str, PortfolioSpec],
+def portfolio_bias_test(model, md: MarketData, portfolios: dict[str, PortfolioSpec],
                         dates: Iterable[pd.Timestamp], include_alignment: bool = True,
-                        alpha_fn: Optional[Callable[[pd.Timestamp], pd.Series]] = None) -> pd.DataFrame:
+                        alpha_fn: Callable[[pd.Timestamp], pd.Series] | None = None) -> pd.DataFrame:
     """Bias statistics of several portfolios through time.
 
     For each ``t`` in ``dates`` the model is evaluated ``as_of(t)``, the
@@ -116,7 +116,7 @@ def _align(pred_var, realized_sq):
     return p.loc[idx].clip(lower=1e-18).values, r.loc[idx].values
 
 
-def mincer_zarnowitz(pred_var, realized_sq) -> Dict[str, float]:
+def mincer_zarnowitz(pred_var, realized_sq) -> dict[str, float]:
     """OLS of realized squared returns on predicted variance.  Returns
     ``{"alpha", "beta", "r2", "n"}``; ideal alpha 0, beta 1."""
     p, r = _align(pred_var, realized_sq)
@@ -153,9 +153,9 @@ def gmv_weights(S: np.ndarray, ridge: float = 1e-10) -> np.ndarray:
     return x / x.sum()
 
 
-def min_variance_oos_test(cov_estimators: Dict[str, Callable[[np.ndarray], np.ndarray]],
+def min_variance_oos_test(cov_estimators: dict[str, Callable[[np.ndarray], np.ndarray]],
                           returns: pd.DataFrame, rebalance_every: int = 21,
-                          window: int = 252, min_window: Optional[int] = None) -> pd.DataFrame:
+                          window: int = 252, min_window: int | None = None) -> pd.DataFrame:
     """Compare covariance estimators by realized out-of-sample variance (and
     turnover) of the GMV portfolio.
 
@@ -165,10 +165,10 @@ def min_variance_oos_test(cov_estimators: Dict[str, Callable[[np.ndarray], np.nd
     annualized OOS volatility, mean daily variance and average turnover."""
     R = returns.dropna(axis=1, how="any")
     X = R.values
-    T, N = X.shape
+    T = X.shape[0]
     min_window = min_window or window
     out = {name: {"ret": [], "turn": []} for name in cov_estimators}
-    prev_w = {name: None for name in cov_estimators}
+    prev_w = dict.fromkeys(cov_estimators)
     t = min_window
     while t < T:
         end = min(t + rebalance_every, T)

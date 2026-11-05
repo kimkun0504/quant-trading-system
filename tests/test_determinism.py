@@ -26,7 +26,7 @@ from qts.tcost import TransactionCostModel
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-SPEC = dict(n_stocks=60, n_days=420, ic_true=0.08)
+SPEC = {"n_stocks": 60, "n_days": 420, "ic_true": 0.08}
 
 
 def small_risk_cfg(**kw) -> RiskConfig:
@@ -134,14 +134,10 @@ def test_risk_as_of_independent_of_call_order_across_buckets(md):
     _assert_risk_identical(a_early, b_early)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG qts/risk/model.py:114-124 BarraStyleRiskModel._eigen_bias caches the eigenfactor "
-    "bias per bucket key len(F_hist)//eigen_refresh_days and fills it from whichever as_of() "
-    "call hits the bucket first.  Querying a later date first makes as_of(earlier) reuse a "
-    "bias estimated on factor returns *after* the earlier date (look-ahead) and makes results "
-    "depend on call history (e.g. portfolio_bias_test on a shuffled date list). "
-    "Fix: key the cache on the bucket's first date and compute it from F_hist up to that date."))
 def test_risk_as_of_independent_of_call_order_within_bucket(md):
+    """Finding #46 (fixed): the eigenfactor bias of a refresh bucket is keyed on
+    the bucket's first history length and estimated from history up to it, so
+    querying a later date first cannot leak its history into an earlier date."""
     cfg = small_risk_cfg(statistical_companion=False)
     fwd = BarraStyleRiskModel(cfg, warmup_days=60).fit(md)
     a, b = _same_bucket_dates(fwd, md)
@@ -183,6 +179,7 @@ def test_optimizer_solve_deterministic(md, risk_pair):
 
 
 # ----------------------------------------------------------------------------- pipeline
+@pytest.mark.slow
 def test_pipeline_run_deterministic(golden_market, golden_pipeline_run):
     """Re-running the golden pipeline from scratch reproduces NAV, weights and
     costs bit for bit (shares the session run with tests/test_golden.py)."""

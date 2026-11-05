@@ -11,8 +11,11 @@ Daily returns for N stocks over T days:
     r_it = beta_i * m_t + sum_k x_ik f_kt + alpha_it + eps_it
 
 * ``m_t``        market factor, annual vol ~16%, with GARCH-like vol clustering.
-* ``f_kt``       K style factor returns (size, value, momentum, quality,
-                 investment, low_risk) each with small positive premium.
+* ``f_kt``       K = 4 latent style factor returns (``STYLE_FACTORS``: size,
+                 value, quality, investment), each with a small positive
+                 premium and every one observable through a generated
+                 characteristic (size -> market cap, value -> B/P and E/P,
+                 quality -> GP/A, investment -> asset growth).
 * ``x_ik``       slowly mean-reverting exposures (AR(1) in monthly steps).
 * ``alpha_it``   planted predictable component
                  ``ic_true * sigma_i * z_{i,t-L} / sqrt(H)`` (``L =
@@ -51,6 +54,31 @@ Also generated: shares outstanding -> market cap, volume (log-normal around a
 size-dependent ADV), spreads (decreasing in size), short interest ratio,
 borrow fee (increasing in short interest), book-to-price, earnings yield,
 gross profitability, asset growth, industry labels (12 groups).
+
+Prices and corporate actions
+----------------------------
+``close`` is the adjusted price path (the one returns are computed from).
+``close_raw`` (as traded) and ``shares_outstanding`` (actual count) are always
+emitted.  With ``n_splits = 0`` (default) there are no corporate actions and
+``close_raw`` equals ``close``.  ``n_splits > 0`` plants that many forward
+splits (ratios cycling 2:1, 3:1) on randomly chosen names and dates, drawn from
+a separate random stream so that ``close``, ``market_cap`` and every other
+panel stay bit-identical: before a k:1 split on day s the as-traded price is
+``k * close`` and the actual share count and shares traded are divided by k
+(so ``close_raw * volume`` -- dollar volume -- and ``close_raw * shares`` --
+market cap -- are unchanged).  ``md.extra["true_splits"]`` lists the planted
+events (date x ticker panel holding the ratio on the effective date, NaN
+elsewhere).
+
+Ground truth in ``md.extra``
+----------------------------
+* ``true_latent_score``  -- the latent alpha score ``z_t`` (date x ticker).
+* ``true_beta``          -- market beta, constant per name (date x ticker).
+* ``true_market_return`` -- ``m_t`` tiled across tickers (date x ticker).
+* ``true_style_factor_returns`` -- all K style factor returns, **date x factor**
+  (columns ``STYLE_FACTORS``).  Not a ticker panel.
+* ``true_style_returns`` -- legacy key: the *size* factor return only
+  (``true_style_factor_returns["size"]``) tiled across tickers (date x ticker).
 
 Everything is seeded and deterministic.
 """
@@ -97,6 +125,9 @@ class SyntheticSpec:
     # reproduces the legacy generator bit for bit (monthly step z that drives the
     # returns of the same month it is revealed in; audit finding 8).
     alpha_lag_days: int = 1
+    # Planted forward splits in ``close_raw`` (0 = none, close_raw == close).
+    # Drawn from a separate stream: ``close`` and all other panels are unchanged.
+    n_splits: int = 0
 
 
 def _ar1_path(n_steps: int, n: int, phi: float, rng: np.random.Generator) -> np.ndarray:
@@ -200,8 +231,27 @@ def generate(spec: Optional[SyntheticSpec] = None) -> MarketData:
     gross_profitability = 0.3 + 0.1 * obs(2, 0.4)
     asset_growth = 0.1 - 0.1 * obs(3, 0.4)
 
+    shares_out = pd.DataFrame(np.tile(shares, (T, 1)), index=dates, columns=tickers)
+    close_raw = close.copy()
+    split_panel = pd.DataFrame(np.nan, index=dates, columns=tickers)
+    if spec.n_splits > 0:
+        # separate stream: the main stream is untouched, so every other panel is bit-identical
+        rng_s = np.random.default_rng([int(spec.seed), 0x5EED])
+        n_sp = int(min(spec.n_splits, N))
+        names = rng_s.choice(N, size=n_sp, replace=False)
+        days = rng_s.integers(max(1, T // 10), max(2, T - T // 10), size=n_sp)
+        factor = np.ones((T, N))                   # as-traded / adjusted price ratio
+        for i, (j, d) in enumerate(zip(names, days, strict=True)):
+            k = (2.0, 3.0)[i % 2]
+            factor[:d, j] *= k
+            split_panel.iloc[d, j] = k
+        close_raw = close * factor
+        volume = volume / factor                   # actual shares traded
+        shares_out = shares_out / factor           # actual shares outstanding
+
     md = MarketData(
         close=close, volume=volume, market_cap=market_cap, industry=industry,
+        close_raw=close_raw, shares_outstanding=shares_out,
         spread_bps=spread_bps, short_interest_ratio=si, borrow_fee=borrow,
         book_to_price=book_to_price, earnings_yield=earnings_yield,
         gross_profitability=gross_profitability, asset_growth=asset_growth,
@@ -209,15 +259,22 @@ def generate(spec: Optional[SyntheticSpec] = None) -> MarketData:
             "true_latent_score": pd.DataFrame(z, index=dates, columns=tickers),
             "true_beta": pd.DataFrame(np.tile(beta, (T, 1)), index=dates, columns=tickers),
             "true_market_return": pd.DataFrame(np.tile(m[:, None], (1, N)), index=dates, columns=tickers),
+            # legacy key: the *size* factor return only, tiled across tickers
             "true_style_returns": pd.DataFrame(np.tile(f[:, :1], (1, N)), index=dates, columns=tickers),
+            # all K style factor returns, date x factor
+            "true_style_factor_returns": pd.DataFrame(
+                f.copy(), index=dates, columns=pd.Index(STYLE_FACTORS, name="factor")),
+            "true_splits": split_panel,
         },
     )
     md.validate()
     return md
 
 
-def true_factor_returns(spec: SyntheticSpec) -> pd.DataFrame:
-    """Re-generate the same draw and return market + style factor returns (for tests)."""
-    # regenerate deterministically by calling generate and reading extras is awkward;
-    # keep it simple: tests use md.extra["true_market_return"].iloc[:, 0].
-    raise NotImplementedError("use generate(spec).extra['true_market_return']")
+def true_factor_returns(spec: Optional[SyntheticSpec] = None) -> pd.DataFrame:
+    """True factor returns of the draw ``generate(spec)``: date x [``market``] + ``STYLE_FACTORS``."""
+    md = generate(spec)
+    fr = md.extra["true_style_factor_returns"].copy()
+    fr.insert(0, "market", md.extra["true_market_return"].iloc[:, 0].to_numpy())
+    fr.columns.name = "factor"
+    return fr

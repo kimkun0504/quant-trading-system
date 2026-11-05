@@ -22,18 +22,18 @@ Python loops over dates.
 from __future__ import annotations
 
 import hashlib
-import warnings
-from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
+from qts.core import stats
 from qts.core.config import AlphaConfig
-from qts.core.crosssection import demean_by_group, rank_gauss
+from qts.core.crosssection import demean_by_group
+from qts.core.stats import rank_gauss
 from qts.core.types import Long, MarketData, Wide, to_long
 
 # Canonical feature order.  Keep stable: it is part of the live/train parity hash.
-FEATURE_ORDER: List[str] = [
+FEATURE_ORDER: list[str] = [
     "value_bp", "value_ep",
     "mom_12_1", "mom_6_1", "mom_change", "industry_momentum",
     "quality_gpa", "investment_ag",
@@ -51,21 +51,9 @@ def feature_signature(columns) -> str:
 
 # ----------------------------------------------------------------------------- helpers
 def _winsorize_rows(wide: Wide, pct: float) -> Wide:
-    """Vectorised per-date winsorisation (same semantics as crosssection.winsorize
-    but computed with nanpercentile along axis=1 instead of a row-wise apply)."""
-    if pct <= 0:
-        return wide
-    arr = wide.to_numpy(dtype=float)
-    valid = np.isfinite(arr).sum(axis=1)
-    with np.errstate(all="ignore"), warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)   # all-NaN rows during warm-up
-        lo = np.nanpercentile(arr, 100 * pct, axis=1)
-        hi = np.nanpercentile(arr, 100 * (1 - pct), axis=1)
-    lo = np.where(valid >= 10, lo, -np.inf)
-    hi = np.where(valid >= 10, hi, np.inf)
-    out = np.clip(arr, lo[:, None], hi[:, None])
-    out[~np.isfinite(arr)] = np.nan
-    return pd.DataFrame(out, index=wide.index, columns=wide.columns)
+    """Per-date winsorisation: :func:`qts.core.stats.winsorize_rows` (the single
+    implementation; rows with < ``stats.WINSOR_MIN_OBS`` finite values unclipped)."""
+    return stats.winsorize_rows(wide, pct)
 
 
 def _trailing_return(close: Wide, start_lag: int, end_lag: int) -> Wide:
@@ -73,22 +61,39 @@ def _trailing_return(close: Wide, start_lag: int, end_lag: int) -> Wide:
     return close.shift(end_lag) / close.shift(start_lag) - 1.0
 
 
-def rolling_market_beta(returns: Wide, market: pd.Series, window: int, min_periods: Optional[int] = None):
-    """Vectorised rolling OLS beta of each column on ``market`` plus residual vol.
+def rolling_market_beta(returns: Wide, market: pd.Series, window: int, min_periods: int | None = None):
+    """Rolling OLS beta of each column on ``market`` plus residual vol, data ``<= t``
+    only: :func:`qts.core.stats.rolling_beta` with ``min_periods`` defaulting to
+    ``0.8 * window`` (the alpha-feature convention).  Returns ``(beta, resid_vol)``."""
+    rb = stats.rolling_beta(returns, market, window, min_periods or int(window * 0.8))
+    return rb.beta, rb.resid_vol
 
-    Returns ``(beta, resid_vol)`` wide panels, both using data ``<= t`` only.
-    """
-    mp = min_periods or int(window * 0.8)
-    rm = returns.mul(market, axis=0)
-    mean_r = returns.rolling(window, min_periods=mp).mean()
-    mean_m = market.rolling(window, min_periods=mp).mean()
-    cov = rm.rolling(window, min_periods=mp).mean() - mean_r.mul(mean_m, axis=0)
-    var_m = market.rolling(window, min_periods=mp).var(ddof=0).replace(0.0, np.nan)
-    var_r = returns.rolling(window, min_periods=mp).var(ddof=0)
-    beta = cov.div(var_m, axis=0)
-    resid_var = var_r - (cov ** 2).div(var_m, axis=0)
-    resid_vol = np.sqrt(resid_var.clip(lower=0.0))
-    return beta, resid_vol
+
+def industry_segments(md: MarketData) -> list[tuple[pd.DatetimeIndex, pd.Series]]:
+    """Point-in-time industry classification as ``[(dates, labels), ...]``:
+    contiguous date blocks over which ``md.industry_as_of(d)`` is constant.
+    One block (the static map) when ``md.industry_history`` is None."""
+    dates = md.dates
+    if getattr(md, "industry_history", None) is None:
+        return [(dates, md.industry.reindex(md.tickers))]
+    hist = md.industry_history
+    # a row dated h takes effect on the first trading date >= h
+    starts = {0} | {int(dates.searchsorted(pd.Timestamp(h))) for h in hist.index}
+    out: list[tuple[pd.DatetimeIndex, pd.Series]] = []
+    bounds = [*sorted(b for b in starts if b < len(dates)), len(dates)]
+    for i in range(len(bounds) - 1):
+        if bounds[i + 1] > bounds[i]:
+            seg = dates[bounds[i]:bounds[i + 1]]
+            out.append((seg, md.industry_as_of(seg[0])))
+    return out
+
+
+def _by_industry(fn, panel: Wide, segments) -> Wide:
+    """Apply a group operation ``fn(sub_panel, labels)`` per PIT industry segment."""
+    if len(segments) == 1:
+        return fn(panel, segments[0][1])
+    parts = [fn(panel.loc[d], lab) for d, lab in segments]
+    return pd.concat(parts).reindex(panel.index)
 
 
 def cap_weighted_group_mean(values: Wide, weights: Wide, groups: pd.Series) -> Wide:
@@ -97,7 +102,7 @@ def cap_weighted_group_mean(values: Wide, weights: Wide, groups: pd.Series) -> W
     g = groups.reindex(values.columns)
     out = pd.DataFrame(np.nan, index=values.index, columns=values.columns)
     w = weights.where(values.notna())
-    for key, cols in g.groupby(g).groups.items():
+    for cols in g.groupby(g).groups.values():
         cols = list(cols)
         num = (values[cols] * w[cols]).sum(axis=1, min_count=1)
         den = w[cols].sum(axis=1, min_count=1)
@@ -113,14 +118,14 @@ class FeatureBuilder:
         self.cfg = cfg
 
     # ------------------------------------------------------------------ raw
-    def build(self, md: MarketData) -> Dict[str, Wide]:
+    def build(self, md: MarketData) -> dict[str, Wide]:
         close = md.close
         rets = md.returns
         mcap = md.market_cap
         dvol = md.dollar_volume
-        ind = md.industry
+        segs = industry_segments(md)      # PIT industry labels (md.industry_as_of)
         valid = md.eligibility()          # in-universe & alive, per date (PIT)
-        f: Dict[str, Wide] = {}
+        f: dict[str, Wide] = {}
 
         # value
         if md.book_to_price is not None:
@@ -132,7 +137,8 @@ class FeatureBuilder:
         f["mom_12_1"] = _trailing_return(close, 252, 21)
         f["mom_6_1"] = _trailing_return(close, 126, 21)
         f["mom_change"] = f["mom_12_1"] - f["mom_12_1"].shift(63)
-        f["industry_momentum"] = cap_weighted_group_mean(f["mom_6_1"], mcap, ind)
+        f["industry_momentum"] = _by_industry(
+            lambda v, lab: cap_weighted_group_mean(v, mcap.loc[v.index], lab), f["mom_6_1"], segs)
 
         # quality / investment
         if md.gross_profitability is not None:
@@ -160,18 +166,20 @@ class FeatureBuilder:
         if md.borrow_fee is not None:
             f["borrow_fee"] = md.borrow_fee.copy()
 
-        # short-term residual reversal (timing feature): -(21d return, industry-demeaned)
+        # short-term reversal: -(21d return, industry-demeaned).  A risk-only style
+        # proxy (qts.core.roles: label residualisation / optimizer neutralisation);
+        # as a feature it is an ordinary ML input -- it is not used for trade timing.
         r21 = _trailing_return(close, 21, 0).where(valid)   # demean within eligible names only
-        f["strev_21"] = -demean_by_group(r21, ind)
+        f["strev_21"] = -_by_industry(demean_by_group, r21, segs)
 
         ordered = {k: f[k] for k in FEATURE_ORDER if k in f}
-        for k, v in ordered.items():
+        for v in ordered.values():
             v.index.name = "date"
             v.columns.name = "ticker"
         return ordered
 
     # ------------------------------------------------------------------ processing
-    def process(self, features: Dict[str, Wide], md: MarketData, valid: Optional[Wide] = None) -> Long:
+    def process(self, features: dict[str, Wide], md: MarketData, valid: Wide | None = None) -> Long:
         """Per-date, over eligible names only: winsorize -> industry demean
         (cfg.industry_demean) -> rank_gauss -> fill 0.  Returns a long frame
         indexed by (date, ticker) that contains **only** rows eligible at that
@@ -181,13 +189,14 @@ class FeatureBuilder:
         valid = md.eligibility() if valid is None else valid.astype(bool)
         cols = []
         demean_set = set(self.cfg.industry_demean)
+        segs = industry_segments(md)
         for name in FEATURE_ORDER:
             if name not in features:
                 continue
             panel = features[name].where(valid.reindex_like(features[name]).fillna(False).astype(bool))
             w = _winsorize_rows(panel, self.cfg.winsor_pct)
             if name in demean_set:
-                w = demean_by_group(w, md.industry)
+                w = _by_industry(demean_by_group, w, segs)
             w = rank_gauss(w)
             cols.append(to_long(w, name))
         out = pd.concat(cols, axis=1)

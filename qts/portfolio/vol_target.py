@@ -2,19 +2,21 @@
 
 ``portfolio_vol_scalar`` is the plain ``target / predicted`` multiplier used
 for *reporting* and for realised-vol overlays.  ``SinglePeriodOptimizer`` does
-**not** multiply the book by it: it re-solves a projection onto the full
-constraint set with a risk cap (see ``qts.portfolio.optimizer``), so bands
-hold after scaling.
+**not** multiply the book by it.  Depending on ``PortfolioConfig.vol_target_mode``
+it either re-solves a projection ``min ||w - s w*||^2 + c TC(w - w0)`` onto the
+full constraint set with a risk cap (``"projection"``, default; the cost term
+``c = vol_target_projection_cost_weight`` is finding #28), or adds the SOC cap
+``sqrt(w' Sigma w) <= target`` to the alpha solve itself (``"constraint"``,
+one solve, target is a ceiling).  Either way every band holds after
+targeting (see ``qts.portfolio.optimizer``).
 """
 from __future__ import annotations
-
-from typing import Optional
 
 import numpy as np
 import pandas as pd
 
 
-def portfolio_vol_scalar(predicted_vol_annual: float, target: Optional[float],
+def portfolio_vol_scalar(predicted_vol_annual: float, target: float | None,
                          max_leverage_scalar: float = 1.0, min_scalar: float = 0.0) -> float:
     """Multiplier applied to the whole book so that predicted vol <= target.
 
@@ -30,7 +32,7 @@ def portfolio_vol_scalar(predicted_vol_annual: float, target: Optional[float],
     return float(np.clip(s, min_scalar, max_leverage_scalar))
 
 
-def realized_vol_annual(returns: pd.Series, window: int = 63, half_life: Optional[int] = None,
+def realized_vol_annual(returns: pd.Series, window: int = 63, half_life: int | None = None,
                         periods_per_year: int = 252) -> float:
     """Realised-vol fallback used when no ex-ante estimate is available
     (EWMA if ``half_life`` is given, else simple rolling window)."""

@@ -31,7 +31,6 @@ from __future__ import annotations
 import warnings
 from itertools import combinations
 from math import comb
-from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -63,7 +62,7 @@ def _metric_from_stats(sum1: np.ndarray, sum2: np.ndarray, n: np.ndarray, metric
 
 def probability_of_backtest_overfitting(perf_matrix: pd.DataFrame, n_groups: int = 16,
                                         metric: str = "sharpe", max_combinations: int = 5000,
-                                        seed: int = 0) -> Dict[str, object]:
+                                        seed: int = 0) -> dict[str, object]:
     """CSCV estimate of the probability of backtest overfitting.
 
     Returns a dict with ``pbo``, ``logits`` (array), ``degradation_slope``,
@@ -85,7 +84,7 @@ def probability_of_backtest_overfitting(perf_matrix: pd.DataFrame, n_groups: int
         raise ValueError("perf_matrix needs at least 2 distinct configurations (all columns identical)")
     if n_groups % 2:
         raise ValueError("n_groups must be even")
-    if T < n_groups * 2:
+    if n_groups * 2 > T:
         raise ValueError("too few observations for the requested number of groups")
 
     s1, s2, cnt = _group_stats(M, n_groups)

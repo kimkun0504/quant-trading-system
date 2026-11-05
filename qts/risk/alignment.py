@@ -47,7 +47,7 @@ production-optimizer calibration (``docs/notes/alignment_nu_calibration.md``).
 from __future__ import annotations
 
 import dataclasses
-from typing import Callable, Dict, Iterable, Mapping, Optional, Tuple, Union
+from collections.abc import Callable, Iterable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -58,9 +58,9 @@ from qts.risk.covariance import style_variances
 
 
 def alpha_alignment(alpha: pd.Series, exposures: pd.DataFrame, specific_var: pd.Series,
-                    nu_scale: Optional[float] = None, factor_cov: Optional[pd.DataFrame] = None,
-                    cfg: Optional[RiskConfig] = None, weighted: bool = False
-                    ) -> Tuple[pd.Series, float]:
+                    nu_scale: float | None = None, factor_cov: pd.DataFrame | None = None,
+                    cfg: RiskConfig | None = None, weighted: bool = False
+                    ) -> tuple[pd.Series, float]:
     """Return ``(y, nu)``: unit-norm alignment vector orthogonal to the
     exposure columns.
 
@@ -136,15 +136,15 @@ def _default_mean_variance_book(date: pd.Timestamp, rm: RiskModelOutput, alpha: 
 def calibrate_alignment_nu(
     model,
     md,
-    alphas_by_date: Union[Mapping[pd.Timestamp, pd.Series], Callable[[pd.Timestamp], pd.Series]],
+    alphas_by_date: Mapping[pd.Timestamp, pd.Series] | Callable[[pd.Timestamp], pd.Series],
     dates: Iterable[pd.Timestamp],
-    solve_fn: Optional[Callable[[pd.Timestamp, RiskModelOutput, pd.Series], pd.Series]] = None,
+    solve_fn: Callable[[pd.Timestamp, RiskModelOutput, pd.Series], pd.Series] | None = None,
     lo: float = 0.05,
     hi: float = 50.0,
     n_iter: int = 10,
     tol: float = 0.02,
-    grid: Optional[Iterable[float]] = None,
-) -> Dict[str, object]:
+    grid: Iterable[float] | None = None,
+) -> dict[str, object]:
     """Saxena-Stubbs calibration of the alignment variance scale.
 
     For a candidate ``nu_scale`` the optimized book on every date ``t`` in
@@ -197,7 +197,7 @@ def calibrate_alignment_nu(
     if not base:
         raise ValueError("no dates with an alignment term (is cfg.alignment on?)")
 
-    memo: Dict[float, float] = {}
+    memo: dict[float, float] = {}
 
     def bias_for(nu_scale: float) -> float:
         key = float(nu_scale)

@@ -4,47 +4,23 @@ vectorised across dates.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, Iterable, Optional, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field, fields
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
+from qts.core import stats
 from qts.core.types import MarketData, Wide
 
 from .targets import forward_returns, residualize_forward_returns
 
-
 # ----------------------------------------------------------------------------- vectorised rank IC
-def _row_corr(a: np.ndarray, b: np.ndarray, min_n: int = 20) -> np.ndarray:
-    """Row-wise Pearson correlation of two equally shaped arrays, ignoring NaNs
-    (a pair is used only where both are finite)."""
-    m = np.isfinite(a) & np.isfinite(b)
-    a = np.where(m, a, 0.0)
-    b = np.where(m, b, 0.0)
-    n = m.sum(axis=1)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        ma = a.sum(axis=1) / n
-        mb = b.sum(axis=1) / n
-        ac = np.where(m, a - ma[:, None], 0.0)
-        bc = np.where(m, b - mb[:, None], 0.0)
-        r = (ac * bc).sum(axis=1) / np.sqrt((ac ** 2).sum(axis=1) * (bc ** 2).sum(axis=1))
-    r[n < min_n] = np.nan
-    return r
-
-
-def rank_ic_series(pred: Wide, target: Wide) -> pd.Series:
-    """Per-date Spearman IC between two wide panels (aligned on the intersection)."""
-    idx = pred.index.intersection(target.index)
-    cols = pred.columns.intersection(target.columns)
-    p = pred.loc[idx, cols]
-    t = target.loc[idx, cols]
-    both = p.notna() & t.notna()
-    p = p.where(both)
-    t = t.where(both)
-    rp = p.rank(axis=1).to_numpy(dtype=float)
-    rt = t.rank(axis=1).to_numpy(dtype=float)
-    return pd.Series(_row_corr(rp, rt), index=idx, name="rank_ic")
+#: Row-wise Pearson / per-date Spearman IC: the single implementations live in
+#: :mod:`qts.core.stats` (min pairs ``stats.IC_MIN_OBS`` = 20).
+_row_corr = stats.row_corr
+rank_ic_series = stats.rank_ic_series
 
 
 # ----------------------------------------------------------------------------- IC report
@@ -61,35 +37,131 @@ def infer_periods_per_year(index: pd.Index, trading_days_per_year: int = 252) ->
     return trading_days_per_year / med_bdays
 
 
-def ic_report(pred: Wide, target: Wide, periods_per_year: Optional[float] = None,
-              trading_days_per_year: int = 252) -> Dict:
-    """Mean rank IC, sd, ICIR (annualised), t-stat, hit rate and by-year table.
+def newey_west_lags(n_obs: int, overlap: int = 1) -> int:
+    """Bartlett-kernel bandwidth for a t-stat on ``n_obs`` observations whose
+    labels overlap by ``overlap`` observations (handbook fix #7, audit #15):
+
+        L = max(h, floor(4 * (T / 100) ** (2 / 9)))
+
+    i.e. the Newey-West (1994) automatic rule floored at the overlap ``h``.
+    ``L = h - 1`` (the old choice) under-covers an MA(h-1) process because the
+    Bartlett weights ``1 - k/(L+1)`` down-weight exactly the lags that carry
+    the overlap; flooring at ``h`` keeps every overlapping lag with weight
+    > 0 and the automatic term covers residual serial correlation when the
+    observations do not overlap (``h = 1``).  Capped at ``n_obs - 1``."""
+    T = int(n_obs)
+    if T < 2:
+        return 0
+    auto = stats.default_nw_lags(T)
+    return int(min(max(int(overlap), auto), T - 1))
+
+
+@dataclass
+class ICReport:
+    """Typed result of :func:`ic_report` (handbook 1.5 "typed results").
+
+    ``t_stat`` is the plain ``mean / sd * sqrt(n)`` (correct for the
+    pipeline's non-overlapping samples); ``t_stat_nw`` is the Newey-West t with
+    ``nw_lags = newey_west_lags(n, overlap)`` and is the one to read for daily
+    IC series of multi-day labels.  ``decay`` is the mean IC against the
+    targets passed as ``decay_targets`` (index: horizon in days; the pipeline
+    reports ``AlphaConfig.horizon_days`` and ``secondary_horizons``).
+
+    Dict-style access (``rep["mean_ic"]``, ``rep.get(...)``, ``"n" in rep``) is
+    kept for backward compatibility during the transition; new code should use
+    attributes.
+    """
+    n: int = 0
+    mean_ic: float = float("nan")
+    ic_sd: float = float("nan")
+    icir: float = float("nan")
+    t_stat: float = float("nan")
+    t_stat_nw: float = float("nan")
+    nw_lags: int = 0
+    hit_rate: float = float("nan")
+    periods_per_year: float = float("nan")
+    by_year: pd.DataFrame = field(default_factory=pd.DataFrame)
+    ic_series: pd.Series = field(default_factory=lambda: pd.Series(dtype=float, name="rank_ic"))
+    decay: pd.Series = field(default_factory=lambda: pd.Series(dtype=float, name="mean_rank_ic"))
+
+    # ---- dict-style backward compatibility
+    def __getitem__(self, key: str) -> Any:
+        if key in self._field_names():
+            return getattr(self, key)
+        raise KeyError(key)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._field_names()
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key) if key in self._field_names() else default
+
+    def keys(self) -> Iterator[str]:
+        return iter(self._field_names())
+
+    @classmethod
+    def _field_names(cls) -> Sequence[str]:
+        return [f.name for f in fields(cls)]
+
+    def scalars(self) -> dict[str, float]:
+        """JSON-safe scalar fields (no frames/series)."""
+        out: dict[str, float] = {}
+        for k in self._field_names():
+            v = getattr(self, k)
+            if isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, bool):
+                out[k] = float(v) if not isinstance(v, (int, np.integer)) else int(v)
+        return out
+
+
+@dataclass
+class IncrementalICReport(ICReport):
+    """:func:`incremental_ic` result: the IC report of the residualised score plus
+    the standalone and composite mean ICs."""
+    standalone_mean_ic: float = float("nan")
+    composite_mean_ic: float = float("nan")
+
+
+def ic_report(pred: Wide, target: Wide, periods_per_year: float | None = None,
+              trading_days_per_year: int = 252, overlap: int = 1,
+              decay_targets: Mapping[int, Wide] | None = None) -> ICReport:
+    """Mean rank IC, sd, ICIR (annualised), t-stats, hit rate, by-year table and
+    an optional IC-decay section -> :class:`ICReport`.
 
     ``periods_per_year`` (for the ICIR annualisation) defaults to the sampling
     frequency *inferred from the IC series' index spacing* (median gap in
     business days -> ``252 / gap``), so a score panel sampled every ``H`` days
-    is annualised with ``252 / H`` rather than 252 (audit finding 4).  The
-    t-stat uses ``n`` as is and is unaffected.
+    is annualised with ``252 / H`` rather than 252 (audit finding 4).
+    ``overlap``: number of consecutive IC observations sharing label days
+    (``H`` for a daily IC of ``H``-day labels, 1 for non-overlapping samples);
+    it floors the Newey-West bandwidth of ``t_stat_nw`` (:func:`newey_west_lags`).
+    ``decay_targets``: ``{horizon: target panel}``; ``decay[h]`` is the mean
+    rank IC of ``pred`` against ``decay_targets[h]``.
     """
     ic = rank_ic_series(pred, target).dropna()
+    decay = pd.Series({int(h): float(rank_ic_series(pred, t).mean()) for h, t in (decay_targets or {}).items()},
+                      dtype=float, name="mean_rank_ic").sort_index()
+    decay.index.name = "horizon"
     if len(ic) == 0:
-        return {"n": 0, "mean_ic": np.nan, "ic_sd": np.nan, "icir": np.nan, "t_stat": np.nan,
-                "hit_rate": np.nan, "by_year": pd.DataFrame(), "ic_series": ic, "periods_per_year": np.nan}
+        return ICReport(ic_series=ic, decay=decay)
     ppy = float(periods_per_year) if periods_per_year is not None else infer_periods_per_year(ic.index, trading_days_per_year)
     mean, sd = float(ic.mean()), float(ic.std(ddof=1))
     by_year = ic.groupby(ic.index.year).agg(["mean", "std", "count"])
     by_year["t_stat"] = by_year["mean"] / by_year["std"] * np.sqrt(by_year["count"])
-    return {
-        "n": int(len(ic)),
-        "mean_ic": mean,
-        "ic_sd": sd,
-        "icir": mean / sd * np.sqrt(ppy) if sd > 0 else np.nan,
-        "t_stat": mean / sd * np.sqrt(len(ic)) if sd > 0 else np.nan,
-        "hit_rate": float((ic > 0).mean()),
-        "by_year": by_year,
-        "ic_series": ic,
-        "periods_per_year": ppy,
-    }
+    lags = newey_west_lags(len(ic), overlap)
+    return ICReport(
+        n=len(ic),
+        mean_ic=mean,
+        ic_sd=sd,
+        icir=mean / sd * np.sqrt(ppy) if sd > 0 else np.nan,
+        t_stat=mean / sd * np.sqrt(len(ic)) if sd > 0 else np.nan,
+        t_stat_nw=stats.newey_west_tstat(ic.to_numpy(dtype=float), lags=int(lags)),
+        nw_lags=lags,
+        hit_rate=float((ic > 0).mean()),
+        periods_per_year=ppy,
+        by_year=by_year,
+        ic_series=ic,
+        decay=decay,
+    )
 
 
 # ----------------------------------------------------------------------------- decile spread
@@ -98,19 +170,22 @@ class DecileSpreadResult:
     returns: pd.Series            # per-date long-short period return (top minus bottom decile)
     mean: float
     sharpe: float                 # annualised, assuming ``periods_per_year`` non-overlapping periods
-    t_stat: float                 # Newey-West (lags = horizon-1) if overlap, else plain
+    t_stat: float                 # Newey-West, lags = newey_west_lags(T, horizon)
     horizon: int
+    nw_lags: int = 0
 
 
-def decile_spread(pred: Wide, fwd_raw: Wide, n: int = 10, weights: Optional[Wide] = None,
+def decile_spread(pred: Wide, fwd_raw: Wide, n: int = 10, weights: Wide | None = None,
                   horizon: int = 1, periods_per_year: int = 252) -> DecileSpreadResult:
     """Top-minus-bottom decile forward return per formation date.
 
     ``fwd_raw`` is the (raw) forward return over ``horizon`` days aligned at the
     formation date.  ``weights`` (e.g. market cap) gives value-weighted deciles.
     Because consecutive daily formation dates overlap when ``horizon > 1``, the
-    t-stat uses a Newey-West correction with ``horizon - 1`` lags and the
-    Sharpe is annualised by ``periods_per_year / horizon``.
+    t-stat uses a Newey-West correction with
+    ``L = max(horizon, floor(4 (T/100)^(2/9)))`` lags (:func:`newey_west_lags`;
+    for non-overlapping formation dates pass ``horizon=1`` and the automatic
+    term applies) and the Sharpe is annualised by ``periods_per_year / horizon``.
     """
     idx = pred.index.intersection(fwd_raw.index)
     cols = pred.columns.intersection(fwd_raw.columns)
@@ -129,23 +204,9 @@ def decile_spread(pred: Wide, fwd_raw: Wide, n: int = 10, weights: Optional[Wide
     sd = float(spread.std(ddof=1))
     ppy = periods_per_year / max(horizon, 1)
     sharpe = mean / sd * np.sqrt(ppy) if sd > 0 else np.nan
-    t = _nw_tstat(spread.values, lags=max(horizon - 1, 0))
-    return DecileSpreadResult(spread, mean, sharpe, t, horizon)
-
-
-def _nw_tstat(x: np.ndarray, lags: int) -> float:
-    x = np.asarray(x, float)
-    n = len(x)
-    if n < 3:
-        return np.nan
-    mu = x.mean()
-    e = x - mu
-    var = (e @ e) / n
-    for L in range(1, min(lags, n - 1) + 1):
-        wgt = 1 - L / (lags + 1)
-        var += 2 * wgt * (e[L:] @ e[:-L]) / n
-    se = np.sqrt(var / n)
-    return float(mu / se) if se > 0 else np.nan
+    lags = newey_west_lags(len(spread), max(int(horizon), 1))
+    t = stats.newey_west_tstat(spread.to_numpy(dtype=float), lags=int(lags))
+    return DecileSpreadResult(spread, mean, sharpe, t, horizon, nw_lags=lags)
 
 
 # ----------------------------------------------------------------------------- decay / half-life
@@ -215,11 +276,13 @@ def residualize_on(new_score: Wide, existing: Wide) -> Wide:
     return ac - bc.mul(beta, axis=0)
 
 
-def incremental_ic(new_score: Wide, existing_composite: Wide, target: Wide) -> Dict:
+def incremental_ic(new_score: Wide, existing_composite: Wide, target: Wide,
+                   overlap: int = 1) -> IncrementalICReport:
     """IC report of ``new_score`` after residualising it on the existing composite
     (Gate 2 hurdle: incremental rank IC > 0.005 and positive in >= 2/3 of folds)."""
     resid = residualize_on(new_score, existing_composite)
-    rep = ic_report(resid, target)
-    rep["standalone_mean_ic"] = float(rank_ic_series(new_score, target).mean())
-    rep["composite_mean_ic"] = float(rank_ic_series(existing_composite, target).mean())
-    return rep
+    rep = ic_report(resid, target, overlap=overlap)
+    vals = {f.name: getattr(rep, f.name) for f in fields(ICReport)}
+    return IncrementalICReport(**vals,
+                               standalone_mean_ic=float(rank_ic_series(new_score, target).mean()),
+                               composite_mean_ic=float(rank_ic_series(existing_composite, target).mean()))

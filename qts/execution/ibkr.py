@@ -15,18 +15,26 @@ the current IBKR Campus docs before live use** (plan section 6).
 
 Values: ``maxPctVol`` 0.01-0.5; ``riskAversion`` in
 {"Get Done","Aggressive","Neutral","Passive"}; ``adaptivePriority`` in
-{"Urgent","Normal","Patient"}; times "hh:mm:ss TMZ".  ``ClosePx`` also takes
-``maxPctVol`` and ``riskAversion``.
+{"Urgent","Normal","Patient"}; times "hh:mm:ss TMZ".
+
+Documented tags per algo (TWS API "IB Algos" reference, checked 2026-11-04;
+the IBKR Campus "Close Price" lesson lists the same four inputs):
+
+* ``ClosePx``: ``maxPctVol, riskAversion, startTime, forceCompletion`` --
+  **no** ``noTakeLiq`` (finding #22: the router used to send it; removed).
+* ``Vwap``: ``maxPctVol, startTime, endTime, allowPastEndTime, noTakeLiq, speedUp``.
+* ``ArrivalPx``: ``maxPctVol, riskAversion, startTime, endTime, allowPastEndTime, forceCompletion``.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from qts.core.config import CostConfig
+from qts.core.costs import auction_share_for_date
 from qts.execution.orders import Order
 from qts.tcost.impact import VENUE_AUCTION, VENUE_CONTINUOUS, SquareRootImpact
 
@@ -36,7 +44,7 @@ ALGO_PARAM_ORDER = ["maxPctVol", "startTime", "endTime", "noTakeLiq", "riskAvers
                     "forceCompletion", "allowPastEndTime", "speedUp", "pctVol", "displaySize"]
 
 
-def _tag_value(tag: str, value: Any) -> Dict[str, str]:
+def _tag_value(tag: str, value: Any) -> dict[str, str]:
     if isinstance(value, bool):
         v = "1" if value else "0"
     else:
@@ -44,8 +52,8 @@ def _tag_value(tag: str, value: Any) -> Dict[str, str]:
     return {"tag": tag, "value": v}
 
 
-def to_ib_order_dict(order: Order, account: Optional[str] = None, transmit: bool = True,
-                     outside_rth: bool = False) -> Dict[str, Any]:
+def to_ib_order_dict(order: Order, account: str | None = None, transmit: bool = True,
+                     outside_rth: bool = False) -> dict[str, Any]:
     """Build an ib_async-style ``Order`` kwargs dict from an :class:`Order`.
 
     Mapping: MOC -> orderType "MOC"; LOC -> "LOC" + lmtPrice; LMT -> "LMT" +
@@ -54,7 +62,7 @@ def to_ib_order_dict(order: Order, account: Optional[str] = None, transmit: bool
     Also returns a ``contract`` sub-dict (STK/SMART/USD) and ``orderRef`` set to
     the internal order id.
     """
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "action": order.side,
         "totalQuantity": float(order.qty),
         "tif": order.tif,
@@ -118,8 +126,8 @@ class DryRunBroker:
     simulator lives in :mod:`qts.execution.simulator_fills`)."""
 
     cfg_cost: CostConfig = field(default_factory=CostConfig)
-    submitted: List[Dict[str, Any]] = field(default_factory=list)
-    fills: List[Dict[str, Any]] = field(default_factory=list)
+    submitted: list[dict[str, Any]] = field(default_factory=list)
+    fills: list[dict[str, Any]] = field(default_factory=list)
     _next_id: int = 1
 
     def __post_init__(self):
@@ -133,11 +141,12 @@ class DryRunBroker:
         return oid
 
     def simulate_fill(self, ib_order_id: int, ref_px: float, adv_shares: float, sigma_daily: float,
-                      ts=None, venue: Optional[str] = None) -> Dict[str, Any]:
+                      ts=None, venue: str | None = None) -> dict[str, Any]:
         rec = next(r for r in self.submitted if r["ib_order_id"] == ib_order_id)
         o: Order = rec["order"]
         venue = venue or (VENUE_AUCTION if o.order_type in ("MOC", "LOC") else VENUE_CONTINUOUS)
-        vol_sh = adv_shares * (0.09 if venue == VENUE_AUCTION else 1.0)
+        share = auction_share_for_date(ts, self.cfg_cost.auction_volume_share_default)  # ts None -> normal day
+        vol_sh = adv_shares * (share if venue == VENUE_AUCTION else 1.0)
         bps = float(self.impact.cost_bps(o.qty * ref_px, vol_sh * ref_px, sigma_daily, venue=venue))
         px = ref_px * (1 + o.sign * bps / 1e4)
         filled = o.qty

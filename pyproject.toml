@@ -11,7 +11,11 @@ requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.26", "pandas>=2.1", "scipy>=1.11", "scikit-learn>=1.3",
   "lightgbm>=4.0", "cvxpy>=1.5", "clarabel>=0.9", "pyarrow>=14", "duckdb>=0.10",
+  "pyyaml>=6",
 ]
+
+[project.scripts]
+qts = "qts.cli:main"
 
 [project.optional-dependencies]
 data = ["yfinance>=0.2.40", "requests>=2.31", "polars>=0.20"]
@@ -25,13 +29,6 @@ dev = [
   "scipy-stubs>=1.14",   # pyright: removes reportMissingTypeStubs on scipy under strict
   "pre-commit>=3.7",
 ]
-
-# TODO(cli): add console entry points once `qts/cli.py` exists, e.g.
-#   [project.scripts]
-#   qts-demo = "qts.cli:demo"
-#   qts-real = "qts.cli:real"
-# `scripts/` is not an installable package, so `scripts.run_demo:main` cannot be
-# an entry point; until then use `make demo` / `python scripts/run_demo.py`.
 
 [tool.setuptools.packages.find]
 include = ["qts*"]
@@ -100,7 +97,10 @@ line-ending = "lf"
 [tool.pyright]
 include = ["qts"]
 exclude = ["**/__pycache__", "notebooks", "runs", "data"]
-pythonVersion = "3.10"
+# pythonVersion is deliberately not pinned: pyright follows the interpreter it runs under, so
+# each CI leg (3.10 and 3.12) checks against the pandas-stubs that leg installs.  pandas-stubs >= 3
+# requires Python >= 3.11 (it imports typing.Self); pinning 3.10 there turns every pandas call into
+# Unknown and fails strict mode.  The 3.10 leg still guards the language floor.
 typeCheckingMode = "basic"
 strict = ["qts/core"]
 reportMissingTypeStubs = false

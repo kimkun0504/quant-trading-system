@@ -1,28 +1,36 @@
-"""Statistical hurdles for admitting a candidate signal / model (BUILD_PLAN s.8).
+"""Statistical hurdles for admitting a candidate signal / model (BUILD_PLAN §2.4
+"Research protocol with hurdle rates"; §8 for the validation protocol).
 
-Gates (all must pass unless marked optional):
+Gates (comparison operators exactly as implemented):
 
-* ``t_stat``            decile long-short t > ``hurdle_t_stat`` (3.0) — applied
+* ``t_stat``            decile long-short t **>** ``hurdle_t_stat`` (3.0) — applied
                         **only to standalone signals** (``standalone=True``);
                         for incremental features inside an ensemble the
                         incremental tests below replace it.
-* ``incremental_ic``    incremental rank-IC > 0.005 in >= 2/3 of folds.
-* ``net_sharpe_delta``  net Sharpe improvement >= +0.05 in >= 2/3 of folds.
-* ``breakeven_cost``    breakeven cost >= 2x modeled cost.
-* ``dsr``               deflated Sharpe > 0.95.
-* ``pbo``               probability of backtest overfitting < 0.5.
-* ``phase_sharpe``      phase-1 net Sharpe >= 0.3, phase-2 (and later) >= 0.5.
-* ``suspect``           any net backtest Sharpe > 2 is flagged as suspect
+* ``ic_sign``           mean IC by fold **>** 0 in **>=** ``min_fold_pass_fraction`` (2/3) of folds.
+* ``incremental_ic``    incremental rank IC **>** 0.005 in **>=** 2/3 of folds.
+* ``net_sharpe_delta``  net Sharpe improvement **>=** +0.05 in **>=** 2/3 of folds.
+* ``breakeven_cost``    breakeven cost **>=** 2x modeled cost.
+* ``dsr``               deflated Sharpe **>** 0.95.
+* ``pbo``               probability of backtest overfitting **<** 0.5.
+* ``phase_sharpe``      phase-1 net Sharpe **>=** 0.3, phase-2 (and later) **>=** 0.5.
+* ``suspect``           any net backtest Sharpe **>** 2 is flagged as suspect
                         (fails overall; DSR cannot detect leakage).
 
 Each gate has a status ``PASS`` / ``FAIL`` / ``skipped``; a gate whose input is
 missing is *skipped* and only fails ``overall`` if it is in
 ``ValidationConfig.required_gates`` (default: phase_sharpe, suspect, dsr).
+
+:meth:`HurdleReport.evaluate_signal` returns a typed :class:`HurdleResult`
+(list of :class:`GateResult`).  Dict-style access (``res["status"]``,
+``res["overall"]``...) is kept for backward compatibility during the transition.
 """
 from __future__ import annotations
 
+import math
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -38,7 +46,7 @@ SUSPECT_SHARPE = 2.0
 @dataclass
 class GateResult:
     name: str
-    passed: Optional[bool]          # None when skipped
+    passed: bool | None          # None when skipped
     value: object
     threshold: object
     reason: str
@@ -50,6 +58,108 @@ class GateResult:
         if not self.applied:
             return "skipped"
         return "PASS" if self.passed else "FAIL"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"name": self.name, "status": self.status, "passed": self.passed, "value": _json_scalar(self.value),
+                "threshold": _json_scalar(self.threshold), "reason": self.reason, "applied": self.applied,
+                "required": self.required}
+
+
+def _json_scalar(v: Any) -> Any:
+    if isinstance(v, (bool, np.bool_)):
+        return bool(v)
+    if isinstance(v, (int, np.integer)):
+        return int(v)
+    if isinstance(v, (float, np.floating)):
+        v = float(v)
+        return v if math.isfinite(v) else str(v)
+    return v
+
+
+@dataclass
+class HurdleResult:
+    """Typed outcome of :meth:`HurdleReport.evaluate_signal`.
+
+    ``gates`` keeps the evaluation order.  Mapping views (``status``,
+    ``passed``, ``details``, ``failed``, ``skipped``, ``reasons``) are derived.
+    ``res["key"]`` reproduces the legacy dict layout: ``overall``, ``phase``,
+    ``gates`` (name -> True/False/None), ``status``, ``details``, ``reasons``,
+    ``failed``, ``skipped``, ``required``.
+    """
+    overall: bool
+    phase: int
+    gates: list[GateResult]
+    required: list[str]
+
+    # ---- views
+    def gate(self, name: str) -> GateResult:
+        for g in self.gates:
+            if g.name == name:
+                return g
+        raise KeyError(name)
+
+    @property
+    def passed(self) -> dict[str, bool | None]:
+        return {g.name: g.passed for g in self.gates}
+
+    @property
+    def status(self) -> dict[str, str]:
+        return {g.name: g.status for g in self.gates}
+
+    @property
+    def details(self) -> dict[str, dict[str, Any]]:
+        return {g.name: {"value": g.value, "threshold": g.threshold, "reason": g.reason,
+                         "applied": g.applied, "required": g.required, "status": g.status} for g in self.gates}
+
+    @property
+    def reasons(self) -> list[str]:
+        return [f"[{g.status}] {g.name}: {g.reason}" for g in self.gates]
+
+    @property
+    def failed(self) -> list[str]:
+        return [g.name for g in self.gates if g.applied and not g.passed]
+
+    @property
+    def skipped(self) -> list[str]:
+        return [g.name for g in self.gates if not g.applied]
+
+    # ---- legacy dict access
+    _LEGACY = ("overall", "phase", "gates", "status", "details", "reasons", "failed", "skipped", "required")
+
+    def __getitem__(self, key: str) -> Any:
+        if key == "gates":
+            return self.passed
+        if key in self._LEGACY:
+            return getattr(self, key)
+        raise KeyError(key)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._LEGACY
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self[key] if key in self._LEGACY else default
+
+    def keys(self) -> Iterator[str]:
+        return iter(self._LEGACY)
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-safe dict (``hurdles.json`` in a run directory)."""
+        return {"overall": bool(self.overall), "phase": int(self.phase), "required": list(self.required),
+                "gates": [g.to_dict() for g in self.gates]}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> HurdleResult:
+        gates = []
+        for g in d["gates"]:
+            val, thr = g.get("value"), g.get("threshold")
+            val = float(val) if isinstance(val, str) and val in ("nan", "inf", "-inf") else val
+            thr = float(thr) if isinstance(thr, str) and thr in ("nan", "inf", "-inf") else thr
+            gates.append(GateResult(g["name"], g.get("passed"), val, thr, g.get("reason", ""),
+                                    applied=bool(g.get("applied", True)), required=bool(g.get("required", False))))
+        return cls(overall=bool(d["overall"]), phase=int(d["phase"]), gates=gates, required=list(d.get("required", [])))
+
+    def format(self) -> str:
+        return HurdleReport.format(self)
 
 
 @dataclass
@@ -70,11 +180,13 @@ class HurdleReport:
     cfg: ValidationConfig = field(default_factory=ValidationConfig)
 
     # ------------------------------------------------------------------ helpers
-    def _fold_fraction(self, s: Optional[pd.Series], thresh: float) -> tuple:
+    def _fold_fraction(self, s: pd.Series | None, thresh: float, strict: bool = False) -> tuple:
+        """(fraction of folds passing, n passing, n folds); a fold passes when
+        its value is ``> thresh`` (``strict``) or ``>= thresh``."""
         if s is None or len(s) == 0:
             return float("nan"), 0, 0
         s = pd.Series(s).dropna()
-        ok = int((s >= thresh).sum())
+        ok = int(((s > thresh) if strict else (s >= thresh)).sum())
         return (ok / len(s) if len(s) else float("nan")), ok, len(s)
 
     @staticmethod
@@ -82,15 +194,15 @@ class HurdleReport:
         return GateResult(name, None, value, threshold, reason, applied=False)
 
     # ------------------------------------------------------------------ main
-    def evaluate_signal(self, ic_by_fold: Optional[pd.Series] = None, decile_tstat: Optional[float] = None,
-                        incremental_ic_by_fold: Optional[pd.Series] = None,
-                        net_sharpe_delta_by_fold: Optional[pd.Series] = None,
-                        breakeven_cost_bps: Optional[float] = None, modeled_cost_bps: Optional[float] = None,
-                        dsr: Optional[float] = None, pbo: Optional[float] = None, phase: int = 1,
-                        net_sharpe: Optional[float] = None, standalone: bool = True,
-                        required: Optional[Iterable[str]] = None) -> Dict[str, object]:
+    def evaluate_signal(self, ic_by_fold: pd.Series | None = None, decile_tstat: float | None = None,
+                        incremental_ic_by_fold: pd.Series | None = None,
+                        net_sharpe_delta_by_fold: pd.Series | None = None,
+                        breakeven_cost_bps: float | None = None, modeled_cost_bps: float | None = None,
+                        dsr: float | None = None, pbo: float | None = None, phase: int = 1,
+                        net_sharpe: float | None = None, standalone: bool = True,
+                        required: Iterable[str] | None = None) -> HurdleResult:
         cfg = self.cfg
-        gates: List[GateResult] = []
+        gates: list[GateResult] = []
         frac_req = cfg.min_fold_pass_fraction
         req = set(cfg.required_gates if required is None else required)
 
@@ -109,16 +221,17 @@ class HurdleReport:
 
         # 1b. standalone IC positivity (mean IC by fold > 0 in 2/3 folds)
         if ic_by_fold is not None and len(ic_by_fold):
-            frac, ok_n, n = self._fold_fraction(ic_by_fold, 0.0)
-            gates.append(GateResult("ic_sign", frac >= frac_req, frac, frac_req, f"IC > 0 in {ok_n}/{n} folds"))
+            frac, ok_n, n = self._fold_fraction(ic_by_fold, 0.0, strict=True)
+            gates.append(GateResult("ic_sign", frac >= frac_req, frac, frac_req,
+                                    f"IC > 0 in {ok_n}/{n} folds (need >= {frac_req:.2f})"))
         else:
             gates.append(self._skip("ic_sign", frac_req, "IC by fold not supplied"))
 
         # 2. incremental IC
         if incremental_ic_by_fold is not None and len(incremental_ic_by_fold):
-            frac, ok_n, n = self._fold_fraction(incremental_ic_by_fold, INCREMENTAL_IC_MIN)
+            frac, ok_n, n = self._fold_fraction(incremental_ic_by_fold, INCREMENTAL_IC_MIN, strict=True)
             gates.append(GateResult("incremental_ic", frac >= frac_req, frac, frac_req,
-                                    f"incremental IC > {INCREMENTAL_IC_MIN} in {ok_n}/{n} folds"))
+                                    f"incremental IC > {INCREMENTAL_IC_MIN} in {ok_n}/{n} folds (need >= {frac_req:.2f})"))
         else:
             gates.append(self._skip("incremental_ic", frac_req,
                                     "not applied (standalone signal)" if standalone
@@ -129,7 +242,7 @@ class HurdleReport:
             frac, ok_n, n = self._fold_fraction(net_sharpe_delta_by_fold, NET_SHARPE_DELTA_MIN)
             label = "net Sharpe by fold (vs zero baseline)" if standalone else "net Sharpe delta"
             gates.append(GateResult("net_sharpe_delta", frac >= frac_req, frac, frac_req,
-                                    f"{label} >= +{NET_SHARPE_DELTA_MIN} in {ok_n}/{n} folds"))
+                                    f"{label} >= +{NET_SHARPE_DELTA_MIN} in {ok_n}/{n} folds (need >= {frac_req:.2f})"))
         else:
             gates.append(self._skip("net_sharpe_delta", frac_req, "net Sharpe delta by fold not supplied"))
 
@@ -138,7 +251,7 @@ class HurdleReport:
             need = BREAKEVEN_MULTIPLE * float(modeled_cost_bps)
             ok = float(breakeven_cost_bps) >= need
             gates.append(GateResult("breakeven_cost", ok, float(breakeven_cost_bps), need,
-                                    f"breakeven {float(breakeven_cost_bps):.1f} bps vs 2x modeled {need:.1f} bps"))
+                                    f"breakeven {float(breakeven_cost_bps):.1f} bps {'>=' if ok else '<'} 2x modeled {need:.1f} bps"))
         elif breakeven_cost_bps is not None and np.isinf(float(breakeven_cost_bps)) and _finite(modeled_cost_bps):
             gates.append(GateResult("breakeven_cost", True, float("inf"), 2 * float(modeled_cost_bps),
                                     "zero turnover: breakeven undefined (inf)"))
@@ -181,24 +294,12 @@ class HurdleReport:
             if not g.applied and g.required:          # a required gate cannot be skipped
                 g.applied, g.passed = True, False
                 g.reason = f"REQUIRED gate skipped: {g.reason}"
-        overall = all(g.passed for g in gates if g.applied)
-        reasons = [f"[{g.status}] {g.name}: {g.reason}" for g in gates]
-        return {
-            "overall": overall,
-            "phase": phase,
-            "gates": {g.name: g.passed for g in gates},            # True / False / None (skipped)
-            "status": {g.name: g.status for g in gates},           # PASS / FAIL / skipped
-            "details": {g.name: {"value": g.value, "threshold": g.threshold, "reason": g.reason,
-                                 "applied": g.applied, "required": g.required, "status": g.status} for g in gates},
-            "reasons": reasons,
-            "failed": [g.name for g in gates if g.applied and not g.passed],
-            "skipped": [g.name for g in gates if not g.applied],
-            "required": sorted(req),
-        }
+        overall = all(bool(g.passed) for g in gates if g.applied)
+        return HurdleResult(overall=overall, phase=int(phase), gates=gates, required=sorted(req))
 
     @staticmethod
-    def format(result: Dict[str, object]) -> str:
+    def format(result: HurdleResult | dict[str, Any]) -> str:
         head = f"OVERALL: {'PASS' if result['overall'] else 'FAIL'} (phase {result['phase']})"
         skipped = result.get("skipped") or []
         tail = [f"skipped (not required): {', '.join(skipped)}"] if skipped else []
-        return "\n".join([head] + list(result["reasons"]) + tail)
+        return "\n".join([head, *list(result["reasons"]), *tail])

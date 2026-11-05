@@ -253,9 +253,17 @@ def to_short_interest_ratio(long_df: pd.DataFrame, shares_outstanding: Wide, lag
     ``settlement_date + lag_business_days`` (default 8, FINRA's publication
     lag) and is forward-filled until the next publication.  Before its
     publication date the value is NaN (or the previous published value).
-    ``shares_outstanding`` is a wide panel on the target calendar; the ratio
-    uses the shares outstanding *as of each date*.
+
+    ``shares_outstanding`` must be the **actual share count** per date (wide
+    panel; e.g. ``MarketData.shares_outstanding`` or SF1 ``sharesbas`` made PIT),
+    on the same basis as FINRA's share counts.  Do not derive it as
+    ``market_cap / close`` with a split-adjusted close: across a later split
+    that understates the historical share count by the split factor and
+    inflates the ratio.  The ratio uses the shares outstanding *as of each
+    date* (forward-filled).  See :func:`shares_outstanding_panel`.
     """
+    if not isinstance(shares_outstanding, pd.DataFrame):
+        raise TypeError("shares_outstanding must be a wide DataFrame (date x ticker) of actual share counts")
     idx = pd.DatetimeIndex(dates) if dates is not None else shares_outstanding.index
     df = long_df[["settlement_date", "symbol", "short_interest"]].rename(columns={"symbol": "ticker", "short_interest": "value"}).copy()
     df["available_date"] = pd.to_datetime(df["settlement_date"]) + pd.offsets.BDay(int(lag_business_days))
@@ -264,6 +272,21 @@ def to_short_interest_ratio(long_df: pd.DataFrame, shares_outstanding: Wide, lag
     cols = si.columns.intersection(shares_outstanding.columns)
     so = shares_outstanding.reindex(index=idx, columns=cols).ffill()
     return si[cols] / so.replace(0, np.nan)
+
+
+def shares_outstanding_panel(md: MarketData) -> Wide:
+    """Actual shares outstanding for :func:`to_short_interest_ratio`.
+
+    ``md.shares_outstanding`` if present, else ``market_cap / close_raw``.
+    Raises if neither is available: deriving share counts from the
+    split-adjusted ``close`` is wrong across splits (finding #44).
+    """
+    if md.shares_outstanding is not None:
+        return md.shares_outstanding
+    if md.close_raw is not None:
+        return md.market_cap / md.close_raw.replace(0.0, np.nan)
+    raise ValueError("MarketData has neither shares_outstanding nor close_raw; refusing to derive share "
+                     "counts from the split-adjusted close")
 
 
 def short_interest_long_to_wide(long_df: pd.DataFrame, dates: pd.DatetimeIndex, lag_business_days: int = 8,
@@ -322,7 +345,7 @@ def yfinance_to_market_data(tickers: Sequence[str], start: str, end: Optional[st
                 if fetch_industry and pd.isna(industry[t]):
                     industry[t] = (tk.info or {}).get("industry", "UNKNOWN")
             except Exception as e:  # pragma: no cover - network
-                warnings.warn(f"yfinance metadata failed for {t}: {e}")
+                warnings.warn(f"yfinance metadata failed for {t}: {e}", stacklevel=2)
     market_cap = close.mul(shares, axis=1)
     industry = industry.fillna("UNKNOWN").astype(str)
     industry.index.name = "ticker"
@@ -475,33 +498,58 @@ SF1_DEFAULT_FIELDS = ("bvps", "pb", "eps", "epsusd", "gp", "assets", "equity", "
                       "sharesbas", "shareswa", "marketcap", "pe", "ev", "ebitda", "fcf", "debt", "liabilities")
 
 
-def sharadar_sf1_to_pit_fundamentals(sf1_df: pd.DataFrame, dimension: str = "ARQ", lag_days: int = 0,
+def sharadar_sf1_to_pit_fundamentals(sf1_df: pd.DataFrame, dimension: str = "ART", lag_days: int = 1,
                                      dates: Optional[pd.DatetimeIndex] = None,
                                      fields: Optional[Iterable[str]] = None,
-                                     close: Optional[Wide] = None) -> Dict[str, Wide]:
+                                     close: Optional[Wide] = None,
+                                     close_raw: Optional[Wide] = None,
+                                     price_is_adjusted: bool = True) -> Dict[str, Wide]:
     """Turn Sharadar SF1 rows into PIT wide panels keyed on ``datekey``.
 
     Sharadar SF1 columns used: ``ticker, dimension, calendardate, datekey``
     plus any numeric fields.  ``datekey`` is the **filing date** (when the
     numbers became public); ``calendardate`` is the normalised period end.
     Using ``calendardate`` would leak the report ~30-90 days early, so every
-    panel here becomes visible at ``datekey + lag_days`` (calendar days;
-    keep 0 for SF1 whose datekey is already the filing date, use ~90 for
-    sources with period dates only).
+    panel here becomes visible at ``datekey + lag_days`` (calendar days,
+    snapped forward to the next panel date).  Default ``lag_days=1``: a filing
+    dated ``d`` may be released after the close (8-K/10-Q filed at 16:30), so
+    it is first usable at the close of the next day; ``lag_days=0`` assumes
+    every filing was public before the close of its datekey (optimistic).  Use
+    ~90 for sources that only carry period-end dates.
 
-    Dimensions: ``ARQ`` (as-reported quarterly; recommended), ``ART``
-    (as-reported trailing-twelve-month), ``ARY``.  ``MR*`` dimensions are
-    *most recent reported* and restate history — not PIT; a warning is
-    issued if requested.
+    Dimensions (``dimension``):
 
-    Returns a dict of wide panels on ``dates`` (default: union of datekeys)
-    containing the requested ``fields`` plus derived panels when inputs are
-    present: ``book_to_price`` (= ``1/pb``, or ``bvps/close`` if ``close`` is
-    given), ``earnings_yield`` (``eps/close`` if ``close`` else ``1/pe``),
+    * ``ART`` (default) -- as-reported **trailing twelve months**.  Flow items
+      (``eps``, ``netinc``, ``revenue``, ``gp``) are TTM sums, so ``eps/price``
+      is an annual earnings yield and ``gp/assets`` an annual gross
+      profitability, comparable across firms regardless of fiscal calendar
+      and free of seasonality.  Use for valuation / profitability ratios.
+    * ``ARQ`` -- as-reported **quarterly**: flow items are single-quarter
+      values (``eps/price`` is a *quarterly* yield, ~1/4 of the TTM figure,
+      and seasonal); stock items (``assets``, ``equity``, ``bvps``) equal ART's.
+      Use when you need quarter-on-quarter changes.
+    * ``ARY`` -- as-reported annual (10-K only; slowest to update).
+    * ``MR*`` dimensions are *most recent reported* and restate history -- not
+      PIT; a warning is issued if requested.
+
+    Prices: ``book_to_price = bvps / P`` and ``earnings_yield = eps / P`` divide
+    *as-reported per-share* values by the price, so ``P`` must be the
+    **as-traded (unadjusted) close** on the same share basis.  Dividing by a
+    split-adjusted close inflates historical ratios by the cumulative split
+    factor (a 2:1 split after the filing doubles the pre-split B/P).  Pass the
+    raw close as ``close_raw`` (preferred; e.g. ``MarketData.close_raw``).
+    ``close`` is accepted only with ``price_is_adjusted=False`` (i.e. you
+    assert it is the raw close); with the default ``price_is_adjusted=True`` a
+    ``close`` argument raises ``ValueError``.  With no price at all the
+    ratios fall back to Sharadar's ``1/pb`` and ``1/pe`` (computed by the
+    vendor with the contemporaneous price).
+
+    Returns a dict of wide panels on ``dates`` (default: union of
+    availability dates) containing the requested ``fields`` plus derived
+    panels when inputs are present: ``book_to_price``, ``earnings_yield``,
     ``gross_profitability`` (``gp/assets``), ``asset_growth`` (assets vs the
-    row with ``calendardate`` one year earlier, same dimension).  Note that
-    with ``ARQ`` the ``eps``-based yield is a *quarterly* yield; pass
-    ``dimension="ART"`` for trailing-twelve-month ratios.
+    row with ``calendardate`` one year earlier, same dimension, as known at the
+    current filing date).
     """
     df = sf1_df.copy()
     df.columns = [str(c).lower() for c in df.columns]
@@ -510,7 +558,8 @@ def sharadar_sf1_to_pit_fundamentals(sf1_df: pd.DataFrame, dimension: str = "ARQ
         raise ValueError(f"SF1 frame needs columns {sorted(need)}")
     if "dimension" in df.columns:
         if dimension.upper().startswith("MR"):
-            warnings.warn("Sharadar MR* dimensions restate history and are not point-in-time", UserWarning)
+            warnings.warn("Sharadar MR* dimensions restate history and are not point-in-time", UserWarning,
+                          stacklevel=2)
         df = df[df["dimension"].str.upper() == dimension.upper()]
     df["datekey"] = pd.to_datetime(df["datekey"])
     df["calendardate"] = pd.to_datetime(df["calendardate"])
@@ -554,9 +603,16 @@ def sharadar_sf1_to_pit_fundamentals(sf1_df: pd.DataFrame, dimension: str = "ARQ
         sub = sub.assign(value=pd.to_numeric(sub["value"], errors="coerce"))
         out[f] = pit_forward_fill(sub, dates)
 
-    # derived valuation ratios (price-dependent ones use the PIT close when given)
+    # derived valuation ratios (price-dependent ones use the as-traded close when given)
     if close is not None:
-        cl = close.reindex(index=dates).ffill()
+        if close_raw is not None:
+            raise ValueError("pass either close_raw or close, not both")
+        if price_is_adjusted:
+            raise ValueError("B/P and E/P need the as-traded (unadjusted) close: pass close_raw=..., or "
+                             "close=... with price_is_adjusted=False if that frame is the raw close")
+        close_raw = close
+    if close_raw is not None:
+        cl = close_raw.reindex(index=dates).ffill()
         if "bvps" in out:
             cols = out["bvps"].columns.intersection(cl.columns)
             out["book_to_price"] = out["bvps"][cols] / cl[cols]

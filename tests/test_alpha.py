@@ -7,10 +7,25 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from qts.alpha import (AlphaModel, EnsembleModel, FeatureBuilder, LGBMModel, RankCompositeModel,
-                       RidgeModel, ThemeComposite, WalkForwardTrainer, forward_returns, ic_decay_curve,
-                       ic_report, incremental_ic, rank_ic_series, residualize_forward_returns,
-                       signal_half_life, theme_portfolio_returns, train_live_parity_check)
+from qts.alpha import (
+    AlphaModel,
+    EnsembleModel,
+    FeatureBuilder,
+    LGBMModel,
+    RankCompositeModel,
+    RidgeModel,
+    ThemeComposite,
+    WalkForwardTrainer,
+    forward_returns,
+    ic_decay_curve,
+    ic_report,
+    incremental_ic,
+    rank_ic_series,
+    residualize_forward_returns,
+    signal_half_life,
+    theme_portfolio_returns,
+    train_live_parity_check,
+)
 from qts.alpha.composite import factor_momentum_tilt, momentum_crash_scalar
 from qts.alpha.evaluation import decile_spread
 from qts.alpha.trainer import embargoed_train_mask
@@ -144,10 +159,12 @@ def test_composite_and_dynamic_weights(md, cfg, X, target):
 
 
 # --------------------------------------------------------------------------- walk-forward
+@pytest.mark.slow
 def test_walk_forward_oos_ic(md, cfg, X, y_long, target):
     wf = WalkForwardTrainer(cfg)
-    factory = lambda: EnsembleModel([RankCompositeModel(cfg),
-                                     LGBMModel(n_seeds=1, n_estimators=150, n_jobs=4)])
+    def factory():
+        return EnsembleModel([RankCompositeModel(cfg), LGBMModel(n_seeds=1, n_estimators=150, n_jobs=4)])
+
     pred = wf.run(X, y_long, factory)
     first = wf.folds_[0].pred_start
     assert pred.loc[:first].iloc[:-1].isna().all().all()
@@ -204,7 +221,7 @@ def test_embargo_excludes_overlapping_labels():
     tr.run(X, y, _SpyModel)
     assert len(_SpyModel.log) >= 3
     pos = {d: i for i, d in enumerate(dates)}
-    for train_max, valid_min, pred_min in _SpyModel.log:
+    for train_max, _valid_min, pred_min in _SpyModel.log:
         # label at s spans (s, s+h]; it must be fully realised before the first prediction date
         assert pos[train_max] + h < pos[pred_min], (train_max, pred_min)
         # the tightest allowed: exactly h+1 positions before the prediction start
@@ -243,6 +260,7 @@ def test_half_life_and_decay(md, raw, cfg, X, target):
 
 
 # --------------------------------------------------------------------------- orchestrator
+@pytest.mark.slow
 def test_alpha_model_as_of(md, cfg):
     am = AlphaModel(cfg, ml_factory=lambda: LGBMModel(n_seeds=1, n_estimators=100, n_jobs=4)).fit(md)
     d = md.dates[-10]
@@ -308,3 +326,206 @@ def test_cross_section_uses_only_eligible_names():
     pd.testing.assert_series_equal(ref.score, alt.score.reindex(ref.score.index), rtol=1e-9, atol=1e-10)
     pd.testing.assert_series_equal(ref.expected_return, alt.expected_return.reindex(ref.score.index),
                                    rtol=1e-9, atol=1e-10)
+
+
+# --------------------------------------------------------------------------- refactor: roles (D1), D5, config knobs
+def test_label_and_optimizer_sets_come_from_roles():
+    """D1: one constant defines the residualisation set for targets and pipeline."""
+    from qts.alpha import targets
+    from qts.core import roles
+    from qts.pipeline import ResearchPipeline
+    assert targets.DEFAULT_STYLE_EXPOSURES is roles.RISK_ONLY_FEATURES
+    assert targets.ALPHA_THEME_FEATURES is roles.ALPHA_THEME_FEATURES
+    assert ResearchPipeline.RISK_ONLY_STYLES is roles.RISK_ONLY_STYLES
+    assert not set(targets.DEFAULT_STYLE_EXPOSURES) & roles.ALPHA_THEME_FEATURES
+
+
+def test_default_ic_is_shrunk_like_estimated_ic(md):
+    """D5: before a trailing IC exists the pre-shrink prior default_ic is shrunk too."""
+    acfg = AlphaConfig(train_min_days=504, model_seeds=1, ic_shrink=0.5, default_ic=0.03)
+    am = AlphaModel(acfg, use_ml=False).fit(md)
+    early = md.dates[60]                       # < ic_min_obs realised IC dates
+    assert not np.isfinite(am.trailing_ic(early))
+    out = am.as_of(early)
+    assert out.ic_estimate == pytest.approx(0.015)
+    late = md.dates[-5]
+    ic_hat = am.trailing_ic(late)
+    assert np.isfinite(ic_hat)
+    assert am.as_of(late).ic_estimate == pytest.approx(max(0.0, 0.5 * ic_hat))
+    # per-sleeve half-lives are PIT-cached and cover every sleeve
+    hl = am.component_half_lives_as_of(late)
+    assert {"combined", "composite", "theme_value"} <= set(hl)
+    assert hl["combined"] == am.half_life_as_of(late)
+    assert all(np.isfinite(v) and v > 0 for v in hl.values())
+    n_cache = len(am._half_life_cache)
+    am.component_half_lives_as_of(late)
+    assert len(am._half_life_cache) == n_cache
+    # as_of attaches them to AlphaOutput.components_half_life
+    out_late = am.as_of(late)
+    assert out_late.components_half_life == hl
+    assert out_late.components_half_life["combined"] == out_late.half_life_days
+
+
+def test_alpha_knobs_live_in_config():
+    acfg = AlphaConfig(composite_weight=0.3, ic_window=100, dynamic_weights=False, valid_days=50)
+    am = AlphaModel(acfg)
+    assert am.composite_weight == 0.3 and am.ic_window == 100 and am.dynamic_weights is False
+    assert am.trainer.valid_days == 50
+    am2 = AlphaModel(acfg, composite_weight=0.8, ic_window=10)          # kwargs override config
+    assert am2.composite_weight == 0.8 and am2.ic_window == 10
+    m = LGBMModel(n_seeds=1, params=acfg.lgbm, n_estimators=55, min_split_gain=0.0)
+    assert m.params["n_estimators"] == 55 and m.params["min_split_gain"] == 0.0
+    assert m.params["num_leaves"] == acfg.lgbm.num_leaves and m.params["n_jobs"] >= 1
+    from qts.alpha import default_ml_factory
+    ens = default_ml_factory(AlphaConfig(model_seeds=1, ensemble_weights={"lgbm": 1.0, "ridge": 1.0}))()
+    assert [type(x).__name__ for x in ens.models] == ["LGBMModel", "RidgeModel"]
+
+
+# --------------------------------------------------------------------------- refactor: vectorised metric
+def _pandas_rank_ic_metric(dates):
+    """The pre-refactor metric (pandas groupby rank) — reference implementation."""
+    codes, _ = pd.factorize(np.asarray(dates))
+    n = np.bincount(codes).astype(float)
+
+    def center(r):
+        return r - (np.bincount(codes, r) / n)[codes]
+
+    def metric(y_true, y_pred):
+        rt = center(pd.Series(y_true).groupby(codes).rank().to_numpy())
+        rp = center(pd.Series(y_pred).groupby(codes).rank().to_numpy())
+        num = np.bincount(codes, rt * rp)
+        den = np.sqrt(np.bincount(codes, rt ** 2) * np.bincount(codes, rp ** 2))
+        with np.errstate(invalid="ignore", divide="ignore"):
+            ic = num / den
+        ic = ic[(n >= 20) & np.isfinite(ic)]
+        return float(ic.mean()) if len(ic) else 0.0
+    return metric
+
+
+def test_vectorised_rank_ic_metric_matches_pandas():
+    from qts.alpha.models import DateGroupedRankIC, make_rank_ic_metric
+    rng = np.random.default_rng(0)
+    dates = np.repeat(pd.bdate_range("2021-01-01", periods=40).values, 50)
+    dates = dates[rng.random(len(dates)) > 0.1]
+    dates = np.concatenate([dates[::-1][:30], dates[30:]])     # rows not sorted by date
+    dates = np.concatenate([dates, np.repeat(np.datetime64("2030-01-01"), 7)])   # a tiny group (< 20 rows)
+    n = len(dates)
+    y = rng.standard_normal(n).astype(np.float32)
+    ref, new = _pandas_rank_ic_metric(dates), make_rank_ic_metric(dates)
+    for pred in (rng.standard_normal(n), np.round(rng.standard_normal(n), 1),     # heavy ties
+                 np.zeros(n), 0.2 * y + rng.standard_normal(n)):
+        name, val, higher_better = new(y, pred)
+        assert name == "rank_ic" and higher_better
+        assert val == pytest.approx(ref(y, pred), abs=1e-12)
+    assert DateGroupedRankIC(dates)(y, y) == pytest.approx(1.0)
+
+
+def test_feature_helpers_delegate_to_core_stats(md):
+    """Winsorisation / rolling beta come from qts.core.stats (single implementation)."""
+    from qts.alpha.features import _winsorize_rows, rolling_market_beta
+    from qts.core import stats
+    w = md.returns.iloc[:300]
+    pd.testing.assert_frame_equal(_winsorize_rows(w, 0.01), stats.winsorize_rows(w, 0.01))
+    b, iv = rolling_market_beta(w, w.mean(axis=1), 63)
+    rb = stats.rolling_beta(w, w.mean(axis=1), 63, int(63 * 0.8))
+    pd.testing.assert_frame_equal(b, rb.beta)
+    pd.testing.assert_frame_equal(iv, rb.resid_vol)
+
+
+def test_industry_history_is_used_point_in_time(md):
+    """Industry demeaning follows md.industry_as_of(t): a reclassification dated d
+    changes features from d on and leaves earlier dates untouched."""
+    import dataclasses
+
+    from qts.alpha.features import industry_segments
+    d = md.dates[600]
+    hist = pd.DataFrame([md.industry.reindex(md.tickers).to_numpy()], index=[d], columns=md.tickers)
+    hist.iloc[0, :20] = "RECLASSIFIED"
+    md_h = dataclasses.replace(md, industry_history=hist)
+    segs = industry_segments(md_h)
+    assert len(segs) == 2 and segs[1][0][0] == d and (segs[1][1].iloc[:20] == "RECLASSIFIED").all()
+    fb = FeatureBuilder(AlphaConfig())
+    a, b = fb.build(md)["strev_21"], fb.build(md_h)["strev_21"]
+    pd.testing.assert_frame_equal(a.loc[: md.dates[599]], b.loc[: md.dates[599]])
+    assert not np.allclose(a.loc[d:].to_numpy(), b.loc[d:].to_numpy(), equal_nan=True)
+
+
+# --------------------------------------------------------------------------- refactor: NW lags, typed IC report
+def test_newey_west_lag_rule_and_typed_ic_report(md, target):
+    from qts.alpha import ICReport, newey_west_lags
+    assert newey_west_lags(1005, 1) == 6                 # floor(4 (T/100)^(2/9))
+    assert newey_west_lags(1000, 20) == 20               # floored at the overlap
+    assert newey_west_lags(50, 1) == 3 and newey_west_lags(1, 5) == 0
+    z = md.extra["true_latent_score"]
+    rep = ic_report(z, target, overlap=HORIZON,
+                    decay_targets={5: residualize_forward_returns(md, 5), HORIZON: target})
+    assert isinstance(rep, ICReport)
+    assert rep["mean_ic"] == rep.mean_ic and "by_year" in rep and rep.get("missing", 1) == 1
+    assert rep.nw_lags >= HORIZON
+    # daily IC of 20d labels is autocorrelated: the NW t is well below the naive t
+    assert abs(rep.t_stat_nw) < abs(rep.t_stat)
+    assert list(rep.decay.index) == [5, HORIZON] and np.isfinite(rep.decay).all()
+    ds = decile_spread(z, forward_returns(md, HORIZON), horizon=HORIZON)
+    assert ds.nw_lags == newey_west_lags(len(ds.returns), HORIZON)
+
+
+def test_residualize_only_dates_matches_full(md, raw, target):
+    sub = md.dates[400:420:5]
+    part = residualize_forward_returns(md, HORIZON, features=raw, only_dates=sub)
+    pd.testing.assert_frame_equal(part.loc[sub], target.loc[sub])
+    assert part.drop(index=sub).isna().all().all()
+
+
+# --------------------------------------------------------------------------- refactor: MLP early stopping (#8)
+def test_mlp_early_stopping_is_time_contiguous(X, y_long, md):
+    from qts.alpha import MLPModel
+    from qts.alpha.models import default_valid_mask
+    sub = X.loc[X.index.get_level_values("date") >= md.dates[WARMUP]]
+    ysub = y_long.reindex(sub.index)
+    vm = default_valid_mask(sub, frac=0.1)
+    vd = sub.index.get_level_values("date")[vm.to_numpy()].unique()
+    td = sub.index.get_level_values("date")[~vm.to_numpy()].unique()
+    assert td.max() < vd.min()                            # contiguous trailing block, no interleaving
+    m = MLPModel(n_seeds=1, hidden=(8,), max_iter=15, n_iter_no_change=3, max_train_rows=20_000,
+                 refit_on_full=False)
+    m.fit(sub, ysub)
+    assert 1 <= m.best_epochs_[0] <= 15 and np.isfinite(m.valid_ic_[0])
+    assert not m.models_[0].early_stopping               # sklearn's random holdout is not used
+    p = m.predict(sub.iloc[:500])
+    assert np.isfinite(p).all()
+    # deterministic
+    m2 = MLPModel(n_seeds=1, hidden=(8,), max_iter=15, n_iter_no_change=3, max_train_rows=20_000,
+                  refit_on_full=False).fit(sub, ysub)
+    np.testing.assert_array_equal(m2.predict(sub.iloc[:500]).to_numpy(), p.to_numpy())
+
+
+# --------------------------------------------------------------------------- performance benchmark (never asserted)
+@pytest.mark.slow
+def test_benchmark_alpha_fit_composite_lgbm(capsys):
+    """Demo-size (300 x 1512) composite + LightGBM alpha fit with the vectorised
+    rank-IC metric (+ vectorised winsorisation) vs the legacy pandas-groupby
+    metric, same LightGBM settings (``cfg.lgbm``, n_jobs=4).  Timings are
+    printed, never asserted (machine and load dependent)."""
+    import time
+
+    import qts.alpha.models as models
+    md_b = generate(SyntheticSpec(n_stocks=300, n_days=1512, seed=0))
+    acfg = AlphaConfig()
+    new_metric = models.make_rank_ic_metric
+    times = {}
+    try:
+        for label, metric in (("new", new_metric), ("legacy", _pandas_rank_ic_metric)):
+            if label == "legacy":
+                def legacy(d, f=metric):
+                    g = f(d)
+                    return lambda yt, yp: ("rank_ic", g(yt, yp), True)
+                models.make_rank_ic_metric = legacy
+            am = AlphaModel(acfg, ml_factory=lambda: LGBMModel(n_seeds=acfg.model_seeds, params=acfg.lgbm))
+            t0 = time.perf_counter()
+            am.fit(md_b)
+            times[label] = time.perf_counter() - t0
+    finally:
+        models.make_rank_ic_metric = new_metric
+    with capsys.disabled():
+        print(f"\n[benchmark] alpha fit composite+LGBM 300x1512: new {times['new']:.1f}s, "
+              f"legacy {times['legacy']:.1f}s, speed-up {times['legacy'] / times['new']:.2f}x")

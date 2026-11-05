@@ -2,7 +2,7 @@
 exposures, realised-vs-ex-ante risk, factor/specific attribution."""
 from __future__ import annotations
 
-from typing import Dict, Mapping, Optional, Union
+from collections.abc import Mapping
 
 import numpy as np
 import pandas as pd
@@ -10,8 +10,8 @@ import pandas as pd
 from qts.core.types import RiskModelOutput
 
 
-def transfer_coefficient(alpha: pd.Series, w: pd.Series, cov: Optional[pd.DataFrame] = None,
-                         risk: Optional[RiskModelOutput] = None, exact_max_n: int = 500) -> float:
+def transfer_coefficient(alpha: pd.Series, w: pd.Series, cov: pd.DataFrame | None = None,
+                         risk: RiskModelOutput | None = None, exact_max_n: int = 500) -> float:
     """Transfer coefficient (Clarke, de Silva & Thorley 2002).
 
     Approximate (always available): ``corr(w_i * sigma_i, alpha_i / sigma_i)``
@@ -51,7 +51,7 @@ def transfer_coefficient(alpha: pd.Series, w: pd.Series, cov: Optional[pd.DataFr
     return float(c) if np.isfinite(c) else float("nan")
 
 
-def effective_holding_days(turnover_series: pd.Series, gross_series: Optional[pd.Series] = None) -> float:
+def effective_holding_days(turnover_series: pd.Series, gross_series: pd.Series | None = None) -> float:
     """Average holding period in days = average gross book / average one-sided
     daily traded.  ``turnover_series`` is the two-sided daily turnover
     ``sum_i |x_it|`` (fraction of NAV; a round trip of the whole book = 2).
@@ -93,7 +93,7 @@ def factor_exposure_report(w: pd.Series, risk: RiskModelOutput) -> pd.DataFrame:
 
 
 def realized_vs_exante_risk(returns: pd.Series, exante_var_series: pd.Series,
-                            periods_per_year: int = 252) -> Dict[str, float]:
+                            periods_per_year: int = 252) -> dict[str, float]:
     """Compare realised return vol with the model's ex-ante forecast.
 
     ``exante_var_series[t]`` must be the forecast daily variance of the
@@ -114,12 +114,12 @@ def realized_vs_exante_risk(returns: pd.Series, exante_var_series: pd.Series,
             "realized_vol_annual": real, "exante_vol_annual": ex}
 
 
-ExposuresHistory = Union[Mapping[pd.Timestamp, pd.DataFrame], pd.DataFrame]
+ExposuresHistory = Mapping[pd.Timestamp, pd.DataFrame] | pd.DataFrame
 
 
 def brinson_like_attribution(w_history: pd.DataFrame, factor_returns: pd.DataFrame,
-                             exposures_history: ExposuresHistory, specific_returns: Optional[pd.DataFrame] = None,
-                             total_returns: Optional[pd.DataFrame] = None, lag: int = 1) -> pd.DataFrame:
+                             exposures_history: ExposuresHistory, specific_returns: pd.DataFrame | None = None,
+                             total_returns: pd.DataFrame | None = None, lag: int = 1) -> pd.DataFrame:
     """Decompose daily portfolio PnL into factor and specific components.
 
     ``w_history`` rows are weights *held* at the close of date t; they earn
@@ -133,7 +133,7 @@ def brinson_like_attribution(w_history: pd.DataFrame, factor_returns: pd.DataFra
     rows = {}
     dates = list(w_history.index)
     fr_idx = factor_returns.index
-    for i, t in enumerate(dates):
+    for t in dates:
         pos = fr_idx.searchsorted(t, side="right") - 1 + lag
         if pos < 0 or pos >= len(fr_idx):
             continue

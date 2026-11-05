@@ -29,13 +29,13 @@ from __future__ import annotations
 
 import bisect
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Union
 
+import numpy as np
 import pandas as pd
 
 from qts.core.config import CostConfig
 
-DateLike = Union[str, pd.Timestamp, None]
+DateLike = str | pd.Timestamp | None
 
 # FINRA TAF holiday window (inclusive).  SR-FINRA-2026-021 Exhibit 5A.
 TAF_HOLIDAY_START = pd.Timestamp("2026-10-01")
@@ -51,7 +51,7 @@ CLEARING_MAX_PCT_VALUE = 0.005
 # Information Notice announcing it unless marked otherwise.  A date before the
 # first row uses the first row's rate (the then-current rate is unknown here
 # but was never zero before FY2025), never 0.
-SEC_SECTION31_RATES: List[Tuple[pd.Timestamp, float]] = [
+SEC_SECTION31_RATES: list[tuple[pd.Timestamp, float]] = [
     (pd.Timestamp("2016-02-16"), 21.80),   # FY2016 (rate confirmed as the prior rate in FINRA IN 6/9/17; date unverified)
     (pd.Timestamp("2017-07-04"), 23.10),   # FY2017 #3, FINRA IN 6/9/17
     (pd.Timestamp("2018-05-22"), 13.00),   # FY2018 #3, FINRA IN 5/7/18
@@ -72,7 +72,7 @@ _SEC_DATES = [d for d, _ in SEC_SECTION31_RATES]
 # rate in place through 2028-12-31 (per SR-FINRA-2026-021), superseding the
 # 2027/2028 step-ups in the 2024 schedule.  Pre-2024 rows are from memory and
 # unverified (TODO 2026-11-04: confirm against FINRA Schedule A history).
-FINRA_TAF_RATES: List[Tuple[pd.Timestamp, float, float]] = [
+FINRA_TAF_RATES: list[tuple[pd.Timestamp, float, float]] = [
     (pd.Timestamp("2012-01-01"), 0.000119, 5.95),   # unverified
     (pd.Timestamp("2022-01-01"), 0.000130, 6.49),   # unverified
     (pd.Timestamp("2023-01-01"), 0.000145, 7.27),   # unverified
@@ -82,7 +82,7 @@ FINRA_TAF_RATES: List[Tuple[pd.Timestamp, float, float]] = [
 _TAF_DATES = [d for d, _, _ in FINRA_TAF_RATES]
 
 
-def sec_section31_rate(date: DateLike, cfg: Optional[CostConfig] = None) -> float:
+def sec_section31_rate(date: DateLike, cfg: CostConfig | None = None) -> float:
     """SEC Section 31 fee per **dollar** sold in force on ``date``.
 
     Picks the last :data:`SEC_SECTION31_RATES` row with effective date ``<=
@@ -97,7 +97,7 @@ def sec_section31_rate(date: DateLike, cfg: Optional[CostConfig] = None) -> floa
     return rate_per_million / 1e6
 
 
-def finra_taf_rate(date: DateLike, cfg: Optional[CostConfig] = None) -> Tuple[float, float]:
+def finra_taf_rate(date: DateLike, cfg: CostConfig | None = None) -> tuple[float, float]:
     """``(per_share_sold, per_trade_cap)`` FINRA TAF in force on ``date``.
 
     Applies the 2026-Q4 fee holiday (both 0).  ``date=None`` returns the config
@@ -123,7 +123,7 @@ def _norm_side(side: str) -> str:
     raise ValueError(f"unknown side {side!r}")
 
 
-def _is_auction(venue: Optional[str]) -> bool:
+def _is_auction(venue: str | None) -> bool:
     return venue is not None and str(venue).lower() == "auction"
 
 
@@ -132,7 +132,7 @@ class FeeSchedule:
     cfg: CostConfig
 
     # ------------------------------------------------------------------ hooks
-    def fee_holiday(self, date: DateLike) -> Dict[str, float]:
+    def fee_holiday(self, date: DateLike) -> dict[str, float]:
         """Return the dated fee overrides active on ``date``.
 
         Keys: ``finra_taf_per_share_sold``, ``finra_taf_max_per_trade`` and
@@ -146,7 +146,7 @@ class FeeSchedule:
         return {"finra_taf_per_share_sold": taf, "finra_taf_max_per_trade": cap,
                 "sec_fee_per_dollar_sold": sec_section31_rate(date, self.cfg)}
 
-    def _rates(self, date: DateLike) -> Tuple[float, float, float]:
+    def _rates(self, date: DateLike) -> tuple[float, float, float]:
         c = self.cfg
         over = self.fee_holiday(date)
         return (over.get("finra_taf_per_share_sold", c.finra_taf_per_share_sold),
@@ -155,7 +155,7 @@ class FeeSchedule:
 
     # ------------------------------------------------------------- per order
     def explicit_cost(self, shares: float, price: float, side: str,
-                      date: DateLike = None, venue: Optional[str] = None) -> Dict[str, float]:
+                      date: DateLike = None, venue: str | None = None) -> dict[str, float]:
         """Dollar fees for one order of ``shares`` at ``price`` on ``side``.
 
         Returns a dict with keys ``commission, clearing, sec, taf, cat, exchange,
@@ -188,7 +188,7 @@ class FeeSchedule:
                 "taf": taf, "cat": cat, "exchange": exchange, "total": total}
 
     def explicit_bps(self, notional: float, price: float, side: str,
-                     date: DateLike = None, venue: Optional[str] = None) -> float:
+                     date: DateLike = None, venue: str | None = None) -> float:
         """Explicit fees in bps of ``notional`` for a trade of ``notional`` dollars
         in a stock priced ``price``."""
         notional = abs(float(notional))
@@ -198,14 +198,57 @@ class FeeSchedule:
         return 1e4 * self.explicit_cost(shares, price, side, date, venue)["total"] / notional
 
     def round_trip_bps(self, notional: float, price: float, date: DateLike = None,
-                       venue: Optional[str] = None) -> float:
+                       venue: str | None = None) -> float:
         """Buy + sell explicit cost in bps of one-way notional."""
         return (self.explicit_bps(notional, price, "buy", date, venue)
                 + self.explicit_bps(notional, price, "sell", date, venue))
 
+    # ------------------------------------------------------------ vectorised
+    def explicit_cost_vec(self, shares, price, is_sell, date: DateLike = None,
+                          is_auction=False) -> np.ndarray:
+        """Vectorised :meth:`explicit_cost` ``["total"]``: dollar fees for one
+        order per element (``shares`` >= 0 or signed -- abs is used; ``is_sell``
+        / ``is_auction`` boolean arrays or scalars).  Same formulas, same dated
+        SEC/TAF rates, same per-order minimum and caps; elements with zero
+        shares or non-positive price cost 0.  ~O(N) numpy instead of N Python
+        calls building dicts (audit performance item 9)."""
+        c = self.cfg
+        q = np.abs(np.asarray(shares, dtype=float))
+        p = np.asarray(price, dtype=float)
+        q, p = np.broadcast_arrays(q, p)
+        sell = np.broadcast_to(np.asarray(is_sell, dtype=bool), q.shape)
+        auc = np.broadcast_to(np.asarray(is_auction, dtype=bool), q.shape)
+        taf_rate, taf_cap, sec_rate = self._rates(date)
+        value = q * p
+        commission = np.minimum(np.maximum(q * c.commission_per_share, c.commission_min_per_order),
+                                c.commission_max_pct_value * value)
+        clearing = np.minimum(q * c.clearing_per_share, CLEARING_MAX_PCT_VALUE * value)
+        cat = q * c.cat_fee_per_share
+        exchange = np.where(auc, q * getattr(c, "auction_exchange_fee_per_share", 0.0), 0.0)
+        sec = np.where(sell, value * sec_rate, 0.0)
+        taf = np.where(sell, np.minimum(q * taf_rate, taf_cap), 0.0)
+        total = commission + clearing + cat + exchange + sec + taf
+        ok = (q > 0) & np.isfinite(p) & (p > 0)
+        return np.where(ok, total, 0.0)
+
+    def marginal_fraction_vec(self, price, is_sell, date: DateLike = None, is_auction=False) -> np.ndarray:
+        """Vectorised :meth:`marginal_fraction` (0 where price <= 0)."""
+        c = self.cfg
+        p = np.asarray(price, dtype=float)
+        sell = np.broadcast_to(np.asarray(is_sell, dtype=bool), p.shape)
+        auc = np.broadcast_to(np.asarray(is_auction, dtype=bool), p.shape)
+        taf_rate, _, sec_rate = self._rates(date)
+        per_share = c.commission_per_share + c.clearing_per_share + c.cat_fee_per_share \
+            + np.where(auc, getattr(c, "auction_exchange_fee_per_share", 0.0), 0.0)
+        per_share = per_share + np.where(sell, taf_rate, 0.0)
+        ok = np.isfinite(p) & (p > 0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            frac = per_share / p + np.where(sell, sec_rate, 0.0)
+        return np.where(ok, frac, 0.0)
+
     # ------------------------------------------------------- linear approx
     def marginal_fraction(self, price: float, side: str, date: DateLike = None,
-                          venue: Optional[str] = None) -> float:
+                          venue: str | None = None) -> float:
         """Marginal explicit cost per dollar traded (fraction), ignoring the
         per-order minimum and per-trade caps.  This is the linear coefficient
         used inside the convex optimizer."""

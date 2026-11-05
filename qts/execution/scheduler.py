@@ -11,8 +11,6 @@ only as a reference trajectory and for the urgency intuition.
 """
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 
 # 13 half-hour buckets 09:30-16:00.  U-shape: heavy open, heavier close.
@@ -21,7 +19,7 @@ BUCKET_LABELS = ["09:30", "10:00", "10:30", "11:00", "11:30", "12:00", "12:30", 
                  "14:00", "14:30", "15:00", "15:30"]
 
 
-def intraday_volume_curve(n_buckets: int = 13, close_share: Optional[float] = None) -> np.ndarray:
+def intraday_volume_curve(n_buckets: int = 13, close_share: float | None = None) -> np.ndarray:
     """Fraction of daily volume per bucket, summing to 1.
 
     Default is a 13-bucket U-shape whose last bucket (15:30-16:00, which
@@ -42,7 +40,7 @@ def intraday_volume_curve(n_buckets: int = 13, close_share: Optional[float] = No
     return curve
 
 
-def vwap_schedule(qty: float, curve: Optional[np.ndarray] = None) -> np.ndarray:
+def vwap_schedule(qty: float, curve: np.ndarray | None = None) -> np.ndarray:
     """Child-order sizes proportional to the volume curve (sum == qty)."""
     curve = intraday_volume_curve() if curve is None else np.asarray(curve, float)
     sched = qty * curve / curve.sum()

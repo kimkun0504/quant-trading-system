@@ -8,9 +8,18 @@ with the Barra identification constraint on the industry block
 
     sum_j  c_j f_j = 0,   c_j = (cap of industry j) / (total cap),
 
-so that the ``market`` (Country) factor return equals the cap-weighted
-market return and industry returns are *relative* to the market
-(USE4 Methodology Notes, "Factor return estimation").  The constraint is
+so that industry returns are *relative* to the market and the ``market``
+(Country) factor return is, to a close approximation, the cap-weighted market
+return (USE4 Methodology Notes, "Factor return estimation").  It is **not**
+identical (finding #14): the cap-weighted market return decomposes as
+
+    sum_i c_i r_i = f_market + sum_s (sum_i c_i X_is) f_s + sum_i c_i u_i,
+
+where the style term vanishes only to the extent the styles are cap-weighted
+mean zero on the day (they are standardised that way, but trimming and
+filling missing values with 0 leave small offsets) and the residual term is
+not zero because the regression weights are sqrt(cap), not cap.  In
+practice the two series correlate at > 0.98 (tests/test_risk.py).  The constraint is
 imposed exactly by restricted least squares: we reparameterize ``f = R g``
 with ``R`` the (K x K-1) basis of the constraint null-space (pivot on the
 largest-cap industry), solve the unconstrained WLS in ``g`` and map back.
@@ -23,14 +32,15 @@ R^2 is the weighted coefficient of determination
 """
 from __future__ import annotations
 
-from typing import Dict, Iterable, NamedTuple, Optional, Tuple
+from collections.abc import Iterable
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
 
 from qts.core.config import RiskConfig
 from qts.core.types import MarketData
-from qts.risk.exposures import MARKET_FACTOR, split_factor_columns
+from qts.risk.exposures import split_factor_columns
 
 
 class CrossSectionalFit(NamedTuple):
@@ -66,9 +76,9 @@ def restricted_wls(y: np.ndarray, X: np.ndarray, w: np.ndarray, c: np.ndarray) -
 
 def estimate_factor_returns(returns_t: pd.Series, exposures_tminus1: pd.DataFrame,
                             market_cap_tminus1: pd.Series,
-                            cfg: Optional[RiskConfig] = None,
+                            cfg: RiskConfig | None = None,
                             constraint_weights: str = "cap",
-                            weight_cap_quantile: Optional[float] = None) -> CrossSectionalFit:
+                            weight_cap_quantile: float | None = None) -> CrossSectionalFit:
     """One day's constrained WLS.  See module docstring.
 
     Parameters
@@ -78,10 +88,10 @@ def estimate_factor_returns(returns_t: pd.Series, exposures_tminus1: pd.DataFram
     market_cap_tminus1 : market caps as of t-1 (regression weights ∝ sqrt(cap),
         constraint weights ∝ cap).
     constraint_weights : ``"cap"`` (USE4: industry returns sum to zero
-        cap-weighted, so ``market`` = cap-weighted market) or ``"regression"``
-        (sum to zero under the sqrt-cap regression weights, so ``market`` =
+        cap-weighted, so ``market`` ~ cap-weighted market) or ``"regression"``
+        (sum to zero under the sqrt-cap regression weights, so ``market`` ~
         sqrt-cap-weighted market -- less dominated by mega-caps in a
-        concentrated universe).
+        concentrated universe).  "~": see the module docstring.
     weight_cap_quantile : if given, market caps are winsorized at this
         cross-sectional quantile before forming regression and constraint
         weights (Axioma-style mega-cap damping).  ``None`` = pure USE4.
@@ -124,11 +134,11 @@ def estimate_factor_returns(returns_t: pd.Series, exposures_tminus1: pd.DataFram
                              pd.Series(u, index=idx, name="specific_return"), r2)
 
 
-def estimate_factor_return_history(md: MarketData, exposures_by_date: Dict[pd.Timestamp, pd.DataFrame],
-                                   cfg: Optional[RiskConfig] = None,
-                                   dates: Optional[Iterable[pd.Timestamp]] = None,
+def estimate_factor_return_history(md: MarketData, exposures_by_date: dict[pd.Timestamp, pd.DataFrame],
+                                   cfg: RiskConfig | None = None,
+                                   dates: Iterable[pd.Timestamp] | None = None,
                                    **regression_kwargs,
-                                   ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
+                                   ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
     """Run the daily regression for every date ``t`` whose previous trading
     day ``t-1`` has an exposure matrix in ``exposures_by_date``.
 
@@ -163,7 +173,7 @@ def estimate_factor_return_history(md: MarketData, exposures_by_date: Dict[pd.Ti
 
 
 def cap_weighted_industry_sum(factor_returns_t: pd.Series, exposures_tminus1: pd.DataFrame,
-                              market_cap_tminus1: pd.Series, cfg: Optional[RiskConfig] = None) -> float:
+                              market_cap_tminus1: pd.Series, cfg: RiskConfig | None = None) -> float:
     """Diagnostic: ``sum_j c_j f_j`` which the constraint forces to zero."""
     cfg = cfg or RiskConfig()
     _, industries, _ = split_factor_columns(exposures_tminus1.columns, cfg)

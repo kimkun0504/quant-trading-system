@@ -22,12 +22,12 @@ forward ``horizon``-day return.  A scikit-learn estimator can be wrapped as
 """
 from __future__ import annotations
 
-from typing import Callable, Dict
+from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
 
-from qts.core.crosssection import ic_series
+from qts.core.stats import rank_ic_series as ic_series
 
 
 def generate_noise_panel(n_assets: int, n_days: int, seed: int = 0, vol_annual: float = 0.30) -> pd.DataFrame:
@@ -78,7 +78,7 @@ def recency_weighted_mean(X_lags: np.ndarray, half_life: float = 10.0) -> np.nda
 def nagel_collapse_test(model_predict_fn: Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray],
                         n_assets: int = 100, n_days: int = 1000, seed: int = 0, n_lags: int = 60,
                         horizon: int = 20, half_life: float = 10.0,
-                        max_abs_ic_t: float = 3.0, max_abs_corr: float = 0.5) -> Dict[str, float]:
+                        max_abs_ic_t: float = 3.0, max_abs_corr: float = 0.5) -> dict[str, float]:
     """Fit on the first half of a noise panel, evaluate on the second half.
 
     Returns ``ic_mean``, ``ic_tstat``, ``corr_with_recency_mean`` (Pearson
@@ -118,7 +118,7 @@ def nagel_collapse_test(model_predict_fn: Callable[[np.ndarray, np.ndarray, np.n
     corr_xs_mean = float(corr_xs.mean()) if len(corr_xs) else 0.0
 
     return {
-        "ic_mean": ic_mean, "ic_tstat": ic_t, "n_ic_dates": int(len(ics)),
+        "ic_mean": ic_mean, "ic_tstat": ic_t, "n_ic_dates": len(ics),
         "corr_with_recency_mean": corr, "corr_with_recency_mean_xs": corr_xs_mean,
         "pred_sd": float(sd_p),
         "collapsed": bool(abs(corr) > max_abs_corr or abs(corr_xs_mean) > max_abs_corr),

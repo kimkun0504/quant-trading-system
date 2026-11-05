@@ -10,8 +10,8 @@ Protocol
   ``pos(s) + h < pos(t)`` are allowed, i.e. the label's last return day is
   strictly before the first prediction date.  In index positions this is
   ``pos(s) <= pos(t) - h - 1``.
-* Inside the training window the trailing 12 months (252 dates) are the
-  validation block used for early stopping / hyper-parameter choice.  The
+* Inside the training window the trailing ``cfg.valid_days`` (252) dates are
+  the validation block used for early stopping / hyper-parameter choice.  The
   same purge is applied between the fit rows and the validation rows.
 * Models are re-created from ``model_factory()`` at every refit (no parameter
   carry-over between windows).
@@ -21,8 +21,8 @@ Protocol
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -41,10 +41,10 @@ class FoldInfo:
     pred_end: pd.Timestamp
     train_start: pd.Timestamp
     train_end: pd.Timestamp
-    valid_start: Optional[pd.Timestamp]
+    valid_start: pd.Timestamp | None
     n_train_rows: int
     n_valid_rows: int
-    extra: Dict = field(default_factory=dict)
+    extra: dict = field(default_factory=dict)
 
 
 def embargoed_train_mask(label_pos: np.ndarray, pred_start_pos: int, horizon: int) -> np.ndarray:
@@ -54,18 +54,19 @@ def embargoed_train_mask(label_pos: np.ndarray, pred_start_pos: int, horizon: in
 
 
 class WalkForwardTrainer:
-    def __init__(self, cfg: AlphaConfig, valid_days: int = 252, verbose: bool = False):
+    def __init__(self, cfg: AlphaConfig, valid_days: int | None = None, verbose: bool = False):
         self.cfg = cfg
-        self.valid_days = valid_days
+        #: trailing validation block length; ``None`` -> ``cfg.valid_days`` (252)
+        self.valid_days = int(cfg.valid_days if valid_days is None else valid_days)
         self.verbose = verbose
-        self.folds_: List[FoldInfo] = []
-        self.models_: List = []
+        self.folds_: list[FoldInfo] = []
+        self.models_: list = []
 
     @property
     def embargo(self) -> int:
         return int(self.cfg.embargo_days or self.cfg.horizon_days)
 
-    def schedule(self, dates: pd.DatetimeIndex) -> List[int]:
+    def schedule(self, dates: pd.DatetimeIndex) -> list[int]:
         """Positions (into ``dates``) at which a refit happens."""
         h = self.embargo
         first = self.cfg.train_min_days + h  # pos(t) - h - 1 >= train_min_days - 1
@@ -74,7 +75,7 @@ class WalkForwardTrainer:
         return list(range(first, len(dates), self.cfg.refit_frequency_days))
 
     def run(self, X: Long, y: pd.Series, model_factory: Callable[[], object],
-            dates: Optional[pd.DatetimeIndex] = None) -> Wide:
+            dates: pd.DatetimeIndex | None = None) -> Wide:
         """Return a wide (date x ticker) panel of strictly out-of-sample predictions.
 
         Rows with any NaN feature are dropped up front (``FeatureBuilder.process``
@@ -92,7 +93,7 @@ class WalkForwardTrainer:
         pos_of = pd.Series(np.arange(len(uniq)), index=uniq)
         row_pos = pos_of.reindex(all_dates).to_numpy()
         h = self.embargo
-        preds: List[pd.Series] = []
+        preds: list[pd.Series] = []
         self.folds_, self.models_ = [], []
         sched = self.schedule(uniq)
         for k, p0 in enumerate(sched):

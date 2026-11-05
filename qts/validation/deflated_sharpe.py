@@ -39,7 +39,6 @@ Under the null each noise trial's SR has variance ~ 1/n, so
 from __future__ import annotations
 
 import math
-from typing import Optional
 
 import numpy as np
 from scipy.stats import norm
@@ -151,7 +150,7 @@ def min_backtest_length_years(n_trials: int, target_sr_annual: float, periods_pe
     return min_backtest_length(n_trials, target_sr_annual, periods_per_year) / periods_per_year
 
 
-def dsr_from_trial_returns(trial_returns: np.ndarray, selected: Optional[int] = None) -> dict:
+def dsr_from_trial_returns(trial_returns: np.ndarray, selected: int | None = None) -> dict:
     """Given a (T x N) matrix of per-period trial returns, compute the DSR of the
     best (or ``selected``) trial using the empirical cross-trial SR variance."""
     R = np.asarray(trial_returns, dtype=float)

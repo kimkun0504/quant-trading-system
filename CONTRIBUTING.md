@@ -13,8 +13,8 @@ Tooling (all configured in `pyproject.toml`):
 | Tool | Command | Gate |
 |---|---|---|
 | ruff lint | `make lint` | blocking in CI |
-| ruff format | `make format` | `--check` non-blocking in CI until the one-shot format commit lands |
-| pyright | `make typecheck` | `qts/core` strict and blocking; rest of `qts` basic and non-blocking |
+| ruff format | `make format` | `--check` blocking in CI (the one-shot format commit is listed in `.git-blame-ignore-revs`) |
+| pyright | `make typecheck` | `qts/core` strict and blocking; rest of `qts` basic and non-blocking (pyright follows the running interpreter's Python version) |
 | pytest | `make test-fast` | blocking in CI (Python 3.10 and 3.12) |
 | slow tests | `make test-slow` | nightly scheduled job |
 

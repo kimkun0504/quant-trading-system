@@ -19,7 +19,6 @@ from qts.backtest import (
     turnover_stats,
 )
 from qts.core.config import SystemConfig
-from qts.core.types import AlphaOutput
 from qts.portfolio import SimpleCostModel, SinglePeriodOptimizer
 
 SUMMARY_KEYS = [
@@ -58,10 +57,11 @@ def _check_identity(res: BacktestResult, md, haircut: float = -0.30):
     assert np.max(np.abs(lhs - rhs) / res.nav.values[:-1]) < 1e-8
 
 
+@pytest.mark.slow
 def test_planted_alpha_positive_net_sharpe(planted_run, md):
     s = planted_run.summary()
-    print("\nplanted-alpha backtest: gross Sharpe %.2f, net Sharpe %.2f, turnover %.3f/day, "
-          "holding %.0f d, cost %.1f bps/side, TC %.2f, real/exante vol %.2f" % (
+    print("\nplanted-alpha backtest: gross Sharpe {:.2f}, net Sharpe {:.2f}, turnover {:.3f}/day, "
+          "holding {:.0f} d, cost {:.1f} bps/side, TC {:.2f}, real/exante vol {:.2f}".format(
               s["sharpe_gross"], s["sharpe_net"], s["avg_daily_turnover"], s["effective_holding_days"],
               s["avg_cost_bps_per_side"], s["transfer_coefficient_mean"], s["realized_vs_exante_vol_ratio"]))
     assert s["n_days"] == 300
@@ -77,6 +77,7 @@ def test_planted_alpha_positive_net_sharpe(planted_run, md):
     assert s["ann_vol_net"] <= 0.10 * 1.5   # vol target 10% is a cap, realised may wobble
 
 
+@pytest.mark.slow
 def test_nav_identity(planted_run, md):
     _check_identity(planted_run, md)
     # net return definition
@@ -84,6 +85,7 @@ def test_nav_identity(planted_run, md):
     assert np.allclose(net.values, planted_run.returns["net"].values, atol=1e-12)
 
 
+@pytest.mark.slow
 def test_summary_keys_and_breakeven(planted_run):
     s = planted_run.summary()
     for k in SUMMARY_KEYS:
@@ -175,7 +177,7 @@ def test_delisting_is_liquidated_and_flagged(md, risk_model, alpha_model):
 
 def test_cost_frame_raises_on_unrecognised_or_nan():
     idx = pd.Index(["A", "B"])
-    with pytest.raises(ValueError, match="unrecognised|no recognised"):
+    with pytest.raises(ValueError, match=r"unrecognised|no recognised"):
         DailyBarSimulator._cost_frame(pd.DataFrame({"foo": [1.0, 2.0]}, index=idx), idx)
     with pytest.raises(ValueError, match="non-finite"):
         DailyBarSimulator._cost_frame(pd.DataFrame({"spread": [1.0, np.nan], "impact": [0.0, 0.0],
@@ -190,30 +192,28 @@ def test_cost_frame_raises_on_unrecognised_or_nan():
     assert DailyBarSimulator._cost_frame(None, idx).values.sum() == 0.0
 
 
-def test_simulator_snapshot_keeps_venue_date_and_spreads(md):
+def test_simulator_snapshot_is_the_cost_model_snapshot(md):
+    from qts.core.costs import LiquiditySnapshot
     from qts.tcost import TransactionCostModel
     cfg = make_cfg()
     tcm = TransactionCostModel(cfg.cost)
     sim = DailyBarSimulator(cfg, tcm)
     t = md.dates[-50]
     snap = sim._snapshot(md, t)
-    for k in ("venue", "date", "half_spread_bps", "adv_shares", "adv_usd", "half_spread", "borrow_fee_source"):
-        assert k in snap, k
-    assert snap["date"] == t
-    assert (snap["venue"] == "auction").all()
-    raw = tcm.snapshot_from_market(md, t)
-    pd.testing.assert_series_equal(snap["half_spread_bps"], raw["half_spread_bps"], check_names=False)
-    pd.testing.assert_series_equal(snap["adv_shares"], raw["adv_shares"], check_names=False)
+    assert isinstance(snap, LiquiditySnapshot) and snap.date == t and snap.tickers.equals(md.tickers)
+    raw = tcm.snapshot(md, t)
+    for k in ("half_spread", "adv_shares", "adv_usd", "sigma_daily", "borrow_fee"):
+        pd.testing.assert_series_equal(getattr(snap, k), getattr(raw, k))
+    assert snap.auction_share == raw.auction_share and snap.borrow_fee_source == raw.borrow_fee_source
     # estimate() through the simulator's snapshot prices the requested venue with real spreads
-    trades = pd.Series(0.0, index=md.tickers); trades.iloc[:3] = [1e4, -2e4, 3e4]
-    kw = sim._estimate_kwargs("continuous", t, None, md.tickers)
-    assert kw == {"venue": "continuous", "date": t}
-    est = tcm.estimate(trades, snap, **kw)
+    trades = pd.Series(0.0, index=md.tickers)
+    trades.iloc[:3] = [1e4, -2e4, 3e4]
+    est = tcm.estimate(trades, snap, "continuous")
     assert (est["venue"] == "continuous").all()
-    pd.testing.assert_series_equal(est["spread_bps"].iloc[:3], raw["half_spread_bps"].iloc[:3], check_names=False)
-    # SimpleCostModel only takes venue
+    pd.testing.assert_series_equal(est.bps()["spread_bps"].iloc[:3], raw.half_spread_bps.iloc[:3], check_names=False)
+    # SimpleCostModel (test double) satisfies the protocol and is used directly
     cm = SimpleCostModel(cfg.cost)
-    assert DailyBarSimulator(cfg, cm)._estimate_kwargs("auction", t, np.ones(len(md.tickers)), md.tickers) == {"venue": "auction"}
+    assert DailyBarSimulator(cfg, cm)._cm is cm
 
 
 def test_run_with_tcost_model_venue_and_persistence(md, risk_model, alpha_model):
@@ -222,22 +222,74 @@ def test_run_with_tcost_model_venue_and_persistence(md, risk_model, alpha_model)
     tcm = TransactionCostModel(cfg.cost)
     opt = SinglePeriodOptimizer(cfg.portfolio, tcm)
     dates = md.dates[-21:]
-    res_a = DailyBarSimulator(cfg, tcm).run(md, dates, alpha_model.as_of, risk_model.as_of, opt, nav0=1e6)
-    assert res_a.diagnostics["venue"] == "auction"
+    res_r = DailyBarSimulator(cfg, tcm).run(md, dates, alpha_model.as_of, risk_model.as_of, opt, nav0=1e6)
+    assert res_r.diagnostics["venue"] == "routed"            # D3 default
+    assert res_r.costs["fees"].sum() > 0
+    _check_identity(res_r, md)
+    res_a = DailyBarSimulator(cfg, tcm).run(md, dates, alpha_model.as_of, risk_model.as_of, opt, nav0=1e6,
+                                            venue="auction")
     assert res_a.costs["spread"].sum() == 0.0                 # auction: no spread crossing
-    assert res_a.costs["fees"].sum() > 0
     _check_identity(res_a, md)
     res_c = DailyBarSimulator(cfg, tcm).run(md, dates, alpha_model.as_of, risk_model.as_of, opt, nav0=1e6,
                                             venue="continuous")
     assert res_c.costs["spread"].sum() > 0.0                  # continuous venue actually priced
     _check_identity(res_c, md)
+    # routed spread <= continuous spread on the same first-day trade (part goes to the auction)
+    assert res_r.costs["spread"].iloc[0] <= res_c.costs["spread"].iloc[0] + 1e-9
     # persistence off -> impact no larger than with persistence on
-    cfg_off = make_cfg(); cfg_off.cost.impact_persistence = False
+    cfg_off = make_cfg()
+    cfg_off.cost.impact_persistence = False
     tcm_off = TransactionCostModel(cfg_off.cost)
     res_off = DailyBarSimulator(cfg_off, tcm_off).run(md, dates, alpha_model.as_of, risk_model.as_of,
                                                       SinglePeriodOptimizer(cfg_off.portfolio, tcm_off), nav0=1e6)
-    assert res_off.costs["impact"].iloc[0] == pytest.approx(res_a.costs["impact"].iloc[0], rel=1e-6)
-    assert res_off.costs["impact"].sum() <= res_a.costs["impact"].sum() + 1e-9
+    assert res_off.costs["impact"].iloc[0] == pytest.approx(res_r.costs["impact"].iloc[0], rel=1e-6)
+    assert res_off.costs["impact"].sum() <= res_r.costs["impact"].sum() + 1e-9
+
+
+def test_signal_lag_shifts_decisions_by_one_day():
+    """D4 on the hand-computed fixture: with zero costs and a date-keyed optimizer
+    double, the lag-1 run's weights at t equal the lag-0 run's weights at t-1;
+    nothing is traded on the first day (no signal date yet)."""
+    from tests.test_simulator_handcomputed import (
+        DATES,
+        NAV0,
+        TARGETS,
+        ConstantBpsCost,
+        PresetOptimizer,
+        alpha_fn,
+        make_md,
+        risk_fn,
+    )
+    md = make_md()
+    cfg = SystemConfig()
+    seen = []
+
+    def alpha_rec(t):
+        seen.append(t)
+        return alpha_fn(t)
+
+    res0 = DailyBarSimulator(cfg, ConstantBpsCost()).run(md, DATES, alpha_fn, risk_fn, PresetOptimizer(TARGETS),
+                                                         nav0=NAV0)
+    opt1 = PresetOptimizer(TARGETS)
+    res1 = DailyBarSimulator(cfg, ConstantBpsCost()).run(md, DATES, alpha_rec, risk_fn, opt1, nav0=NAV0,
+                                                         signal_lag_days=1)
+    assert res1.diagnostics["signal_lag_days"] == 1 and res1.diagnostics["n_no_signal_days"] == 1
+    np.testing.assert_allclose(res1.weights.iloc[0].to_numpy(), 0.0)
+    np.testing.assert_allclose(res1.weights.iloc[1:].to_numpy(), res0.weights.iloc[:-1].to_numpy(), atol=1e-12)
+    # signals / risk / optimizer snapshot evaluated at t-1; execution still at the close of t
+    assert seen == list(DATES[:3])
+    assert [c["risk"].date for c in opt1.calls] == list(DATES[:3])
+    assert list(res1.weights.index) == list(DATES[:4])
+    # config default is 0 and the kwarg overrides it
+    assert cfg.execution.signal_lag_days == 0
+    cfg1 = SystemConfig()
+    cfg1.execution.signal_lag_days = 1
+    res_cfg = DailyBarSimulator(cfg1, ConstantBpsCost()).run(md, DATES, alpha_fn, risk_fn, PresetOptimizer(TARGETS),
+                                                             nav0=NAV0)
+    pd.testing.assert_frame_equal(res_cfg.weights, res1.weights)
+    with pytest.raises(ValueError):
+        DailyBarSimulator(cfg, ConstantBpsCost()).run(md, DATES, alpha_fn, risk_fn, PresetOptimizer(TARGETS),
+                                                      signal_lag_days=-1)
 
 
 # --------------------------------------------------------------- metrics

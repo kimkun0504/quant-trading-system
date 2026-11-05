@@ -41,7 +41,6 @@ import json
 import math
 import os
 from datetime import datetime, timezone
-from typing import Dict, Iterable, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -59,7 +58,7 @@ class TrialLedger:
             open(self.path, "a").close()
 
     # ------------------------------------------------------------------ io
-    def _records(self) -> List[dict]:
+    def _records(self) -> list[dict]:
         out = []
         with open(self.path) as f:
             for line in f:
@@ -68,9 +67,9 @@ class TrialLedger:
                     out.append(json.loads(line))
         return out
 
-    def log(self, name: str, config: Dict, metrics: Dict, data_hash: str = "", code_version: str = "",
-            notes: str = "", family: Optional[str] = None, config_hash: Optional[str] = None,
-            returns_monthly: Optional[pd.Series] = None, replace_identical: bool = False) -> dict:
+    def log(self, name: str, config: dict, metrics: dict, data_hash: str = "", code_version: str = "",
+            notes: str = "", family: str | None = None, config_hash: str | None = None,
+            returns_monthly: pd.Series | None = None, replace_identical: bool = False) -> dict:
         """Append one trial (or, with ``replace_identical=True``, update the
         record with the same ``(name, config_hash, data_hash)``).
 
@@ -116,7 +115,7 @@ class TrialLedger:
         return rec
 
     # ------------------------------------------------------------------ queries
-    def n_trials(self, family: Optional[str] = None) -> int:
+    def n_trials(self, family: str | None = None) -> int:
         recs = self._records()
         if family is None:
             return len(recs)
@@ -136,14 +135,14 @@ class TrialLedger:
             rows.append(row)
         return pd.DataFrame(rows)
 
-    def records(self, family: Optional[str] = None) -> List[dict]:
+    def records(self, family: str | None = None) -> list[dict]:
         recs = self._records()
         return recs if family is None else [r for r in recs if r.get("family") == family]
 
-    def trial_sharpes_annual(self, family: Optional[str] = None, periods_per_year: int = 252) -> pd.Series:
+    def trial_sharpes_annual(self, family: str | None = None, periods_per_year: int = 252) -> pd.Series:
         return self.trial_sharpes_daily(family) * math.sqrt(periods_per_year)
 
-    def family_sharpe_variance(self, family: Optional[str] = None, annual: bool = True,
+    def family_sharpe_variance(self, family: str | None = None, annual: bool = True,
                                periods_per_year: int = 252) -> float:
         """Sample variance (ddof=1) of the logged Sharpe ratios in ``family``
         (0.0 with fewer than two trials) — the ``V`` of Bailey & LdP's E[max SR]."""
@@ -153,7 +152,7 @@ class TrialLedger:
         v = float(srs.var(ddof=1))
         return v if math.isfinite(v) else 0.0
 
-    def returns_matrix(self, family: Optional[str] = None, min_overlap: int = 12) -> pd.DataFrame:
+    def returns_matrix(self, family: str | None = None, min_overlap: int = 12) -> pd.DataFrame:
         """Month x trial matrix of the stored ``returns_monthly`` streams on
         their common months (empty if fewer than two trials have ``min_overlap``
         months in common)."""
@@ -167,7 +166,7 @@ class TrialLedger:
         M = pd.DataFrame(cols).dropna(how="any")
         return M if len(M) >= min_overlap else pd.DataFrame()
 
-    def effective_trials_for(self, family: Optional[str] = None, min_trials_for_correlation: int = 3) -> float:
+    def effective_trials_for(self, family: str | None = None, min_trials_for_correlation: int = 3) -> float:
         """Nyholt effective number of trials in ``family`` from the correlation of
         their stored monthly return streams; falls back to the raw count when
         fewer than ``min_trials_for_correlation`` trials (or no streams) exist."""
@@ -183,7 +182,7 @@ class TrialLedger:
         # streams may cover only a subset of the family: scale the shortfall as independent
         return float(min(n, n_eff + (n - M.shape[1])))
 
-    def trial_sharpes_daily(self, family: Optional[str] = None) -> pd.Series:
+    def trial_sharpes_daily(self, family: str | None = None) -> pd.Series:
         recs = self._records()
         out = {}
         for i, r in enumerate(recs):
@@ -197,7 +196,7 @@ class TrialLedger:
         return pd.Series(out, dtype=float)
 
     @staticmethod
-    def effective_trials(correlation_matrix_of_trial_returns=None, n_trials: Optional[int] = None) -> float:
+    def effective_trials(correlation_matrix_of_trial_returns=None, n_trials: int | None = None) -> float:
         """Nyholt effective number of independent trials.
 
         If no correlation matrix is given, returns ``n_trials`` (assumes
@@ -214,7 +213,7 @@ class TrialLedger:
         lam = np.linalg.eigvalsh((C + C.T) / 2)
         return float(1.0 + (M - 1) * (1.0 - np.var(lam, ddof=1) / M))
 
-    def dsr_for(self, name: str, family: Optional[str] = None, n_trials: Optional[float] = None) -> dict:
+    def dsr_for(self, name: str, family: str | None = None, n_trials: float | None = None) -> dict:
         """DSR of the named trial using the ledger's count and cross-trial SR variance.
 
         ``family`` restricts the search set; ``n_trials`` overrides the count
@@ -237,7 +236,7 @@ class TrialLedger:
         var_sr = float(srs.var(ddof=1)) if len(srs) > 1 else 0.0
         if not math.isfinite(var_sr):
             var_sr = 0.0
-        dsr = deflated_sharpe_ratio(sr_d, max(int(round(N)), 1), var_sr, n, skew, kurt)
+        dsr = deflated_sharpe_ratio(sr_d, max(round(N), 1), var_sr, n, skew, kurt)
         return {"name": name, "family": fam, "n_trials": N, "var_trials_sr": var_sr,
                 "sr_daily": sr_d, "n_obs": n, "dsr": dsr}
 

@@ -1,122 +1,205 @@
-"""``TransactionCostModel``: facade over fees, impact and borrow for the
-portfolio layer (cvxpy terms), the backtester (point estimates) and reporting.
+"""``TransactionCostModel``: the production :class:`qts.core.costs.CostModel`.
 
-Snapshot contract
------------------
-A *snapshot* is a ``dict`` of per-ticker ``pd.Series`` (shared index), built by
-:meth:`TransactionCostModel.snapshot_from_market` using data ``<= date`` only:
+One model, two forms: :meth:`TransactionCostModel.estimate` (point estimate in
+USD per ticker, used by the backtester) and :meth:`TransactionCostModel.cvx_terms`
+(convex cvxpy expression in fraction of NAV, used by the optimizer), both
+priced on the same :class:`~qts.core.costs.LiquiditySnapshot` built by
+:meth:`TransactionCostModel.snapshot` from data ``<= date`` only.
 
-``adv_usd``        63d mean dollar volume
-``adv_shares``     63d mean share volume
-``sigma_daily``    63d standard deviation of daily simple returns
-``half_spread_bps`` quoted half-spread proxy in bps (``md.spread_bps`` or default)
-``half_spread``    the same as a fraction
-``price``          last close
-``borrow_fee``     annual borrow fee (``md.borrow_fee`` or default)
-``venue``          "auction" (default) or "continuous" per ticker
-``date``           the as-of timestamp (scalar)
-``borrow_fee_source`` "data" | "proxy" | "default" (scalar, informational)
+Notation (per name): ``q = |trade|`` USD, ``P`` price, ``A`` = ``adv_usd``,
+``phi`` = auction share of ADV on the date, ``sigma`` daily vol, ``h`` half-spread
+(fraction), ``e`` = ``cfg.impact_exponent`` (1.5), ``b_c`` / ``b_a`` the
+continuous / auction prefactors, and the impact cost of a metaorder of ``Q``
+dollars against volume ``V``::
+
+    C_V,b(Q) = b * sigma * Q^e / V^(e-1)
+
+Venues in :meth:`estimate`
+--------------------------
+* ``continuous``: ``h q + C_A,b_c(q) + fees(q, continuous)``.
+* ``auction``:    ``0 + C_{phi A},b_a(q) + fees(q, auction)`` (one clearing price: no spread).
+* ``routed`` (design decision D3; simulator default) -- price the trade the way
+  :class:`qts.execution.ExecutionRouter` executes it.  The part up to
+  ``K = kappa * phi * A`` (``kappa`` = ``ExecutionConfig.auction_max_pct_of_auction_volume``,
+  2%) goes to the auction, the remainder ``q_c = q - q_a`` (``q_a = min(q, K)``)
+  to the continuous session::
+
+      spread = h * q_c
+      impact = C_{phi A},b_a(q_a) + [ C_A,b_c(q) - C_A,b_c(q_a) ]
+      fees   = fees(q_a shares, auction) + fees(q_c shares, continuous)   (two orders)
+
+  *Why the continuous leg is an increment, not C(q_c).*  Both legs are one
+  day's metaorder in the same name and move the same price.  The square-root
+  law is a law of the *whole* metaorder (impact of a child depends on what has
+  already been done), so pricing ``q_c`` as an independent order would use
+  ``C(q_a) + C(q_c) < C(q)`` (``C`` is convex with ``C(0) = 0``, hence
+  superadditive) and make splitting look artificially cheap.  Treating the
+  auction fill as the first ``q_a`` dollars of the metaorder and charging the
+  continuous remainder the *marginal* cost of extending it from ``q_a`` to
+  ``q`` -- exactly the multi-day persistence argument below -- is consistent
+  with the square-root law.  With the D2 prior (``b_a/phi^(e-1) = 0.3/sqrt(0.09)
+  = 1.0 = b_c``) the auction leg equals ``C_A,b_c(q_a)`` and the routed impact
+  collapses to ``C_A,b_c(q)``: the router saves only the half-spread on
+  ``q_a`` (and pays the auction exchange fee), never impact.  On heavy days
+  (``phi`` = 20% / 34%) the auction leg is cheaper still.
+
+Convex form for the optimizer (:meth:`cvx_terms`)
+------------------------------------------------
+For ``continuous`` and ``auction`` the expression is the *exact* estimate
+(``trade = estimate.total / nav``) whenever no per-order minimum commission or
+per-trade cap binds -- tested in ``tests/test_cost_equivalence.py`` (finding #24).
+For ``routed`` the optimizer gets, with ``k = K / nav``, ``beta_a = b_a/phi^(e-1)``
+(effective auction prefactor per ``(Q/ADV)^(e-1)``) and ``c = sigma/(A/nav)^(e-1)``::
+
+    h * pos(|x| - k)                                           spread on the continuous part
+  + c * [ beta_a * |x|^e + (b_c - beta_a) * pos(|x|^e - k^e) ]   if beta_a <= b_c
+  + c * beta_a * |x|^e                                           if beta_a >  b_c
+  + (f_c + f_auc) * pos/neg(x)                                   side-specific linear fees
+
+Derivation: the routed impact is ``c*[beta_a*min(|x|,k)^e + b_c*(|x|^e - min(|x|,k)^e)]
+= c*[beta_a*|x|^e + (b_c - beta_a)*(|x|^e - min(|x|,k)^e)]`` and
+``|x|^e - min(|x|,k)^e = pos(|x|^e - k^e)``, which is convex (``pos`` of a convex
+function minus a constant).  So when ``beta_a <= b_c`` -- the D2 default
+(``beta_a = 1.0 = b_c`` on a normal day, < 1 on heavy days) -- the spread and
+impact terms are **exact** and convex.  When ``beta_a > b_c`` the
+``(b_c - beta_a)`` coefficient is negative (non-convex) and the surrogate falls
+back to pricing the whole trade at ``beta_a``, an upper bound.  The only other
+approximation is the fee: the auction exchange fee is charged on the whole
+trade (exact: on ``q_a`` only; upper bound) and, as for every venue, the
+per-order commission minimum (here possibly twice: two orders) and per-trade
+caps are ignored.  The measured relative error vs :meth:`estimate` is reported
+by ``tests/test_cost_equivalence.py`` (a few percent, from fees only).
 
 Multi-day impact persistence (``cfg.impact_persistence``)
 ----------------------------------------------------------
-The square-root law is a *metaorder* law: a position built over ``k`` days in
-the same direction with daily notionals ``q_1..q_k`` is one metaorder of size
-``Q_k = sum q_j`` and its integrated impact cost is ``C(Q_k) = b sigma
-Q_k^{3/2} / sqrt(V)`` (``V`` = one day's venue volume, the convention under
-which ``b`` is calibrated).  The cost attributable to day ``k`` is therefore the
-*increment* ``C(Q_k) - C(Q_{k-1})``.  :meth:`estimate` receives only today's
-notional ``q_k`` and the streak length ``k`` (``streak``), so it assumes the
-earlier days were of the same size (``Q_{k-1} = (k-1) q_k``), which gives the
-multiplier on the one-day impact::
+A position built over ``k`` days in the same direction with daily notionals
+``q_1..q_k`` is one metaorder of size ``Q_k = sum q_j``; its integrated cost is
+``C(Q_k)`` (``V`` = one day's volume, the convention under which ``b`` is
+calibrated).  The cost attributable to day ``k`` is the increment
+``C(Q_k) - C(Q_{k-1})``.  :meth:`estimate` receives only today's notional
+``q_k`` and the streak length ``k`` (``streak``), so it assumes equal earlier
+days (``Q_{k-1} = (k-1) q_k``), which gives the multiplier on the one-day impact::
 
-    m_k = k^{3/2} - (k-1)^{3/2}        (m_1 = 1, m_2 = 1.83, m_3 = 2.40, ~1.5 sqrt(k))
+    m_k = k^e - (k-1)^e     (e = 1.5: m_1 = 1, m_2 = 1.828, m_3 = 2.368, m_k ~ 1.5 sqrt(k))
 
-applied to the impact leg only (spread and fees are per-day).  The simulator
-maintains ``streak`` per name (consecutive same-direction trading days,
-including today).  This treats impact within a streak as fully persistent,
-which is an upper bound (Frazzini et al. estimate ~70% permanent); it is
-deliberately conservative.  **Asymmetry:** :meth:`cvx_terms` still gives the
-optimizer the one-day marginal cost (``m = 1``), because the optimizer does not
-know how many days it will keep trading in the same direction; the realised
-backtest cost is therefore >= the optimizer's expectation during multi-day builds.
+applied to the impact leg only (spread and fees are per-day).  This treats impact
+within a streak as fully persistent, an upper bound (Frazzini et al. estimate
+~70% permanent); deliberately conservative.  **Asymmetry:** :meth:`cvx_terms`
+gives the optimizer the one-day marginal cost (``m = 1``), because the optimizer
+does not know how many days it will keep trading in the same direction; the
+realised backtest cost is therefore >= the optimizer's expectation during
+multi-day builds.
 """
 from __future__ import annotations
 
 import logging
-from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
-from qts.core.config import CostConfig
+from qts.core.config import CostConfig, ExecutionConfig
+from qts.core.costs import (
+    VENUE_AUCTION,
+    VENUE_CONTINUOUS,
+    VENUE_ROUTED,
+    VENUES,
+    CostEstimate,
+    LiquiditySnapshot,
+    SnapshotLike,
+    as_snapshot,
+)
 from qts.core.types import MarketData
-from qts.tcost.borrow import borrow_fee_proxy, borrow_fee_vector, cvx_holding_expression, holding_cost_breakdown
+from qts.tcost.borrow import TRADING_DAYS, borrow_fee_proxy
 from qts.tcost.fees import FeeSchedule
-from qts.tcost.impact import VENUE_AUCTION, SquareRootImpact
-
-SNAPSHOT_KEYS = ("adv_usd", "adv_shares", "sigma_daily", "half_spread_bps", "half_spread",
-                 "price", "borrow_fee", "venue")
+from qts.tcost.impact import SquareRootImpact
 
 log = logging.getLogger(__name__)
 
 
-def persistence_multiplier(streak) -> np.ndarray:
-    """``m_k = k^{1.5} - (k-1)^{1.5}`` for streak length ``k >= 1`` (1 for ``k <= 1``)."""
+def persistence_multiplier(streak, exponent: float = 1.5) -> np.ndarray:
+    """``m_k = k^e - (k-1)^e`` for streak length ``k >= 1`` (1 for ``k <= 1`` or non-finite)."""
     k = np.asarray(streak, dtype=float)
     k = np.where(np.isfinite(k), np.maximum(k, 1.0), 1.0)
-    return k ** 1.5 - (k - 1.0) ** 1.5
+    return k ** exponent - (k - 1.0) ** exponent
 
 
 class TransactionCostModel:
-    def __init__(self, cfg: Optional[CostConfig] = None):
+    """Production cost model (fees + spread + power-law impact + borrow).
+
+    ``exec_cfg`` supplies the routed-venue auction cap
+    (``auction_max_pct_of_auction_volume``); pass ``SystemConfig.execution``.
+    ``default_venue`` is used when ``estimate`` / ``cvx_terms`` get ``venue=None``.
+    """
+
+    def __init__(self, cfg: CostConfig | None = None, exec_cfg: ExecutionConfig | None = None,
+                 default_venue: str = VENUE_ROUTED):
         self.cfg = cfg or CostConfig()
+        self.exec_cfg = exec_cfg or ExecutionConfig()
+        if default_venue not in VENUES:
+            raise ValueError(f"unknown venue {default_venue!r}")
+        self.default_venue = default_venue
         self.fees = FeeSchedule(self.cfg)
         self.impact = SquareRootImpact(self.cfg)
+        self.exponent = self.impact.exponent
 
     # ------------------------------------------------------------ snapshot
-    def snapshot_from_market(self, md: MarketData, date, cfg_adv_window: int = 63,
-                             default_venue: str = VENUE_AUCTION,
-                             auction_share: Optional[float] = None) -> Dict[str, pd.Series]:
-        """Build the per-ticker cost snapshot as of ``date`` (point-in-time).
+    def snapshot(self, md: MarketData, date, adv_window: int = 63, vol_window: int | None = None,
+                 auction_share: float | None = None) -> LiquiditySnapshot:
+        """Point-in-time :class:`LiquiditySnapshot` as of ``date`` (data ``<= date`` only).
 
-        ``adv_usd`` for the ``venue`` used by :meth:`estimate` is full-day ADV;
-        auction-venue names use ``auction_share * adv`` internally.
+        ``adv_usd``: mean dollar volume (``md.dollar_volume`` = as-traded price x
+        actual shares) over the last ``adv_window`` days (includes day ``t``,
+        audit #18); ``adv_shares``: mean share volume over the same window
+        expressed on day ``t``'s share basis (volumes before a split are
+        rescaled by the change in ``close_raw / close``); ``price``: as-traded
+        price ``md.trade_price()`` at ``t`` (per-share fees, share counts);
+        ``sigma_daily``: s.d. of daily simple returns of the *adjusted* close
+        over ``vol_window`` (default ``adv_window``);
+        ``half_spread`` from ``md.spread_bps`` (default
+        ``cfg.default_half_spread_bps``); ``borrow_fee`` data -> short-interest
+        proxy -> GC default (``borrow_fee_source`` records which);
+        ``auction_share`` = :func:`~qts.core.costs.auction_share_for_date` with
+        ``cfg.auction_volume_share_default``.  Missing values are median-filled
+        by the snapshot itself (see :class:`LiquiditySnapshot`).
         """
         date = pd.Timestamp(date)
-        close = md.close.loc[:date].tail(cfg_adv_window + 1)
-        vol = md.volume.loc[:date].tail(cfg_adv_window)
-        if close.empty:
+        vol_window = adv_window if vol_window is None else int(vol_window)
+        close_all = md.close.loc[:date]
+        if close_all.empty:
             raise ValueError(f"no data on or before {date}")
-        dv = (close.tail(cfg_adv_window) * vol).mean(axis=0, skipna=True)
+        n_obs = len(close_all)                      # md panels share close's index (validate())
+        win = slice(max(n_obs - adv_window, 0), n_obs)
+        traded = md.trade_price().iloc[win]         # as-traded price (== close when no close_raw)
+        vol = md.volume.iloc[win]                   # actual shares traded
+        dv = (traded * vol).mean(axis=0, skipna=True)   # == md.dollar_volume over the window
+        price = traded.iloc[-1]
+        if md.close_raw is not None:
+            # split ratio (as-traded / adjusted) per day; restate share volume on day t's basis
+            ratio = traded / close_all.iloc[win]
+            vol = vol * ratio / ratio.ffill().iloc[-1]
         adv_sh = vol.mean(axis=0, skipna=True)
-        rets = close.pct_change(fill_method=None).tail(cfg_adv_window)
+        rets = close_all.tail(vol_window + 1).pct_change(fill_method=None).tail(vol_window)
         sigma = rets.std(axis=0, ddof=1, skipna=True)
-        price = close.iloc[-1]
         tickers = md.tickers
-        if md.spread_bps is not None:
-            hs_bps = md.spread_bps.loc[:date].iloc[-1].reindex(tickers)
+        if md.spread_bps is not None and len(md.spread_bps.loc[:date]):
+            hs_bps = md.spread_bps.loc[:date].iloc[-1].reindex(tickers).astype(float)
             hs_bps = hs_bps.fillna(self.cfg.default_half_spread_bps)
         else:
-            hs_bps = pd.Series(self.cfg.default_half_spread_bps, index=tickers)
-        bf, bf_source = self._borrow_fee_asof(md, date, tickers, adv_sh)
-        snap = {
-            "adv_usd": dv.reindex(tickers).astype(float),
-            "adv_shares": adv_sh.reindex(tickers).astype(float),
-            "sigma_daily": sigma.reindex(tickers).astype(float),
-            "half_spread_bps": hs_bps.astype(float),
-            "half_spread": hs_bps.astype(float) / 1e4,
-            "price": price.reindex(tickers).astype(float),
-            "borrow_fee": bf.astype(float),
-            "venue": pd.Series(default_venue, index=tickers),
-            "date": date,
-            "borrow_fee_source": bf_source,
-        }
-        if auction_share is not None:
-            snap["auction_share"] = float(auction_share)
-        return snap
+            hs_bps = pd.Series(self.cfg.default_half_spread_bps, index=tickers, dtype=float)
+        bf, bf_source = self._borrow_fee_asof(md, date, tickers, adv_sh.reindex(tickers))
+        share = self.impact.auction_share_for_date(date) if auction_share is None else float(auction_share)
+        return LiquiditySnapshot(
+            date=date, tickers=tickers, price=price.reindex(tickers), adv_usd=dv.reindex(tickers),
+            adv_shares=adv_sh.reindex(tickers), sigma_daily=sigma.reindex(tickers),
+            half_spread=hs_bps / 1e4, borrow_fee=bf, auction_share=share, borrow_fee_source=bf_source)
+
+    def snapshot_from_market(self, md: MarketData, date, cfg_adv_window: int = 63,
+                             auction_share: float | None = None) -> dict:
+        """Deprecated dict form: ``snapshot(md, date).to_dict()``."""
+        return self.snapshot(md, date, adv_window=cfg_adv_window, auction_share=auction_share).to_dict()
 
     def _borrow_fee_asof(self, md: MarketData, date, tickers: pd.Index,
-                         adv_shares: Optional[pd.Series] = None) -> Tuple[pd.Series, str]:
+                         adv_shares: pd.Series | None = None) -> tuple[pd.Series, str]:
         """Per-name annual borrow fee as of ``date``: data when present, else the
         short-interest proxy (:func:`qts.tcost.borrow.borrow_fee_proxy`) when
         ``md.short_interest_ratio`` exists, else the GC default.  Names with a
@@ -137,8 +220,8 @@ class TransactionCostModel:
                 if md.market_cap is not None and len(md.market_cap.loc[:date]):
                     mc = md.market_cap.loc[:date].iloc[-1].reindex(tickers).astype(float)
                 dtc = None
-                if adv_shares is not None and "shares_outstanding" in md.extra:
-                    so = md.extra["shares_outstanding"].loc[:date]
+                if adv_shares is not None and md.shares_outstanding is not None:
+                    so = md.shares_outstanding.loc[:date]
                     if len(so):
                         dtc = (si * so.iloc[-1].reindex(tickers).astype(float)
                                / adv_shares.reindex(tickers).replace(0.0, np.nan))
@@ -156,149 +239,183 @@ class TransactionCostModel:
         return bf.fillna(default), source
 
     # ------------------------------------------------------------- helpers
-    @staticmethod
-    def _series(snap: Dict, key: str, index: pd.Index, default) -> pd.Series:
-        v = snap.get(key)
-        if v is None:
-            return pd.Series(default, index=index)
-        if isinstance(v, pd.Series):
-            return v.reindex(index).fillna(default)
-        return pd.Series(v, index=index)
+    def _snap(self, snap: SnapshotLike, index: pd.Index | None) -> LiquiditySnapshot:
+        return as_snapshot(snap, index, share_default=self.cfg.auction_volume_share_default,
+                           default_half_spread_bps=self.cfg.default_half_spread_bps)
 
-    def _venue_volume(self, snap: Dict, index: pd.Index, venue_override: Optional[str] = None) -> Tuple[pd.Series, pd.Series]:
-        """Return (volume_for_venue_usd, b_per_name) given per-name venue."""
-        adv = self._series(snap, "adv_usd", index, np.nan).astype(float)
-        venue = self._series(snap, "venue", index, VENUE_AUCTION) if venue_override is None \
-            else pd.Series(venue_override, index=index)
-        share = float(snap.get("auction_share", self.impact.auction_share_for_date(snap.get("date"))))
-        is_auc = (venue == VENUE_AUCTION)
-        vol = adv.where(~is_auc, adv * share)
-        b = pd.Series(np.where(is_auc, self.cfg.impact_b_auction, self.cfg.impact_b_continuous), index=index)
-        return vol, b
+    def _venue(self, venue: str | None) -> str:
+        v = self.default_venue if venue is None else str(venue)
+        if v not in VENUES:
+            raise ValueError(f"unknown venue {v!r}; expected one of {VENUES}")
+        return v
+
+    def _impact_usd(self, q: np.ndarray, vol: np.ndarray, sigma: np.ndarray, b) -> np.ndarray:
+        """``b * sigma * q^e / V^(e-1)`` (USD), 0 where q == 0."""
+        e = self.exponent
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out = b * sigma * q ** e / vol ** (e - 1.0)
+        return np.where(q > 0, out, 0.0)
+
+    def auction_cap_usd(self, snap: LiquiditySnapshot) -> np.ndarray:
+        """Routed venue: max USD per name sent to the auction,
+        ``auction_max_pct_of_auction_volume * auction_share * adv_usd``."""
+        return float(self.exec_cfg.auction_max_pct_of_auction_volume) * snap.auction_share \
+            * snap.adv_usd.to_numpy(dtype=float)
+
+    def effective_auction_b(self, auction_share: float) -> float:
+        """Auction prefactor per ``(Q/ADV)^(e-1)``: ``b_a / phi^(e-1)``
+        (0.3 / sqrt(0.09) = 1.0 at the defaults)."""
+        return float(self.cfg.impact_b_auction) / float(auction_share) ** (self.exponent - 1.0)
 
     # ------------------------------------------------------------ estimate
-    def _half_spread_bps(self, snap: Dict, idx: pd.Index) -> pd.Series:
-        """``half_spread_bps`` if present, else ``half_spread`` (fraction) * 1e4, else default."""
-        if snap.get("half_spread_bps") is not None:
-            return self._series(snap, "half_spread_bps", idx, self.cfg.default_half_spread_bps).astype(float)
-        if snap.get("half_spread") is not None:
-            return self._series(snap, "half_spread", idx, self.cfg.default_half_spread_bps / 1e4).astype(float) * 1e4
-        return pd.Series(self.cfg.default_half_spread_bps, index=idx, dtype=float)
+    def estimate(self, trades_usd: pd.Series, snap: SnapshotLike, venue: str | None = None,
+                 streak: pd.Series | None = None, date=None) -> CostEstimate:
+        """Expected USD cost of ``trades_usd`` (signed dollars, indexed by ticker).
 
-    def _sigma(self, snap: Dict, idx: pd.Index) -> pd.Series:
-        """Daily sigma with NaN (new listings) filled by the cross-sectional median
-        so that :meth:`estimate` and :meth:`cvx_terms` price the same thing."""
-        sigma = self._series(snap, "sigma_daily", idx, np.nan).astype(float)
-        if sigma.isna().any():
-            med = float(sigma.median()) if sigma.notna().any() else 0.02
-            sigma = sigma.fillna(med if np.isfinite(med) else 0.02)
-        return sigma
-
-    def estimate(self, trades_usd: pd.Series, md_snapshot: Dict, venue: Optional[str] = None,
-                 date=None, w_post: Optional[pd.Series] = None,
-                 streak: Optional[pd.Series] = None) -> pd.DataFrame:
-        """Per-ticker expected cost of ``trades_usd`` (signed dollars).
-
-        Columns: ``trade_usd, venue, spread_bps, impact_bps, explicit_bps, total_bps,
-        spread_usd, impact_usd, explicit_usd, total_usd, persistence_mult`` and,
-        if ``w_post`` is given (weights) together with a NAV in the snapshot
-        (``md_snapshot['nav']``), ``borrow_usd`` (one day of holding cost).
-        ``venue`` overrides the per-name venue in the snapshot (the simulator
-        passes the venue it was asked to run).  ``streak`` (per-name count of
-        consecutive same-direction trading days, including today) scales the
-        impact leg by ``k^1.5 - (k-1)^1.5`` when ``cfg.impact_persistence`` is
-        on -- see the module docstring for the derivation.
+        ``venue`` in {"continuous", "auction", "routed"} (default
+        ``self.default_venue``) -- formulas in the module docstring.  ``streak``
+        (per-name consecutive same-direction trading days, including today)
+        scales the impact leg by ``k^e - (k-1)^e`` when ``cfg.impact_persistence``
+        is on.  ``date`` overrides ``snap.date`` for the dated fee tables.
+        Fully vectorised (numpy); ``snap`` may be an old dict snapshot.
         """
         idx = trades_usd.index
-        x = trades_usd.astype(float)
-        sigma = self._sigma(md_snapshot, idx)
-        price = self._series(md_snapshot, "price", idx, np.nan).astype(float)
-        hs_bps = self._half_spread_bps(md_snapshot, idx)
-        vol, b = self._venue_volume(md_snapshot, idx, venue)
-        vname = self._series(md_snapshot, "venue", idx, VENUE_AUCTION) if venue is None else pd.Series(venue, index=idx)
-        d = date if date is not None else md_snapshot.get("date")
+        s = self._snap(snap, idx)
+        v = self._venue(venue)
+        x = trades_usd.to_numpy(dtype=float)
+        x = np.where(np.isfinite(x), x, np.nan)
+        if np.isnan(x).any():
+            raise ValueError(f"non-finite trades for {list(idx[np.isnan(x)][:5])}")
+        q = np.abs(x)
+        sell = x < 0
+        d = s.date if date is None else pd.Timestamp(date)
+        P = s.price.to_numpy(dtype=float)
+        A = s.adv_usd.to_numpy(dtype=float)
+        sig = s.sigma_daily.to_numpy(dtype=float)
+        h = s.half_spread.to_numpy(dtype=float)
+        phi = s.auction_share
+        b_c, b_a = float(self.cfg.impact_b_continuous), float(self.cfg.impact_b_auction)
+        auction_fraction = None
 
-        impact_bps = pd.Series(
-            [float(self.impact.cost_bps(q, v, s, b=bb)) if q != 0 else 0.0
-             for q, v, s, bb in zip(x.values, vol.values, sigma.values, b.values)], index=idx)
-        mult = pd.Series(1.0, index=idx)
-        if streak is not None and getattr(self.cfg, "impact_persistence", True):
-            k = pd.Series(streak, dtype=float).reindex(idx).fillna(1.0)
-            mult = pd.Series(persistence_multiplier(k.values), index=idx).where(x != 0, 1.0)
-            impact_bps = impact_bps * mult
-        # auction fills clear at one price: no spread crossing
-        spread_bps = hs_bps.where(vname != VENUE_AUCTION, 0.0).where(x != 0, 0.0)
-        explicit_bps = pd.Series(
-            [self.fees.explicit_bps(q, p, "buy" if q > 0 else "sell", d, venue=vn) if (q != 0 and p > 0) else 0.0
-             for q, p, vn in zip(x.values, price.values, vname.values)], index=idx)
-        total_bps = spread_bps + impact_bps + explicit_bps
-        aq = x.abs()
-        out = pd.DataFrame({
-            "trade_usd": x, "venue": vname, "spread_bps": spread_bps, "impact_bps": impact_bps,
-            "explicit_bps": explicit_bps, "total_bps": total_bps, "persistence_mult": mult,
-            "spread_usd": spread_bps * aq / 1e4, "impact_usd": impact_bps * aq / 1e4,
-            "explicit_usd": explicit_bps * aq / 1e4, "total_usd": total_bps * aq / 1e4,
-        })
-        # aliases consumed by qts.backtest.simulator (spread/impact/fees USD)
-        out["fees_usd"] = out["explicit_usd"]
-        if w_post is not None and "nav" in md_snapshot:
-            bf = borrow_fee_vector(idx, md_snapshot.get("borrow_fee"), self.cfg)
-            out["borrow_usd"] = holding_cost_breakdown(w_post.reindex(idx).fillna(0.0), bf, self.cfg) * float(md_snapshot["nav"])
-        return out
+        if v == VENUE_CONTINUOUS:
+            spread = h * q
+            impact = self._impact_usd(q, A, sig, b_c)
+            fees = self.fees.explicit_cost_vec(q / P, P, sell, d, is_auction=False)
+        elif v == VENUE_AUCTION:
+            spread = np.zeros_like(q)
+            impact = self._impact_usd(q, phi * A, sig, b_a)
+            fees = self.fees.explicit_cost_vec(q / P, P, sell, d, is_auction=True)
+        else:  # routed
+            qa = np.minimum(q, self.auction_cap_usd(s))
+            qc = q - qa
+            spread = h * qc
+            impact = (self._impact_usd(qa, phi * A, sig, b_a)
+                      + self._impact_usd(q, A, sig, b_c) - self._impact_usd(qa, A, sig, b_c))
+            fees = (self.fees.explicit_cost_vec(qa / P, P, sell, d, is_auction=True)
+                    + self.fees.explicit_cost_vec(qc / P, P, sell, d, is_auction=False))
+            with np.errstate(divide="ignore", invalid="ignore"):
+                auction_fraction = pd.Series(np.where(q > 0, qa / q, 0.0), index=idx, name="auction_fraction")
 
-    def holding_cost_usd(self, w_post: pd.Series, nav: float, snapshot: Dict) -> pd.Series:
-        """One day of borrow cost in USD per ticker (shorts only); simulator hook."""
-        idx = w_post.index
-        bf = borrow_fee_vector(idx, snapshot.get("borrow_fee"), self.cfg)
-        return holding_cost_breakdown(w_post.fillna(0.0), bf, self.cfg) * float(nav)
+        mult = np.ones_like(q)
+        if streak is not None and self.cfg.impact_persistence:
+            k = pd.Series(streak, dtype=float).reindex(idx).fillna(1.0).to_numpy()
+            mult = np.where(q > 0, persistence_multiplier(k, self.exponent), 1.0)
+            impact = impact * mult
+        return CostEstimate.from_components(idx, v, trades_usd.astype(float), spread, impact, fees,
+                                            persistence_mult=mult, auction_fraction=auction_fraction)
 
-    def total_cost_usd(self, trades_usd: pd.Series, md_snapshot: Dict, **kw) -> float:
-        return float(self.estimate(trades_usd, md_snapshot, **kw)["total_usd"].sum())
+    def total_cost_usd(self, trades_usd: pd.Series, snap: SnapshotLike, **kw) -> float:
+        return float(self.estimate(trades_usd, snap, **kw).frame["total_usd"].sum())
+
+    def holding_cost_usd(self, w_post: pd.Series, nav: float, snap: SnapshotLike) -> pd.Series:
+        """One day of borrow cost in USD per ticker (shorts only):
+        ``max(-w, 0) * nav * borrow_fee / 252``."""
+        s = self._snap(snap, w_post.index)
+        w = w_post.astype(float).fillna(0.0).to_numpy()
+        return pd.Series(np.maximum(-w, 0.0) * float(nav) * s.borrow_fee.to_numpy() / TRADING_DAYS,
+                         index=w_post.index, name="borrow_usd")
 
     # ------------------------------------------------------------ convex
-    def cvx_terms(self, x, w_post, nav: float, snapshot: Dict, venue: Optional[str] = None,
-                  tickers: Optional[pd.Index] = None, include_explicit: bool = True):
+    def cvx_coefficients(self, nav: float, snap: SnapshotLike, venue: str | None = None,
+                         tickers: pd.Index | None = None) -> dict:
+        """Numpy coefficients of :meth:`cvx_terms` (fraction-of-NAV units):
+        ``spread`` (per |x|, or per ``pos(|x| - spread_kink)`` for routed),
+        ``spread_kink`` (routed auction cap / nav ``k``, else 0), ``impact`` (per
+        ``|x|^e``), ``impact_kink`` (routed: per ``pos(|x|^e - k^e)``, else 0), ``fee_buy`` / ``fee_sell`` (per ``pos(x)`` / ``neg(x)``),
+        ``borrow`` (per day per ``neg(w_post)``), ``exponent``.  Exposed so a
+        parametrised (DPP) optimizer can update them without rebuilding."""
+        s = self._snap(snap, tickers)
+        v = self._venue(venue)
+        nav = float(nav)
+        e = self.exponent
+        A = s.adv_usd.to_numpy(dtype=float)
+        sig = s.sigma_daily.to_numpy(dtype=float)
+        h = s.half_spread.to_numpy(dtype=float)
+        P = s.price.to_numpy(dtype=float)
+        n = len(s.tickers)
+        kink = np.zeros(n)
+        kink_coef = np.zeros(n)
+        if v == VENUE_CONTINUOUS:
+            b, vol, spread, auc_fee = self.cfg.impact_b_continuous, A, h, False
+        elif v == VENUE_AUCTION:
+            b, vol, spread, auc_fee = self.cfg.impact_b_auction, s.auction_share * A, np.zeros(n), True
+        else:
+            b_c = float(self.cfg.impact_b_continuous)
+            beta_a = self.effective_auction_b(s.auction_share)
+            vol, spread, auc_fee = A, h, True
+            kink = self.auction_cap_usd(s) / nav
+            if beta_a <= b_c * (1.0 + 1e-12):     # exact convex form (module docstring)
+                b = beta_a
+                kink_coef = max(b_c - beta_a, 0.0) * sig / (A / nav) ** (e - 1.0)
+            else:                                 # upper bound: whole trade at the auction prefactor
+                b = beta_a
+        coef = float(b) * sig / (vol / nav) ** (e - 1.0)
+        d = s.date
+        fb = self.fees.marginal_fraction_vec(P, False, d, is_auction=auc_fee)
+        fs = self.fees.marginal_fraction_vec(P, True, d, is_auction=auc_fee)
+        return {"spread": spread, "spread_kink": kink, "impact": coef, "impact_kink": kink_coef,
+                "fee_buy": fb, "fee_sell": fs,
+                "borrow": s.borrow_fee.to_numpy(dtype=float) / TRADING_DAYS, "exponent": e, "venue": v}
+
+    def cvx_terms(self, x, w_post, nav: float, snap: SnapshotLike, venue: str | None = None,
+                  tickers: pd.Index | None = None, include_explicit: bool = True):
         """``(trade_cost_expr, holding_cost_expr)`` as fractions of NAV, for the optimizer.
 
-        ``x`` and ``w_post`` are cvxpy expressions over ``tickers`` (defaults to
-        ``snapshot['adv_usd'].index``).  Trade cost uses the per-name venue in
-        the snapshot (auction -> b = cfg.impact_b_auction = 0.5 and V = auction
-        share x ADV) unless ``venue`` overrides it.  Because cvxpy needs one
-        coefficient vector, the 3/2-term coefficient is
-        ``b_i*sigma_i/sqrt(V_i/nav)`` per name.  NaN sigma is filled with the
-        cross-sectional median (same as :meth:`estimate`), never 0.
+        ``x`` and ``w_post`` are cvxpy expressions over ``tickers`` (default:
+        the snapshot's tickers).  ``snap`` may be a :class:`LiquiditySnapshot`
+        or an old dict snapshot (the optimizer passes a dict today).  Trade cost::
 
-        This is the **one-day marginal** cost: no multi-day persistence
-        multiplier is applied (the optimizer cannot know the future streak), so
-        during a multi-day build the simulator's realised impact exceeds what
-        the optimizer priced -- see the module docstring.
+            sum( spread*|x| + impact*|x|^e + fee_buy*pos(x) + fee_sell*neg(x) )
+
+        (routed: ``spread*pos(|x| - k) + impact_kink*pos(|x|^e - k^e)``) -- coefficients from
+        :meth:`cvx_coefficients`; exact vs :meth:`estimate` for continuous /
+        auction, a documented convex upper-bound surrogate for routed (module
+        docstring).  One-day marginal cost: no persistence multiplier.
+        Holding cost: ``sum(borrow/252 * neg(w_post))`` (one day).
         """
         import cvxpy as cp
 
-        idx = tickers if tickers is not None else snapshot["adv_usd"].index
-        sigma = self._sigma(snapshot, idx).values
-        if snapshot.get("half_spread") is not None:
-            hs = self._series(snapshot, "half_spread", idx, self.cfg.default_half_spread_bps / 1e4).astype(float).values
-        else:
-            hs = self._half_spread_bps(snapshot, idx).values / 1e4
-        price = self._series(snapshot, "price", idx, np.nan).astype(float)
-        vol, b = self._venue_volume(snapshot, idx, venue)
-        vname = self._series(snapshot, "venue", idx, VENUE_AUCTION) if venue is None else pd.Series(venue, index=idx)
-        hs = np.where(vname.values == VENUE_AUCTION, 0.0, hs)
-        vol = np.maximum(vol.fillna(vol.median() if vol.notna().any() else 1.0).values, 1e-9)
-        coef = b.values * sigma / np.sqrt(vol / float(nav))
+        if tickers is None and not isinstance(snap, LiquiditySnapshot):
+            tickers = pd.Series(snap["adv_usd"]).index
+        c = self.cvx_coefficients(nav, snap, venue, tickers)
         ax = cp.abs(x)
-        trade = cp.sum(cp.multiply(hs, ax)) + cp.sum(cp.multiply(coef, cp.power(ax, 1.5)))
+        if c["venue"] == VENUE_ROUTED:
+            spread_term = cp.sum(cp.multiply(c["spread"], cp.pos(ax - c["spread_kink"])))
+        else:
+            spread_term = cp.sum(cp.multiply(c["spread"], ax))
+        pw = cp.power(ax, c["exponent"])
+        trade = spread_term + cp.sum(cp.multiply(c["impact"], pw))
+        if np.any(c["impact_kink"] > 0):
+            trade = trade + cp.sum(cp.multiply(c["impact_kink"], cp.pos(pw - c["spread_kink"] ** c["exponent"])))
         if include_explicit:
-            d = snapshot.get("date")
-            fb = np.array([self.fees.marginal_fraction(p, "buy", d, venue=vn) if p > 0 else 0.0
-                           for p, vn in zip(price.values, vname.values)])
-            fs = np.array([self.fees.marginal_fraction(p, "sell", d, venue=vn) if p > 0 else 0.0
-                           for p, vn in zip(price.values, vname.values)])
-            trade = trade + cp.sum(cp.multiply(fb, cp.pos(x))) + cp.sum(cp.multiply(fs, cp.neg(x)))
-        bf = borrow_fee_vector(idx, snapshot.get("borrow_fee"), self.cfg).values
-        hold = cvx_holding_expression(w_post, bf)
+            trade = trade + cp.sum(cp.multiply(c["fee_buy"], cp.pos(x))) \
+                + cp.sum(cp.multiply(c["fee_sell"], cp.neg(x)))
+        hold = cp.sum(cp.multiply(c["borrow"], cp.neg(w_post)))
         return trade, hold
 
-    def participation_cap(self, snapshot: Dict, nav: float, max_part: Optional[float] = None) -> pd.Series:
-        return self.impact.participation_cap(snapshot["adv_usd"], nav, max_part)
+    def participation_cap(self, snap: SnapshotLike, nav: float, max_part: float | None = None) -> pd.Series:
+        s = self._snap(snap, None)
+        return self.impact.participation_cap(s.adv_usd, nav, max_part)
+
+
+__all__ = ["VENUE_AUCTION", "VENUE_CONTINUOUS", "VENUE_ROUTED", "TransactionCostModel", "persistence_multiplier"]

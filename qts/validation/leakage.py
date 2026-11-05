@@ -29,7 +29,8 @@ import functools
 import hashlib
 import inspect
 import textwrap
-from typing import Callable, Dict, Optional, cast
+from collections.abc import Callable
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -80,7 +81,7 @@ def pit_shift_test(build_fn: Callable[[MarketData], Wide], md: MarketData, cut_d
 
 
 def label_overlap_check(train_dates, test_dates, horizon: int, raise_on_fail: bool = False,
-                        calendar: Optional[pd.DatetimeIndex] = None) -> bool:
+                        calendar: pd.DatetimeIndex | None = None) -> bool:
     """True iff no train label window [s, s+horizon] overlaps any test label window.
 
     ``horizon`` is counted in trading days on ``calendar`` (default: business
@@ -97,7 +98,6 @@ def label_overlap_check(train_dates, test_dates, horizon: int, raise_on_fail: bo
     tr = pos.loc[train].to_numpy()
     te = pos.loc[test].to_numpy()
     h = int(horizon)
-    te_lo, te_hi = te.min(), te.max() + h
     # a test set may be non-contiguous (CPCV); check against each contiguous run
     runs = np.split(te, np.where(np.diff(te) > 1)[0] + 1)
     ok = True
@@ -118,7 +118,7 @@ def forward_return(md: MarketData, horizon: int) -> Wide:
 
 
 def simple_rank_backtest(md: MarketData, feature: Wide, horizon: int = 20, quantile: float = 0.2,
-                         periods_per_year: int = 252) -> Dict[str, float]:
+                         periods_per_year: int = 252) -> dict[str, float]:
     """Minimal long-short quantile backtest used by :func:`planted_oracle_test`.
 
     Each day rank ``feature``, go long the top ``quantile`` and short the
@@ -134,11 +134,11 @@ def simple_rank_backtest(md: MarketData, feature: Wide, horizon: int = 20, quant
     pnl = (w.shift(1) * r).sum(axis=1).dropna()
     pnl = pnl[pnl != 0]
     sr = float(pnl.mean() / pnl.std() * np.sqrt(periods_per_year)) if len(pnl) > 2 and pnl.std() > 0 else 0.0
-    return {"sharpe": sr, "mean_daily": float(pnl.mean()) if len(pnl) else 0.0, "n_obs": int(len(pnl))}
+    return {"sharpe": sr, "mean_daily": float(pnl.mean()) if len(pnl) else 0.0, "n_obs": len(pnl)}
 
 
-def planted_oracle_test(backtest_fn: Optional[Callable[[MarketData, Wide], object]], md: MarketData,
-                        horizon: int = 20, suspect_sharpe: float = SUSPECT_SHARPE) -> Dict[str, object]:
+def planted_oracle_test(backtest_fn: Callable[[MarketData, Wide], object] | None, md: MarketData,
+                        horizon: int = 20, suspect_sharpe: float = SUSPECT_SHARPE) -> dict[str, object]:
     """Run ``backtest_fn(md, oracle_feature)`` with the oracle = future return.
 
     ``backtest_fn`` may return a float Sharpe or a dict containing ``"sharpe"``.
@@ -158,11 +158,12 @@ def planted_oracle_test(backtest_fn: Optional[Callable[[MarketData, Wide], objec
 
 
 # --------------------------------------------------------------------------- registry
-FEATURE_REGISTRY: Dict[str, Dict[str, object]] = {}
+FEATURE_REGISTRY: dict[str, dict[str, object]] = {}
 
 _PANEL_NAMES = {"close", "volume", "market_cap", "industry", "spread_bps", "short_interest_ratio",
                 "borrow_fee", "book_to_price", "earnings_yield", "gross_profitability", "asset_growth",
-                "returns", "dollar_volume", "extra"}
+                "returns", "dollar_volume", "extra", "close_raw", "shares_outstanding", "industry_history",
+                "eligible", "trade_price", "industry_as_of"}
 
 
 def _negative_shift_calls(tree: ast.AST):
@@ -187,12 +188,12 @@ def _negative_shift_calls(tree: ast.AST):
     return found
 
 
-def _panel_reads(tree: ast.AST, md_param: Optional[str]):
+def _panel_reads(tree: ast.AST, md_param: str | None):
     reads = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-            if (md_param is None or node.value.id == md_param) and node.attr in _PANEL_NAMES:
-                reads.add(node.attr)
+        if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+                and (md_param is None or node.value.id == md_param) and node.attr in _PANEL_NAMES):
+            reads.add(node.attr)
         if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute) and node.value.attr == "extra":
             key = node.slice
             if isinstance(key, ast.Constant):
@@ -200,7 +201,7 @@ def _panel_reads(tree: ast.AST, md_param: Optional[str]):
     return sorted(reads)
 
 
-def feature_registry(fn: Optional[Callable] = None, *, name: Optional[str] = None, reads=None):
+def feature_registry(fn: Callable | None = None, *, name: str | None = None, reads=None):
     """Register a feature function and refuse obvious look-ahead.
 
     Usage::

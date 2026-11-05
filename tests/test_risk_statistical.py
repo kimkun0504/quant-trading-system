@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import dataclasses
+import itertools
 
 import numpy as np
 import pandas as pd
@@ -11,8 +12,15 @@ from qts.core.config import RiskConfig
 from qts.core.types import MarketData
 from qts.data.synthetic import SyntheticSpec, generate
 from qts.risk import (
-    BarraStyleRiskModel, HybridRiskModel, StatisticalRiskModel, apca, build_risk_model,
-    missing_factor_monitor, portfolio_bias_test, random_long_short_weights, select_n_factors,
+    BarraStyleRiskModel,
+    HybridRiskModel,
+    StatisticalRiskModel,
+    apca,
+    build_risk_model,
+    missing_factor_monitor,
+    portfolio_bias_test,
+    random_long_short_weights,
+    select_n_factors,
 )
 
 INJECT_START = 500          # first day of the unobserved factor
@@ -115,7 +123,7 @@ def test_apca_handles_missing_returns():
 # --------------------------------------------------------------------------- point in time
 def test_statistical_model_is_point_in_time(md):
     R = md.returns
-    kw = dict(n_factors=4, window=252, min_obs=200, refit_every=21)
+    kw = {"n_factors": 4, "window": 252, "min_obs": 200, "refit_every": 21}
     full = StatisticalRiskModel(**kw).fit(R)
     for pos in (700, 710, 899):               # a refit date, mid-cycle, last day
         d = md.dates[pos]
@@ -136,7 +144,7 @@ def test_factor_sign_and_rotation_stability(md):
     m = StatisticalRiskModel(n_factors=4, window=252, min_obs=252, refit_every=21).fit(md.returns)
     rd = m.refit_dates()
     assert len(rd) > 10
-    for d1, d2 in zip(rd[:-1], rd[1:]):
+    for d1, d2 in itertools.pairwise(rd):
         F1, F2 = m.refit_factor_returns(d1), m.refit_factor_returns(d2)
         ov = F1.index.intersection(F2.index)
         assert len(ov) > 200
@@ -151,6 +159,7 @@ def test_factor_sign_and_rotation_stability(md):
 
 
 # --------------------------------------------------------------------------- hybrid
+@pytest.mark.slow
 def test_hybrid_prices_unobserved_factor(md_injected, hybrid, aligned_book, cfg):
     fund = hybrid.fundamental
     dates = md_injected.dates[-(N_EVAL + 1):-1]
@@ -253,3 +262,58 @@ def test_hybrid_factor_groups(md_injected, hybrid, cfg):
     fund = hybrid.fundamental.as_of(d)
     assert fund.factor_groups["statistical"] == []
     assert fund.factor_groups["industry"] == g["industry"]
+
+
+# --------------------------------------------------------------------------- PIT factor count (finding #19)
+SECOND_START = 680          # a second unobserved factor switches on here
+
+
+@pytest.fixture(scope="module")
+def md_two_latent(md_injected):
+    """``md_injected`` plus a second latent factor from ``SECOND_START``, so the
+    per-refit Bai-Ng count moves from 1 to 2 inside the sample."""
+    rng = np.random.default_rng(7)
+    g2 = rng.standard_normal(len(md_injected.tickers))
+    f2 = np.zeros(len(md_injected.dates))
+    f2[SECOND_START:] = 0.012 * rng.standard_normal(len(md_injected.dates) - SECOND_START)
+    r = md_injected.returns.values.copy()
+    r[1:] = r[1:] + np.outer(f2, g2)[1:]
+    close = 100 * np.exp(np.cumsum(np.log1p(np.nan_to_num(r)), axis=0))
+    close = pd.DataFrame(close, index=md_injected.dates, columns=md_injected.tickers)
+    shares = md_injected.market_cap / md_injected.close
+    return dataclasses.replace(md_injected, close=close, market_cap=close * shares)
+
+
+def _assert_risk_close(a, b):
+    pd.testing.assert_frame_equal(a.exposures, b.exposures, atol=1e-12, rtol=1e-9)
+    pd.testing.assert_frame_equal(a.factor_cov, b.factor_cov, atol=1e-16, rtol=1e-9)
+    pd.testing.assert_series_equal(a.specific_var, b.specific_var, atol=1e-18, rtol=1e-9)
+
+
+def test_hybrid_factor_count_is_point_in_time(md_two_latent, cfg):
+    """k is chosen per refit from the trailing window (no end-of-sample choice):
+    ``as_of(t)`` on the full fit equals a fit on data truncated at ``t``, at two
+    dates spanning a refit at which the selected count changes; the output
+    keeps ``max_statistical_factors`` columns with zero exposure in unused slots."""
+    md2 = md_two_latent
+    full = HybridRiskModel(BarraStyleRiskModel(cfg), cfg).fit(md2)
+    by_refit = full.factor_count_details["by_refit"]
+    assert full.factor_count_details["method"] == "bai_ng_per_refit"
+    assert full.n_statistical_factors == cfg.max_statistical_factors
+    assert by_refit.between(1, cfg.max_statistical_factors).all()
+    change = by_refit[by_refit.diff() > 0]
+    assert len(change), f"selected k never increases: {by_refit.value_counts().to_dict()}"
+    r_date = change.index[0]
+    pos = md2.dates.get_loc(r_date)
+    d_before, d_after = md2.dates[pos - 1], md2.dates[pos + 3]
+    assert full.statistical.n_active_factors(d_before) < full.statistical.n_active_factors(d_after)
+    for d in (d_before, d_after):
+        trunc = HybridRiskModel(BarraStyleRiskModel(cfg), cfg).fit(md2.slice_until(d))
+        a, b = full.as_of(d), trunc.as_of(d)
+        _assert_risk_close(a, b)
+        stat_cols = a.factor_groups["statistical"]
+        assert len(stat_cols) == cfg.max_statistical_factors            # stable shape
+        k = full.statistical.n_active_factors(d)
+        assert np.all(a.exposures[stat_cols[k:]].values == 0.0)        # unused slots are zero
+        assert np.all(a.factor_cov.loc[stat_cols[k:], stat_cols[k:]].values == 0.0)
+        assert np.abs(a.exposures[stat_cols[:k]].values).sum() > 0

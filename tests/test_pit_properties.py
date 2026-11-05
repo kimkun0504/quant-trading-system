@@ -52,7 +52,7 @@ late_cut_pos = st.integers(min_value=200, max_value=N_DAYS - 2)   # risk/alpha n
 def _eq(a, b, what: str, rtol: float | None = None) -> None:
     """Equality of two frames/series on their common (truncated) rows: exact by
     default, or to ``rtol`` (atol 1e-14) where only float summation order differs."""
-    kw = dict(check_exact=True) if rtol is None else dict(check_exact=False, rtol=rtol, atol=1e-14)
+    kw = {"check_exact": True} if rtol is None else {"check_exact": False, "rtol": rtol, "atol": 1e-14}
     if isinstance(a, pd.DataFrame):
         pd.testing.assert_frame_equal(a, b, check_freq=False, obj=what, **kw)
     else:
@@ -133,7 +133,7 @@ def test_cost_snapshot_pit(md, p):
 
 
 # ----------------------------------------------------------------------------- (d) risk as_of
-RISK_CFG = dict(min_history_days=60, n_eigen_sims=30, statistical_companion=False)
+RISK_CFG = {"min_history_days": 60, "n_eigen_sims": 30, "statistical_companion": False}
 
 
 @pytest.fixture(scope="module")

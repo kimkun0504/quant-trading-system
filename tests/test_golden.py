@@ -82,7 +82,7 @@ def curated(pipe, res) -> dict:
         "hurdles": {"overall": _enc(res.hurdles["overall"]),
                     "status": {k: res.hurdles["status"][k] for k in sorted(res.hurdles["status"])}},
         "backtest": {
-            "n_nav": int(len(nav)),
+            "n_nav": len(nav),
             "nav_quartiles": [_enc(nav[int(q * (len(nav) - 1))]) for q in (0.25, 0.5, 0.75)],
             "sum_abs_weights": _enc(np.abs(bt.weights.to_numpy()).sum()),
             "sum_costs_by_kind": {c: _enc(bt.costs[c].sum()) for c in ("spread", "impact", "fees", "borrow")},
@@ -100,7 +100,7 @@ def _compare(path: str, got, exp, errors: list) -> None:
     elif isinstance(exp, list):
         if len(got) != len(exp):
             errors.append(f"{path}: length {len(got)} != {len(exp)}")
-        for i, (g, e) in enumerate(zip(got, exp)):
+        for i, (g, e) in enumerate(zip(got, exp, strict=False)):  # length mismatch reported above
             _compare(f"{path}[{i}]", g, e, errors)
     elif isinstance(exp, float) and not isinstance(exp, bool) and isinstance(got, (int, float)):
         if not math.isclose(got, exp, rel_tol=RTOL, abs_tol=ATOL):
