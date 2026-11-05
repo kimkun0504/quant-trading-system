@@ -202,9 +202,43 @@ def test_snapshot_uses_borrow_proxy_when_fee_absent(md):
     assert tcm.snapshot_from_market(md, date)["borrow_fee_source"] == "data"
     md_none = dataclasses.replace(md, borrow_fee=None, short_interest_ratio=None)
     s3 = tcm.snapshot_from_market(md_none, date)
-    assert (
-        s3["borrow_fee_source"] == "default" and (s3["borrow_fee"] == tcm.cfg.default_borrow_fee_annual).all()
-    )
+    # no SI data: GC default, times the small-cap multiplier for small caps (audit 2 #8)
+    gc, mult = tcm.cfg.default_borrow_fee_annual, tcm.cfg.small_cap_borrow_multiplier
+    small = (mc < tcm.cfg.small_cap_threshold_usd).to_numpy()
+    assert s3["borrow_fee_source"] == "default"
+    np.testing.assert_allclose(s3["borrow_fee"].to_numpy(), np.where(small, gc * mult, gc))
+    assert small.any() and (~small).any()
+    s4 = tcm.snapshot_from_market(dataclasses.replace(md_none, market_cap=None), date)
+    assert (s4["borrow_fee"] == gc).all()
+
+
+def test_borrow_fee_source_per_name_and_all_nan_panel(md):
+    """Audit 2 finding 8: an all-NaN borrow_fee row is not "data"; names with NaN SI
+    still get the small-cap multiplier on the GC default; per-name sources."""
+    import dataclasses
+
+    tcm = TransactionCostModel(CostConfig())
+    date = md.dates[150]
+    nan_fee = md.borrow_fee * np.nan
+    si = md.short_interest_ratio.copy()
+    si.iloc[:, :5] = np.nan  # five names without SI data
+    md2 = dataclasses.replace(md, borrow_fee=nan_fee, short_interest_ratio=si)
+    snap = tcm.snapshot(md2, date)
+    src = tcm.borrow_fee_sources(md2, date)
+    assert snap.borrow_fee_source == "proxy+default"
+    assert (src.iloc[:5] == "default").all() and (src.iloc[5:] == "proxy").all()
+    mc = md.market_cap.loc[:date].iloc[-1].reindex(md.tickers)
+    gc, mult = tcm.cfg.default_borrow_fee_annual, tcm.cfg.small_cap_borrow_multiplier
+    small = (mc.iloc[:5] < tcm.cfg.small_cap_threshold_usd).to_numpy()
+    np.testing.assert_allclose(snap.borrow_fee.iloc[:5].to_numpy(), np.where(small, gc * mult, gc))
+    # one finite datum -> "data" appears, and that name uses it
+    fee1 = nan_fee.copy()
+    fee1.iloc[:, 7] = 0.031
+    md3 = dataclasses.replace(md2, borrow_fee=fee1)
+    snap3 = tcm.snapshot(md3, date)
+    assert snap3.borrow_fee_source == "data+proxy+default"
+    assert snap3.borrow_fee.iloc[7] == pytest.approx(0.031)
+    assert tcm.borrow_fee_sources(md3, date).iloc[7] == "data"
 
 
 def test_holding_cost():
@@ -256,19 +290,19 @@ def test_calibrate_b_recovers_truth():
     assert TCALedger().calibrate_b(prior_b=1.0)[0] == 1.0
 
 
-def _venue_fill_ledger(b_auction=0.5, b_continuous=1.0, n=200, seed=7):
+def _venue_fill_ledger(b_auction=0.5, b_continuous=1.0, n=200, seed=7, exponent=1.5, vol_noise=True):
     """Noise-free fills through FillSimulator: MOC (auction) and ALGO (continuous)."""
     from qts.execution import FillSimulator, Order
 
-    cfg = CostConfig(impact_b_auction=b_auction, impact_b_continuous=b_continuous)
+    cfg = CostConfig(impact_b_auction=b_auction, impact_b_continuous=b_continuous, impact_exponent=exponent)
     sim = FillSimulator(cfg, auction_share=0.09)
     rng = np.random.default_rng(seed)
-    led = TCALedger()
+    led = TCALedger(cost_cfg=cfg)
     for day in range(n):
         date = pd.Timestamp("2026-06-01") + pd.Timedelta(days=day)
         px = rng.uniform(20, 200)
         adv = rng.uniform(5e5, 5e6)
-        vol = adv * rng.uniform(0.8, 1.2)
+        vol = adv * rng.uniform(0.8, 1.2) if vol_noise else adv
         sigma = rng.uniform(0.01, 0.04)
         side = "BUY" if rng.random() < 0.5 else "SELL"
         realized = pd.DataFrame(
@@ -320,6 +354,28 @@ def test_calibrate_b_is_venue_aware():
     y = (auc["arrival_slippage_bps"] - auc["half_spread_bps"]) / 1e4
     assert abs(float(x_full @ y) / float(x_full @ x_full) - 0.5 / np.sqrt(0.09)) < 0.3
     assert (auc["venue_volume"] < auc["filled_qty"] / auc["participation"] * 0.5).all()
+
+
+@pytest.mark.parametrize("exponent", [1.25, 1.5, 1.8])
+def test_calibrate_b_uses_configured_exponent(exponent):
+    """Audit 2 finding 2: the regressor is sigma*(F/V)^(e-1), the average impact per
+    dollar of C(Q) = b sigma Q^e / V^(e-1).  Noise-free fills with realised volume = ADV
+    recover both venue prefactors exactly for any e in (1, 2]."""
+    led = _venue_fill_ledger(b_auction=0.3, b_continuous=1.0, exponent=exponent, vol_noise=False)
+    by = led.calibrate_b_by_venue(prior_weight=0.0)
+    assert by["auction"][1]["b_ols"] == pytest.approx(0.3, rel=1e-6)
+    assert by["continuous"][1]["b_ols"] == pytest.approx(1.0, rel=1e-6)
+    d = led.decompose()
+    # hand check of the regressor on one order
+    r = d.iloc[0]
+    assert r["impact_x"] == pytest.approx(
+        r["sigma_daily"] * (r["filled_qty"] / r["venue_volume"]) ** (exponent - 1)
+    )
+    if exponent != 1.5:  # the old sqrt regressor is biased away from e = 1.5
+        auc = d[d["venue"] == "continuous"]
+        x_sqrt = auc["sigma_daily"] * np.sqrt(auc["filled_qty"] / auc["venue_volume"])
+        y = (auc["arrival_slippage_bps"] - auc["half_spread_bps"]) / 1e4
+        assert abs(float(x_sqrt @ y) / float(x_sqrt @ x_sqrt) - 1.0) > 0.3
 
 
 def test_decomposition_sums_and_signs():

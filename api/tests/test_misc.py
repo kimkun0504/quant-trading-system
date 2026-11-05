@@ -12,20 +12,24 @@ from qts_api.main import create_app
 from qts_api.services.config_schema import leaf_index, validate_overrides
 from qts_api.settings import Settings
 
+LOCAL = "http://localhost"  # Host allow-list (see conftest.LOCAL)
+
 
 def test_ledger(client, fixture_root, summary):
     led = S.Ledger.model_validate(client.get("/api/ledger").json())
     recs = [json.loads(x) for x in (fixture_root / "trial_ledger.jsonl").read_text().splitlines() if x.strip()]
     assert len(led.trials) == len(recs) >= 1
     t = led.trials[-1]
-    assert t.family == "pipeline_phase1" and t.config_hash == summary["config_hash"]
+    # DSR family = phase + data hash (qts.pipeline.ResearchPipeline.ledger_family)
+    family = f"pipeline_phase1:{summary['data_hash'][:12]}"
+    assert t.family == family and t.config_hash == summary["config_hash"]
     assert t.sharpe_annual == summary["backtest"]["sharpe_net"]
-    fam = {f.family: f for f in led.families}["pipeline_phase1"]
+    fam = {f.family: f for f in led.families}[family]
     assert fam.n_trials == len(recs) and fam.effective_trials >= 1
 
 
 def test_ledger_missing_file(tmp_path):
-    with TestClient(create_app(Settings(runs_root=tmp_path), start_jobs=False)) as c:
+    with TestClient(create_app(Settings(runs_root=tmp_path), start_jobs=False), base_url=LOCAL) as c:
         assert c.get("/api/ledger").json() == {"trials": [], "families": []}
         assert c.get("/api/runs").json() == []
         assert not (tmp_path / "trial_ledger.jsonl").exists()
@@ -78,7 +82,7 @@ def test_serve_ui(tmp_path):
     (dist / "assets" / "app.js").write_text("console.log(1)")
     (dist / "favicon.svg").write_text("<svg/>")
     s = Settings(runs_root=tmp_path / "runs", serve_ui=True, ui_dist=dist)
-    with TestClient(create_app(s, start_jobs=False)) as c:
+    with TestClient(create_app(s, start_jobs=False), base_url=LOCAL) as c:
         assert "id=root" in c.get("/").text
         assert "id=root" in c.get("/runs/abc/risk").text  # SPA fallback
         assert c.get("/assets/app.js").text == "console.log(1)"

@@ -101,11 +101,16 @@ def _run_pipeline(md, cfg, a: argparse.Namespace, out=None) -> int:
         res = pipe.run(md, progress=a.verbose, max_days=a.max_days)
         print(format_result(res), file=out)
         return 0
+    # headline = the configured lag (production default 1, or --signal-lag); lag 0 and 1
+    # are always run for the D4 comparison.  The fitted models are reused; only the
+    # backtest re-runs.
+    base = int(cfg.execution.signal_lag_days)
     results = {}
-    for lag in (0, 1):  # the fitted models are reused; only the backtest re-runs
+    for lag in sorted({0, 1, base}):
         cfg.execution.signal_lag_days = lag
         results[lag] = pipe.run(md, progress=a.verbose, max_days=a.max_days)
-    print(format_result(results[1 if a.signal_lag == 1 else 0]), file=out)
+    cfg.execution.signal_lag_days = base
+    print(format_result(results[base]), file=out)
     print("", file=out)
     print(compare_lag_report(results[0], results[1]), file=out)
     return 0

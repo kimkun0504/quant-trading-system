@@ -322,6 +322,8 @@ def as_snapshot(
 # --------------------------------------------------------------------------- estimate
 COST_USD_COLUMNS = ("spread_usd", "impact_usd", "fees_usd", "total_usd")
 COST_ESTIMATE_COLUMNS = (*COST_USD_COLUMNS, "venue", "persistence_mult")
+#: :class:`CostEstimate` rejects a USD component below ``-NEGATIVE_COST_TOLERANCE_USD``.
+NEGATIVE_COST_TOLERANCE_USD = 1e-6
 
 
 @dataclass(frozen=True, eq=False)
@@ -329,7 +331,8 @@ class CostEstimate:
     """USD cost of one trade vector, per ticker.
 
     ``frame`` columns (fixed): ``spread_usd, impact_usd, fees_usd, total_usd``
-    (all >= 0, finite, ``total = spread + impact + fees``), ``venue`` (the
+    (all >= 0 -- enforced, up to ``NEGATIVE_COST_TOLERANCE_USD`` of rounding --
+    finite, ``total = spread + impact + fees``), ``venue`` (the
     venue priced) and ``persistence_mult`` (multi-day impact multiplier applied,
     1 when off).  ``trade_usd`` is the signed trade; ``auction_fraction`` (routed
     venue only) is the share of ``|trade|`` priced in the closing auction.
@@ -350,6 +353,15 @@ class CostEstimate:
         if not np.isfinite(num).all():
             bad = self.frame.index[np.flatnonzero(~np.isfinite(num).all(axis=1))]
             raise ValueError(f"non-finite cost estimate for {list(bad[:5])}")
+        # A negative component would be booked as a rebate (e.g. a negative fee from a
+        # bad config).  Rounding noise of a few nano-dollars is tolerated.
+        neg = num < -NEGATIVE_COST_TOLERANCE_USD
+        if neg.any():
+            rows, cols = np.nonzero(neg)
+            bad_cols = sorted({COST_USD_COLUMNS[int(c)] for c in cols})
+            raise ValueError(
+                f"negative cost estimate ({bad_cols}) for {list(self.frame.index[np.unique(rows)][:5])}"
+            )
 
     @property
     def index(self) -> pd.Index:
@@ -426,7 +438,10 @@ class CostModel(Protocol):
     * ``snapshot(md, date)``: point-in-time :class:`LiquiditySnapshot`.
     * ``estimate(trades_usd, snap, venue, streak=None)``: :class:`CostEstimate`
       (USD).  ``streak`` = per-name count of consecutive same-direction trading
-      days including today (multi-day impact persistence).
+      days including today (multi-day impact persistence).  A model may also
+      accept ``prior_streak_usd`` (per-name USD traded earlier in the current
+      same-direction streak); the simulator passes it only when ``estimate``'s
+      signature has that parameter (``qts.tcost.TransactionCostModel`` does).
     * ``cvx_terms(x, w_post, nav, snap, venue)``: ``(trade_cost, holding_cost)``
       cvxpy expressions in **fraction of NAV**; ``holding_cost`` is one day.
       ``snap`` may be a :class:`LiquiditySnapshot` or an old dict snapshot.

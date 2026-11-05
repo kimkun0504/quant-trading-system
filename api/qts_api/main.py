@@ -14,6 +14,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -64,6 +65,9 @@ def create_app(settings: Settings | None = None, *, start_jobs: bool = True) -> 
         allow_headers=["*"],
         expose_headers=["Location"],
     )
+    # Host allow-list (DNS rebinding, audit 2 #4).  Added last = outermost: a foreign
+    # Host gets 400 before CORS or any route runs.
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.allowed_hosts), www_redirect=False)
     problems.install(app)
     for r in (runs.router, jobs.router, ledger.router, config.router, health.router):
         app.include_router(r)

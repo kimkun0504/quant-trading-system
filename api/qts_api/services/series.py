@@ -88,6 +88,22 @@ def return_series_frame(
     )
 
 
+def gross_after_borrow(
+    returns: pd.DataFrame | None, costs: pd.DataFrame | None, nav_pre: pd.Series | None, gross: pd.Series | None
+) -> pd.Series | None:
+    """Gross return net of borrow on the realisation axis (``returns["gross_after_borrow"]``
+    when the run stored it; else ``gross - borrow / nav_pre`` positionally) -- the series the
+    per-side cost sensitivity starts from (borrow is not a per-side cost; audit 2 #1)."""
+    if gross is None:
+        return None
+    if returns is not None and "gross_after_borrow" in returns:
+        return returns["gross_after_borrow"].astype(float).reindex(gross.index)
+    if costs is None or nav_pre is None or "borrow" not in costs or not len(costs):
+        return gross
+    b = (costs["borrow"].astype(float) / nav_pre.astype(float)).fillna(0.0)
+    return gross - positional(b, gross.index).fillna(0.0)
+
+
 def cost_sensitivity_rows(stored: Any, gross: pd.Series | None, turnover: pd.Series | None, cost_bps: float):
     """Rows of ``summary.json["cost_sensitivity"]`` (``{"0.5": {...}}``); recomputed with
     :func:`qts.backtest.metrics.cost_sensitivity` when absent."""

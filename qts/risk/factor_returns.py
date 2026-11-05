@@ -177,6 +177,10 @@ def estimate_factor_return_history(
         empty = pd.DataFrame(index=pd.DatetimeIndex([]))
         return empty, empty.copy(), pd.Series(dtype=float)
     factor_returns = pd.DataFrame(fr).T.sort_index().fillna(0.0)
+    all_factors = getattr(exposures_by_date, "factors", None)
+    if all_factors is not None:  # ExposureHistory: stable column order (per-date frames may
+        # carry only the industry labels observed by that date; finding 4, second pass)
+        factor_returns = factor_returns.reindex(columns=list(all_factors), fill_value=0.0)
     specific_returns = pd.DataFrame(sr).T.sort_index().reindex(columns=md.tickers)
     factor_returns.index.name = specific_returns.index.name = "date"
     return factor_returns, specific_returns, pd.Series(r2, name="r2").sort_index()

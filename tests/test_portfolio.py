@@ -40,7 +40,14 @@ def ctx(md, risk_model, alpha_model, test_date):
 
 
 def ls_cfg(**kw) -> PortfolioConfig:
-    base = {"book": "long_short", "risk_aversion": 2.0, "target_vol_annual": None}
+    """Fixed-gamma long/short config for mechanics tests (the default
+    ``risk_aversion_mode="target_vol"`` is tested in tests/test_gamma_search.py)."""
+    base = {
+        "book": "long_short",
+        "risk_aversion": 2.0,
+        "target_vol_annual": None,
+        "risk_aversion_mode": "fixed",
+    }
     base.update(kw)
     return PortfolioConfig(**base)
 
@@ -630,13 +637,28 @@ def test_force_to_zero_and_out_of_model_names(barra_ctx):
     assert half.status == "optimal" and abs(half.w_target[tk]) <= 0.0075 + BARRA_TOL
     out = opt.solve(a, r, w_prev, 1e6, snap, force_to_zero={tk: 0.0})
     assert out.status == "optimal" and abs(out.w_target[tk]) <= BARRA_TOL
-    # a name the risk model does not know: zero exposure, 90th-pct specific var, counted
+    # second-pass finding 3: a name the risk model does not know is never opened,
+    # even with the largest alpha; it is reported as excluded
     a2 = pd.concat([a, pd.Series({"ZZZ_NOT_IN_MODEL": a.abs().max()})])
     res = opt.solve(a2, r, w_prev, 1e6, snap)
     assert res.status == "optimal"
-    assert res.n_out_of_model == 1
-    assert any("outside the risk model universe" in n for n in res.notes)
+    assert res.w_target["ZZZ_NOT_IN_MODEL"] == 0.0 and res.n_out_of_model == 0
+    assert res.n_excluded_alpha == 1
+    assert any("outside the risk model excluded" in n for n in res.notes)
     assert free.n_out_of_model == 0
+    # ... and a *held* out-of-model name is exited (as far as ADV allows), counted after the solve
+    w_held = w_prev.copy()
+    w_held["ZZZ_NOT_IN_MODEL"] = 0.01
+    snap2 = {
+        k: (v.reindex(w_held.index).fillna(v.median()) if isinstance(v, pd.Series) else v)
+        for k, v in snap.items()
+    }
+    ex = opt.solve(a2, r, w_held, 1e6, snap2)
+    assert ex.status == "optimal" and abs(ex.w_target["ZZZ_NOT_IN_MODEL"]) <= BARRA_TOL
+    assert ex.n_out_of_model == 0 and "force_to_zero" in ex.binding_constraints
+    slow = opt.solve(a2, r, w_held, 1e10, snap2)  # tiny ADV relative to NAV: partial exit
+    assert slow.status == "optimal" and 0 < slow.w_target["ZZZ_NOT_IN_MODEL"] < 0.01
+    assert slow.n_out_of_model == 1 and any("held names outside" in n for n in slow.notes)
 
 
 # ------------------------------------------------------- simulator eligibility hook

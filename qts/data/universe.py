@@ -16,8 +16,13 @@ available on or before it:
   microcap tail where anomaly returns live but cannot be captured);
 * within the top ``top_n_by_mcap`` by market cap among the survivors.
 
-Membership is refreshed every ``UniverseConfig.refresh_days`` (default 21
-trading days) and held constant in between.  To limit turnover, a name that is
+Membership is refreshed on a fixed calendar grid and held constant in between:
+with ``UniverseConfig.refresh_anchor = "month_start"`` (default) on the first
+trading day of every calendar month (plus the panel's first date, so the mask
+is defined from the start), so the refresh dates do not depend on the load
+``start`` (audit 2 #18; the hysteresis state still needs
+``exit_after_n_fails`` refreshes to forget the start); ``"panel_start"`` is the
+legacy grid every ``refresh_days`` trading days from the first panel date.  To limit turnover, a name that is
 in the universe leaves only after failing ``UniverseConfig.exit_after_n_fails``
 (default 3) consecutive refreshes; a name enters as soon as it passes.  A name whose close is NaN
 (not yet listed / delisted) is never in the universe regardless of hysteresis.
@@ -56,6 +61,22 @@ def raw_eligibility(md: MarketData, cfg: UniverseConfig) -> Wide:
     return (base & (rank <= cfg.top_n_by_mcap)).fillna(False).astype(bool)
 
 
+def refresh_positions(dates: pd.DatetimeIndex, refresh_days: int, anchor: str = "month_start") -> np.ndarray:
+    """Positions of the universe refresh dates in ``dates``.
+
+    ``"month_start"``: position 0 and the first date of every calendar month;
+    ``"panel_start"``: every ``refresh_days`` positions from 0 (legacy)."""
+    if len(dates) == 0:
+        return np.zeros(0, dtype=int)
+    if anchor == "panel_start":
+        return np.arange(0, len(dates), int(refresh_days))
+    if anchor != "month_start":
+        raise ValueError(f"refresh_anchor must be 'month_start' or 'panel_start', got {anchor!r}")
+    per = dates.to_period("M")
+    new_month = np.r_[True, per[1:] != per[:-1]]
+    return np.flatnonzero(new_month)
+
+
 def build_universe_mask(md: MarketData, cfg: Optional[UniverseConfig] = None,
                         refresh_days: Optional[int] = None, exit_after_n_fails: Optional[int] = None) -> Wide:
     """PIT universe mask (see module docstring).  ``refresh_days`` and
@@ -68,7 +89,7 @@ def build_universe_mask(md: MarketData, cfg: Optional[UniverseConfig] = None,
         raise ValueError("refresh_days and exit_after_n_fails must be >= 1")
     raw = raw_eligibility(md, cfg)
     dates = raw.index
-    refresh_pos = np.arange(0, len(dates), refresh_days)
+    refresh_pos = refresh_positions(pd.DatetimeIndex(dates), refresh_days, getattr(cfg, "refresh_anchor", "month_start"))
     R = raw.iloc[refresh_pos].to_numpy()
     N = R.shape[1]
     in_u = np.zeros(N, dtype=bool)
@@ -87,48 +108,71 @@ def build_universe_mask(md: MarketData, cfg: Optional[UniverseConfig] = None,
 
 
 def apply_mask(md: MarketData, mask: Wide) -> MarketData:
-    """Return a MarketData with every panel NaN where ``mask`` is False.
+    """Attach the point-in-time universe ``mask`` to ``md`` as ``md.eligible``.
 
-    Prices (``close`` and ``close_raw``) are kept intact (so returns and labels
-    remain computable for names that just left the universe); market cap,
-    volume, shares outstanding and features are masked.  ``industry_history``
-    (labels) is only column-restricted.  ``extra`` panels whose columns are not
-    tickers (e.g. ``true_style_factor_returns``, date x factor) pass through
-    unchanged.  Tickers that are never in the universe are dropped **from the
-    column set only** -- that is a storage convenience, not an eligibility
-    statement.  The per-date membership is stored on ``md.eligible`` and every
-    cross-sectional operation downstream must go through
-    ``MarketData.eligibility()`` so that a name that enters the universe in
-    2015 is *not* in the 2010 cross-section (future-membership leakage).
+    **No panel is masked** (audit 2 #6): prices, volume, market cap, shares
+    outstanding, fundamentals, short interest and ``extra`` keep their full
+    history, so trailing statistics of a name that just entered the universe
+    (63-day turnover / Amihud / dollar volume, risk liquidity, the cost model's
+    ADV) are its true trailing values instead of NaN / truncated windows.
+    Universe membership acts only through ``md.eligibility()`` (``eligible`` and
+    a close at ``t``), which every cross-sectional statistic and every emitted
+    score uses (features ``process``, composite, labels, IC, risk-style
+    standardisation, the pipeline's alpha wrapper, the simulator).  Code that
+    still needs "NaN outside the universe" panels (e.g. a risk model whose
+    estimation universe is "has a market cap") should use
+    :func:`masked_levels`.
+
+    Tickers that are never in the universe are dropped **from the column set
+    only** -- a storage convenience, not an eligibility statement.
+    ``industry_history`` is column-restricted; ``extra`` panels whose columns
+    are not tickers (e.g. ``true_style_factor_returns``) pass through unchanged.
     """
     keep = mask.columns[mask.any(axis=0)]
     m = mask[keep].astype(bool)
     tickers = set(md.tickers)
 
-    def cut(f: Optional[Wide]) -> Optional[Wide]:
-        if f is None:
-            return None
-        return f[keep].where(m)
+    def cols(f: Optional[Wide]) -> Optional[Wide]:
+        return None if f is None else f[keep]
 
-    def cut_extra(f: Wide) -> Wide:
+    def cols_extra(f: Wide) -> Wide:
         if not set(f.columns) <= tickers:
             return f                       # not a ticker panel
-        return f.reindex(columns=keep).where(m)
+        return f.reindex(columns=keep)
 
     ih = md.industry_history
     return replace(
         md,
-        close=md.close[keep], volume=cut(md.volume), market_cap=cut(md.market_cap),
-        industry=md.industry.reindex(keep), spread_bps=cut(md.spread_bps),
-        short_interest_ratio=cut(md.short_interest_ratio), borrow_fee=cut(md.borrow_fee),
-        book_to_price=cut(md.book_to_price), earnings_yield=cut(md.earnings_yield),
-        gross_profitability=cut(md.gross_profitability), asset_growth=cut(md.asset_growth),
-        extra={k: cut_extra(v) for k, v in md.extra.items()},
+        close=md.close[keep], volume=cols(md.volume), market_cap=cols(md.market_cap),
+        industry=md.industry.reindex(keep), spread_bps=cols(md.spread_bps),
+        short_interest_ratio=cols(md.short_interest_ratio), borrow_fee=cols(md.borrow_fee),
+        book_to_price=cols(md.book_to_price), earnings_yield=cols(md.earnings_yield),
+        gross_profitability=cols(md.gross_profitability), asset_growth=cols(md.asset_growth),
+        extra={k: cols_extra(v) for k, v in md.extra.items()},
         eligible=m & md.close[keep].notna(),
-        close_raw=None if md.close_raw is None else md.close_raw[keep],
-        shares_outstanding=cut(md.shares_outstanding),
+        close_raw=cols(md.close_raw),
+        shares_outstanding=cols(md.shares_outstanding),
         industry_history=None if ih is None else ih.reindex(columns=keep),
+        # delisting_dates kept as is: a ticker absent from it means "not covered"
     )
+
+
+def masked_levels(md: MarketData) -> MarketData:
+    """View of ``md`` with ``market_cap``, ``volume`` and ``shares_outstanding``
+    NaN where the name is not eligible (the pre-audit-2 ``apply_mask`` levels).
+
+    For consumers whose estimation universe is still defined by "has a market
+    cap" rather than ``md.eligibility()`` (the pipeline passes this view to the
+    risk model so its estimation universe is unchanged)."""
+    if md.eligible is None:
+        return md
+    e = md.eligibility()
+
+    def cut(f: Optional[Wide]) -> Optional[Wide]:
+        return None if f is None else f.where(e.reindex_like(f).fillna(False).astype(bool))
+
+    return replace(md, market_cap=cut(md.market_cap), volume=cut(md.volume),
+                   shares_outstanding=cut(md.shares_outstanding))
 
 
 def survivorship_check(md: MarketData, warn: bool = True) -> Dict[str, object]:

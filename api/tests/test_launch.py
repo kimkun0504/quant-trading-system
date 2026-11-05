@@ -9,6 +9,8 @@ import pytest
 
 from qts_api import schemas as S
 
+LOCAL = "http://localhost"  # Host allow-list (see conftest.LOCAL)
+
 BASE = {
     "kind": "synthetic",
     "ml": False,
@@ -115,9 +117,9 @@ def test_jobs_survive_restart(fixture_root):
     from qts_api.settings import Settings
 
     s = Settings(runs_root=fixture_root)
-    with TestClient(create_app(s, start_jobs=False)) as c1:
+    with TestClient(create_app(s, start_jobs=False), base_url=LOCAL) as c1:
         out = c1.post("/api/runs", json=BASE).json()
-    with TestClient(create_app(s, start_jobs=False)) as c2:
+    with TestClient(create_app(s, start_jobs=False), base_url=LOCAL) as c2:
         j = c2.get(f"/api/jobs/{out['job_id']}").json()
         assert j["status"] == "failed" and "Interrupted" in j["message"]
     for f in (fixture_root / "_jobs").glob("*.json"):

@@ -9,7 +9,7 @@ Public API
 ``select_n_factors``, ``missing_factor_monitor``
 ``build_exposures``, ``exposure_history``, ``ExposureHistory`` ((T,N,S) tensor store)
 ``estimate_factor_returns``, ``estimate_factor_return_history``
-``ewma_cov``, ``factor_covariance``, ``specific_risk``
+``ewma_cov``, ``factor_covariance``, ``specific_risk``, ``out_of_model_specific_var``
 ``nonlinear_shrinkage`` (QIS), ``linear_shrinkage``, ``shrunk_residual_covariance``
 ``alpha_alignment``, ``misalignment_gauge``, ``calibrate_alignment_nu``
 ``bias_statistic``, ``rolling_bias_stats``, ``portfolio_bias_test``,
@@ -22,6 +22,7 @@ from qts.risk.covariance import (
     factor_covariance,
     linear_shrinkage,
     nonlinear_shrinkage,
+    out_of_model_specific_var,
     shrunk_residual_covariance,
     specific_risk,
 )
@@ -69,6 +70,7 @@ __all__ = [
     "misalignment_gauge",
     "missing_factor_monitor",
     "nonlinear_shrinkage",
+    "out_of_model_specific_var",
     "portfolio_bias_test",
     "qlike",
     "random_long_short_weights",

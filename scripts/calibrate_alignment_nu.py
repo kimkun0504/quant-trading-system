@@ -6,7 +6,10 @@ fundamental + APCA risk model, composite alpha without the ML sleeve, cost
 model, ``SinglePeriodOptimizer`` with the default ``PortfolioConfig``), take the
 last ``--n-dates`` out-of-sample dates and run
 ``qts.risk.calibrate_alignment_nu`` with a ``solve_fn`` closure over the
-production optimizer.  The closure carries the previous day's book as
+production optimizer (default ``PortfolioConfig``: gamma-search sizing to the
+10 % vol target, routed venue, only risk-model names held) and the production
+execution lag (``ExecutionConfig.signal_lag_days``, 1: the book built from data
+as of ``t`` earns the return of ``t + 2``).  The closure carries the previous day's book as
 ``w_current`` (so turnover/trade-aversion terms act as in the simulator) and
 every ``nu_scale`` path starts from the same warm book (``--burn-in`` days solved
 at ``nu_scale=1`` before the window).
@@ -51,6 +54,7 @@ def calibrate_seed(
     n_iter: int,
     tol: float,
     md=None,
+    grid: tuple[float, ...] = GRID,
 ) -> dict[str, object]:
     t0 = time.time()
     md = md if md is not None else generate(SyntheticSpec(n_stocks=n_stocks, n_days=n_days, seed=seed))
@@ -92,11 +96,15 @@ def calibrate_seed(
 
     def solve_once(d, rm, a, w_prev):
         alive = alive_px.loc[d].to_numpy()
-        dead = list(tickers[~alive])
+        held = w_prev.abs().to_numpy() > 1e-12
+        inel = alive & ~elig.loc[d].to_numpy()
+        # as DailyBarSimulator: names without a price and ineligible names not held
+        # are no-trade (second-pass finding 3: ineligible names must not serve as
+        # hedges; the optimizer itself excludes names outside the risk model)
+        dead = list(tickers[~alive]) + list(tickers[inel & ~held])
         # held names that left the eligible universe are exited (the simulator
         # unwinds them over cfg.portfolio.exit_ineligible_days; immediate here)
-        inel = alive & ~elig.loc[d].to_numpy() & (w_prev.abs().to_numpy() > 1e-12)
-        force = dict.fromkeys(tickers[inel], 0.0)
+        force = dict.fromkeys(tickers[inel & held], 0.0)
         res = opt.solve(
             alpha=a,
             risk=rm,
@@ -122,6 +130,7 @@ def calibrate_seed(
     base_var: dict[pd.Timestamp, float] = {}
     books: dict[float, dict[pd.Timestamp, pd.Series]] = {}
     shares: dict[float, list] = {}
+    gammas: dict[float, list] = {}
     state = {"w": w_init.copy(), "last": None}
 
     def solve_fn(d, rm, a):
@@ -135,6 +144,7 @@ def calibrate_seed(
         state["w"], state["last"] = w_new, d
         books.setdefault(nu_s, {})[d] = w_new
         shares.setdefault(nu_s, []).append(float(getattr(res, "alignment_share", np.nan)))
+        gammas.setdefault(nu_s, []).append(float(getattr(res, "risk_aversion", np.nan)))
         return w_new
 
     # precompute the nu_scale=1 risk models once (calibrate_alignment_nu also
@@ -149,18 +159,33 @@ def calibrate_seed(
             return risk_nu1[d]
 
     t1 = time.time()
+    lag = int(cfg.execution.signal_lag_days)
     res = calibrate_alignment_nu(
-        _CachedRisk(), md_u, alpha_at, dates, solve_fn=solve_fn, n_iter=n_iter, tol=tol, grid=GRID
+        _CachedRisk(),
+        md_u,
+        alpha_at,
+        dates,
+        solve_fn=solve_fn,
+        n_iter=n_iter,
+        tol=tol,
+        grid=grid,
+        signal_lag_days=lag,
     )
     t_cal = time.time() - t1
 
     # ---- diagnostics per evaluated nu_scale
     rets = md_u.returns
-    nxt = {d: md_u.dates[md_u.dates.get_loc(d) + 1] for d in dates}
+    nxt = {
+        d: md_u.dates[md_u.dates.get_loc(d) + 1 + lag]
+        for d in dates
+        if md_u.dates.get_loc(d) + 1 + lag < len(md_u.dates)
+    }
     diag = {}
     for nu_s, bk in sorted(books.items()):
         pa, pu, real, gross, yw = [], [], [], [], []
         for d, wb in bk.items():
+            if d not in nxt:
+                continue
             rm = risk_nu1[d]
             rm_s = dataclasses.replace(rm, alignment_var=float(rm.alignment_var) * nu_s)
             pa.append(np.sqrt(max(rm_s.portfolio_variance(wb, include_alignment=True), 0.0)))
@@ -178,12 +203,15 @@ def calibrate_seed(
             "gross": float(np.mean(gross)),
             "mean_abs_y_w": float(np.mean(np.abs(yw))),
             "alignment_share": float(np.nanmean(shares.get(nu_s, [np.nan]))),
+            "gamma_median": float(np.nanmedian(gammas.get(nu_s, [np.nan]))),
             "realised_sharpe": float(np.mean(real) / np.std(real) * np.sqrt(252))
             if np.std(real) > 0
             else np.nan,
         }
     return {
         "seed": seed,
+        "signal_lag_days": lag,
+        "risk_aversion_mode": cfg.portfolio.risk_aversion_mode,
         "calibration": res,
         "diagnostics": diag,
         "n_dates": len(dates),
@@ -204,13 +232,16 @@ def main():
     ap.add_argument("--nav", type=float, default=1_000_000.0)
     ap.add_argument("--n-iter", type=int, default=8)
     ap.add_argument("--tol", type=float, default=0.02)
+    ap.add_argument("--grid", type=float, nargs="*", default=list(GRID), help="nu_scale grid to report")
     ap.add_argument("--json", default=None, help="write the full results here")
     a = ap.parse_args()
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
     out = []
     for s in a.seeds:
-        r = calibrate_seed(s, a.stocks, a.days, a.n_dates, a.burn_in, a.nav, a.n_iter, a.tol)
+        r = calibrate_seed(
+            s, a.stocks, a.days, a.n_dates, a.burn_in, a.nav, a.n_iter, a.tol, grid=tuple(a.grid)
+        )
         out.append(r)
         c = r["calibration"]
         print(

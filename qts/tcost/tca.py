@@ -26,9 +26,16 @@ that turned out to be temporary.  It is reported but, per the plan, never
 credited as a benefit in the optimizer.
 
 Calibration regresses, pooled across orders, ``y = s*(VWAP - P_arr)/P_arr -
-half_spread`` (return units) on ``x = sigma * sqrt(F / V)`` through the
+half_spread`` (return units) on ``x = sigma * (F / V)^(e-1)`` through the
 origin, and shrinks the OLS slope toward the prior ``b`` using
-``prior_weight`` pseudo-observations.
+``prior_weight`` pseudo-observations.  ``e = cost_cfg.impact_exponent``: the
+cost model's integrated impact of ``Q`` dollars is ``C(Q) = b*sigma*Q^e/V^(e-1)``
+(USD, ``V`` in USD), so the *average* impact per dollar filled -- what the fill
+VWAP measures against arrival, in return units -- is
+``C(Q)/Q = b*sigma*(Q/V)^(e-1)``; the participation ``Q/V`` is the same in
+shares or dollars.  ``e = 1.5`` gives the familiar ``sigma*sqrt(F/V)``
+(Almgren et al. 2005; Toth et al. 2011).  Regressing on ``sqrt`` with another
+``e`` would bias ``b`` by orders of magnitude (audit 2, finding 2).
 
 **Venue volume.**  ``V`` is the volume the cost model uses for the order's
 venue: full-day ADV for continuous-session orders and ``auction_share * ADV``
@@ -229,7 +236,7 @@ class TCALedger:
         reversion_bps (vs ``cost_cfg.tca_reversion_reference``), arrival_slippage_bps (unweighted VWAP vs arrival),
         participation (filled / ADV), sigma_daily, adv_bucket, vol_bucket, venue,
         venue_volume (V: ADV for continuous, auction_share*ADV for auction),
-        venue_participation (F/V), impact_x (= sigma*sqrt(F/V), the calibration
+        venue_participation (F/V), impact_x (= sigma*(F/V)^(e-1), the calibration
         regressor).
         """
         o = self.orders_frame()
@@ -276,8 +283,10 @@ class TCALedger:
         share = share.fillna(share_default)
         venue_vol = adv.where(~is_auc, adv * share)
         venue_vol = o["venue_volume"].astype(float).fillna(venue_vol)
+        e = float(self.cost_cfg.impact_exponent)
         with np.errstate(invalid="ignore", divide="ignore"):
-            impact_x = o["sigma_daily"].astype(float) * np.sqrt(filled / venue_vol)
+            # average impact per unit return of C(Q) = b sigma Q^e / V^(e-1): b sigma (Q/V)^(e-1)
+            impact_x = o["sigma_daily"].astype(float) * (filled / venue_vol) ** (e - 1.0)
 
         out = pd.DataFrame(
             {
@@ -350,10 +359,12 @@ class TCALedger:
         min_fill_rate: float = 0.5,
         venue: str | None = None,
     ) -> tuple[float, dict[str, float]]:
-        """Through-the-origin regression of arrival slippage on ``sigma*sqrt(F/V)``.
+        """Through-the-origin regression of arrival slippage on ``sigma*(F/V)^(e-1)``.
 
         ``y_i = s_i*(VWAP_i - P_arr_i)/P_arr_i - half_spread_i`` (return units),
-        ``x_i = sigma_i * sqrt(F_i / V_i)`` with ``V_i`` the **venue** volume
+        ``x_i = sigma_i * (F_i / V_i)^(e-1)`` with ``e = cost_cfg.impact_exponent``
+        (module docstring: average impact per dollar of ``C(Q) = b sigma Q^e/V^(e-1)``;
+        ``sqrt`` at e = 1.5) and ``V_i`` the **venue** volume
         (ADV for continuous, auction_share*ADV for auction orders).
         ``b_ols = sum(xy)/sum(x^2)``.  Shrinkage:
         ``b = (n*b_ols + prior_weight*prior_b) / (n + prior_weight)``.

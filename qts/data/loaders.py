@@ -33,6 +33,7 @@ import numpy as np
 import pandas as pd
 
 from qts.core.types import MarketData, Wide
+from qts.data.calendar import add_sessions
 
 BytesOrPath = Union[bytes, str, "os.PathLike[str]"]
 
@@ -185,7 +186,8 @@ def ken_french_factor_panel(ff5: pd.DataFrame, mom: Optional[pd.DataFrame] = Non
 #
 # ``settlementDate`` is YYYYMMDD (or ISO).  Data for settlement date S is
 # *published* roughly 8 business days later (FINRA's dissemination schedule),
-# so a PIT panel must not reveal it before S + lag.
+# so a PIT panel must not reveal it before S + lag.  The lag is counted in NYSE
+# sessions (``qts.data.calendar``; holidays skipped), not ``BDay``.
 _FINRA_ALIASES = {
     "settlement_date": ("settlementdate", "settlement_date", "settlement date", "settlementdt"),
     "symbol": ("symbolcode", "symbol", "ticker", "issuesymbolidentifier"),
@@ -239,10 +241,18 @@ def parse_finra_short_interest(csv_path_or_bytes: BytesOrPath, sep: Optional[str
 
 
 def finra_publication_date(settlement_date, lag_business_days: int = 8) -> pd.Timestamp:
+    """Settlement date + ``lag_business_days`` NYSE sessions (exchange holidays
+    skipped; :func:`qts.data.calendar.add_sessions`)."""
     ts = pd.Timestamp(settlement_date)
     if pd.isna(ts):
         raise ValueError("settlement_date is NaT")
-    return cast(pd.Timestamp, ts) + pd.offsets.BDay(int(lag_business_days))
+    return cast(pd.Timestamp, add_sessions(ts, int(lag_business_days)))
+
+
+def _finra_available(settlement: pd.Series, lag_business_days: int) -> pd.Series:
+    """Vectorised :func:`finra_publication_date` (NYSE sessions)."""
+    sd = pd.to_datetime(settlement)
+    return pd.Series(add_sessions(sd.to_numpy(), int(lag_business_days)), index=settlement.index)
 
 
 def to_short_interest_ratio(long_df: pd.DataFrame, shares_outstanding: Wide, lag_business_days: int = 8,
@@ -250,9 +260,15 @@ def to_short_interest_ratio(long_df: pd.DataFrame, shares_outstanding: Wide, lag
     """PIT short-interest ratio = short interest / shares outstanding.
 
     Each settlement-date observation becomes visible on
-    ``settlement_date + lag_business_days`` (default 8, FINRA's publication
-    lag) and is forward-filled until the next publication.  Before its
-    publication date the value is NaN (or the previous published value).
+    ``settlement_date + lag_business_days`` NYSE sessions (default 8, FINRA's
+    publication lag) and is forward-filled until the next publication.  Before
+    its publication date the value is NaN (or the previous published value).
+
+    Split consistency (audit 2 #8): the ratio is formed **per report** with the
+    shares outstanding *as of the settlement date* (the share basis FINRA's
+    short position is reported on), and the ratio -- not the share count --
+    is carried forward.  A split between two reports therefore leaves the
+    ratio unchanged instead of scaling it by the split factor.
 
     ``shares_outstanding`` must be the **actual share count** per date (wide
     panel; e.g. ``MarketData.shares_outstanding`` or SF1 ``sharesbas`` made PIT),
@@ -265,13 +281,22 @@ def to_short_interest_ratio(long_df: pd.DataFrame, shares_outstanding: Wide, lag
     if not isinstance(shares_outstanding, pd.DataFrame):
         raise TypeError("shares_outstanding must be a wide DataFrame (date x ticker) of actual share counts")
     idx = pd.DatetimeIndex(dates) if dates is not None else shares_outstanding.index
-    df = long_df[["settlement_date", "symbol", "short_interest"]].rename(columns={"symbol": "ticker", "short_interest": "value"}).copy()
-    df["available_date"] = pd.to_datetime(df["settlement_date"]) + pd.offsets.BDay(int(lag_business_days))
+    df = long_df[["settlement_date", "symbol", "short_interest"]].rename(columns={"symbol": "ticker", "short_interest": "si"}).copy()
+    df["settlement_date"] = pd.to_datetime(df["settlement_date"])
+    df = df[df["ticker"].isin(shares_outstanding.columns)]
+    # shares outstanding as of each settlement date (last value on or before it)
+    so = shares_outstanding.sort_index().ffill()
+    so_vals = so.to_numpy(dtype=float)
+    rpos = so.index.searchsorted(pd.DatetimeIndex(df["settlement_date"]), side="right") - 1
+    cpos = so.columns.get_indexer(df["ticker"])
+    shares_at = np.where(rpos >= 0, so_vals[np.maximum(rpos, 0), cpos], np.nan)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        df["value"] = df["si"].to_numpy(dtype=float) / np.where(shares_at == 0, np.nan, shares_at)
+    df["available_date"] = _finra_available(df["settlement_date"], lag_business_days)
     df = df.sort_values(["ticker", "settlement_date"])
-    si = pit_forward_fill(df, idx)
-    cols = si.columns.intersection(shares_outstanding.columns)
-    so = shares_outstanding.reindex(index=idx, columns=cols).ffill()
-    return si[cols] / so.replace(0, np.nan)
+    ratio = pit_forward_fill(df, idx)
+    cols = ratio.columns.intersection(shares_outstanding.columns)
+    return ratio.reindex(columns=cols)
 
 
 def shares_outstanding_panel(md: MarketData) -> Wide:
@@ -293,7 +318,7 @@ def short_interest_long_to_wide(long_df: pd.DataFrame, dates: pd.DatetimeIndex, 
                                 value_col: str = "short_interest") -> Wide:
     """PIT wide panel of a raw short-interest column (shares) on ``dates``."""
     df = long_df[["settlement_date", "symbol", value_col]].rename(columns={"symbol": "ticker", value_col: "value"}).copy()
-    df["available_date"] = pd.to_datetime(df["settlement_date"]) + pd.offsets.BDay(int(lag_business_days))
+    df["available_date"] = _finra_available(df["settlement_date"], lag_business_days)
     return pit_forward_fill(df.sort_values(["ticker", "settlement_date"]), dates)
 
 
@@ -503,7 +528,9 @@ def sharadar_sf1_to_pit_fundamentals(sf1_df: pd.DataFrame, dimension: str = "ART
                                      fields: Optional[Iterable[str]] = None,
                                      close: Optional[Wide] = None,
                                      close_raw: Optional[Wide] = None,
-                                     price_is_adjusted: bool = True) -> Dict[str, Wide]:
+                                     price_is_adjusted: bool = True,
+                                     shares_outstanding: Optional[Wide] = None,
+                                     market_cap: Optional[Wide] = None) -> Dict[str, Wide]:
     """Turn Sharadar SF1 rows into PIT wide panels keyed on ``datekey``.
 
     Sharadar SF1 columns used: ``ticker, dimension, calendardate, datekey``
@@ -532,9 +559,22 @@ def sharadar_sf1_to_pit_fundamentals(sf1_df: pd.DataFrame, dimension: str = "ART
     * ``MR*`` dimensions are *most recent reported* and restate history -- not
       PIT; a warning is issued if requested.
 
-    Prices: ``book_to_price = bvps / P`` and ``earnings_yield = eps / P`` divide
-    *as-reported per-share* values by the price, so ``P`` must be the
-    **as-traded (unadjusted) close** on the same share basis.  Dividing by a
+    Valuation ratios across splits (audit 2 #7).  Preferred: **totals on one
+    share basis** --
+    ``book_to_price(t) = bvps x shares(filing) / market_cap(t)`` and
+    ``earnings_yield(t) = eps x shares(filing) / market_cap(t)``, where
+    ``shares(filing)`` is the actual share count as of the filing's ``datekey``
+    (``shares_outstanding`` panel, else SF1 ``sharesbas`` of the row) and
+    ``market_cap(t)`` the PIT market cap (``market_cap`` panel, else
+    ``close_raw x shares_outstanding``).  ``bvps x shares`` is the book value
+    total the filing reports, so a split after the filing (which halves the raw
+    price and doubles the shares) leaves the ratio unchanged.  This path is
+    used whenever a share count and a market cap are available.
+
+    Legacy per-share path (no share data): ``book_to_price = bvps / P`` and
+    ``earnings_yield = eps / P`` divide *as-reported per-share* values by the
+    price, so ``P`` must be the **as-traded (unadjusted) close**; it is still
+    wrong by the split factor between a split and the next filing.  Dividing by a
     split-adjusted close inflates historical ratios by the cumulative split
     factor (a 2:1 split after the filing doubles the pre-split B/P).  Pass the
     raw close as ``close_raw`` (preferred; e.g. ``MarketData.close_raw``).
@@ -543,6 +583,13 @@ def sharadar_sf1_to_pit_fundamentals(sf1_df: pd.DataFrame, dimension: str = "ART
     ``close`` argument raises ``ValueError``.  With no price at all the
     ratios fall back to Sharadar's ``1/pb`` and ``1/pe`` (computed by the
     vendor with the contemporaneous price).
+
+    Restatements of older periods (audit 2 #10): per ticker, a row whose
+    ``calendardate`` is older than the latest ``calendardate`` already filed
+    (as of its ``datekey``) -- e.g. a 10-K/A for FY-1 filed after the Q1 10-Q --
+    does **not** replace the current period in the level panels; it only feeds
+    the prior-year lookup of ``asset_growth``.  A restatement of the current
+    period (same ``calendardate``) does replace it.
 
     Returns a dict of wide panels on ``dates`` (default: union of
     availability dates) containing the requested ``fields`` plus derived
@@ -564,9 +611,13 @@ def sharadar_sf1_to_pit_fundamentals(sf1_df: pd.DataFrame, dimension: str = "ART
     df["datekey"] = pd.to_datetime(df["datekey"])
     df["calendardate"] = pd.to_datetime(df["calendardate"])
     df["ticker"] = df["ticker"].astype(str).str.upper()
-    df = df.sort_values(["ticker", "datekey", "calendardate"])
+    df = df.sort_values(["ticker", "datekey", "calendardate"]).reset_index(drop=True)
+    all_rows = df  # every filing, incl. restatements of older periods (asset-growth lookup)
     # among rows filed the same day keep the most recent period
     df = df.drop_duplicates(["ticker", "datekey"], keep="last")
+    # as-of on calendardate: drop rows of a period older than one already filed
+    latest_cd = df.groupby("ticker")["calendardate"].cummax()
+    df = df[df["calendardate"] >= latest_cd].reset_index(drop=True)
 
     fields = list(fields) if fields is not None else [f for f in SF1_DEFAULT_FIELDS if f in df.columns]
     fields = [f for f in fields if f in df.columns]
@@ -576,7 +627,7 @@ def sharadar_sf1_to_pit_fundamentals(sf1_df: pd.DataFrame, dimension: str = "ART
     # filed later (10-K/A, restated comparatives) cannot leak into an earlier
     # row (audit finding 6).
     if "assets" in df.columns:
-        prev = df[["ticker", "calendardate", "datekey", "assets"]].rename(
+        prev = all_rows[["ticker", "calendardate", "datekey", "assets"]].rename(
             columns={"calendardate": "_prev_cd", "datekey": "_prev_dk", "assets": "_assets_prev"})
         prev = prev.dropna(subset=["_assets_prev"]).sort_values("_prev_dk")
         cur = df.assign(_prev_cd=df["calendardate"] - pd.DateOffset(years=1), _row=np.arange(len(df)))
@@ -611,7 +662,33 @@ def sharadar_sf1_to_pit_fundamentals(sf1_df: pd.DataFrame, dimension: str = "ART
             raise ValueError("B/P and E/P need the as-traded (unadjusted) close: pass close_raw=..., or "
                              "close=... with price_is_adjusted=False if that frame is the raw close")
         close_raw = close
-    if close_raw is not None:
+    mcap_t: Optional[Wide] = None
+    if market_cap is not None:
+        mcap_t = market_cap
+    elif close_raw is not None and shares_outstanding is not None:
+        mcap_t = close_raw * shares_outstanding
+    shares_f: Optional[np.ndarray] = None
+    if shares_outstanding is not None:
+        so = shares_outstanding.sort_index().ffill()
+        rpos = so.index.searchsorted(pd.DatetimeIndex(df["datekey"]), side="right") - 1
+        cpos = so.columns.get_indexer(df["ticker"])
+        ok = (rpos >= 0) & (cpos >= 0)
+        vals = so.to_numpy(dtype=float)
+        shares_f = np.full(len(df), np.nan)
+        shares_f[ok] = vals[rpos[ok], cpos[ok]]
+    elif "sharesbas" in df.columns:
+        shares_f = pd.to_numeric(df["sharesbas"], errors="coerce").to_numpy(dtype=float)
+    if mcap_t is not None and shares_f is not None:
+        mc = mcap_t.reindex(index=dates).ffill()
+        for per_share, ratio in (("bvps", "book_to_price"), ("eps", "earnings_yield")):
+            if per_share not in df.columns:
+                continue
+            tot = df[["available_date", "ticker"]].assign(
+                value=pd.to_numeric(df[per_share], errors="coerce").to_numpy(dtype=float) * shares_f)
+            total = pit_forward_fill(tot, dates)
+            cols = total.columns.intersection(mc.columns)
+            out[ratio] = total[cols] / mc[cols].replace(0, np.nan)
+    elif close_raw is not None:
         cl = close_raw.reindex(index=dates).ffill()
         if "bvps" in out:
             cols = out["bvps"].columns.intersection(cl.columns)

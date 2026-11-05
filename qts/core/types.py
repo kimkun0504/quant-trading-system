@@ -30,6 +30,8 @@ from typing import Any, ClassVar, cast
 import numpy as np
 import pandas as pd
 
+from qts.core.risk_fill import fill_specific_var
+
 Wide = pd.DataFrame  # index: date, columns: ticker
 Long = pd.DataFrame  # index: MultiIndex(date, ticker), columns: feature
 
@@ -91,6 +93,16 @@ class MarketData:
     #: Dated industry classification (date x ticker labels, ascending dates; the
     #: index need not match ``close``).  ``None`` -> the static ``industry`` applies.
     industry_history: Wide | None = None
+    #: Optional dated delisting events: ticker -> last trading date (``NaT`` =
+    #: known not delisted).  Vendors provide it (CRSP ``dlstdt``, Norgate
+    #: "delisted" date, Sharadar TICKERS/ACTIONS); ParquetStore dataset
+    #: ``delisting_dates``.  Used by the label builder
+    #: (:func:`qts.alpha.targets.forward_returns`) to tell a true delisting from a
+    #: temporary halt without looking ahead.  ``None`` -> the causal gap rule
+    #: (``AlphaConfig.delisting_gap_days``) applies.  Tickers absent from the
+    #: series are treated as unknown (causal rule).  Not date-indexed:
+    #: :meth:`slice_until` keeps it but blanks (``NaT``) events after the cut.
+    delisting_dates: pd.Series | None = None
 
     #: Panels that share ``close``'s index/columns (checked by ``validate``).
     ALIGNED_PANELS: ClassVar[tuple[str, ...]] = ("volume", "market_cap", "close_raw", "shares_outstanding")
@@ -169,6 +181,8 @@ class MarketData:
             ih = self.industry_history
             if not isinstance(ih.index, pd.DatetimeIndex) or not ih.index.is_monotonic_increasing:
                 raise ValueError("industry_history needs an ascending DatetimeIndex")
+        if self.delisting_dates is not None and not isinstance(cast(object, self.delisting_dates), pd.Series):
+            raise ValueError("delisting_dates must be a Series ticker -> last trading date")
 
     def slice_until(self, date: pd.Timestamp) -> MarketData:
         """Point-in-time view: every date-indexed panel cut at ``<= date``."""
@@ -180,6 +194,12 @@ class MarketData:
         for fl in fields(self):
             v = getattr(self, fl.name)
             if fl.name == "industry":
+                continue
+            if fl.name == "delisting_dates":
+                # ticker-indexed: events after the cut are not known yet
+                if v is not None:
+                    dd = cast(pd.Series, pd.to_datetime(cast(pd.Series, v)))
+                    changes[fl.name] = dd.where(dd <= pd.Timestamp(date))
                 continue
             if fl.name == "extra":
                 changes["extra"] = {k: cut(x) for k, x in v.items()}
@@ -226,12 +246,11 @@ class RiskModelOutput:
     def covariance(self, tickers: pd.Index | None = None, include_alignment: bool = True) -> pd.DataFrame:
         t = self.tickers if tickers is None else tickers
         # tickers outside the model universe get zero factor exposure and the
-        # median specific variance (conservative; callers should intersect first)
+        # out-of-model specific variance (90th percentile, qts.core.risk_fill; the
+        # optimizer's rule, so callers that do not intersect first stay consistent)
         B = self.exposures.reindex(t).fillna(0.0).to_numpy(dtype=np.float64)
         F = self.factor_cov.loc[self.factors, self.factors].to_numpy(dtype=np.float64)
-        D = np.diag(
-            self.specific_var.reindex(t).fillna(self.specific_var.median()).to_numpy(dtype=np.float64)
-        )
+        D = np.diag(fill_specific_var(self.specific_var, t))
         cov = B @ F @ B.T + D
         if include_alignment and self.alignment_vector is not None and self.alignment_var > 0:
             y = self.alignment_vector.reindex(t).fillna(0.0).to_numpy(dtype=np.float64)[:, None]
@@ -242,7 +261,7 @@ class RiskModelOutput:
         t = w.index
         B = self.exposures.reindex(t).fillna(0.0).to_numpy(dtype=np.float64)
         F = self.factor_cov.loc[self.factors, self.factors].to_numpy(dtype=np.float64)
-        d = self.specific_var.reindex(t).fillna(self.specific_var.median()).to_numpy(dtype=np.float64)
+        d = fill_specific_var(self.specific_var, t)  # out-of-model rule as in covariance()
         wv = w.to_numpy(dtype=np.float64)
         fw = B.T @ wv
         v = float(fw @ F @ fw + (wv**2 * d).sum())

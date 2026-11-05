@@ -27,26 +27,77 @@ Records may carry ``returns_monthly`` (month -> return) so that
 :meth:`effective_trials_for` can build that correlation matrix from the ledger
 itself.
 
-Identity / de-duplication: a record carries ``config_hash`` (hash of the full
-config) and ``data_hash``.  ``log(..., replace_identical=True)`` *updates* the
-existing record with the same ``(name, config_hash, data_hash)`` instead of
-appending, so re-running an unchanged experiment on unchanged data does not
-inflate ``n_trials`` (an identical re-run is not a new trial).  Anything that
-differs in config or data is a new trial and is always appended.
+Identity / de-duplication (audit 2 findings 2-3)
+------------------------------------------------
+The file is **strictly append-only**: every :meth:`TrialLedger.log` appends one
+line under an exclusive ``fcntl.flock`` on ``<path>.lock`` (one ``write`` of a
+complete line), and nothing ever rewrites it, so concurrent writers (several
+researchers / agents / processes) cannot lose each other's trials.
+
+``log(..., replace_identical=True)`` marks the record with a ``dedup_key``:
+SHA-256 of ``(name, config_hash, data_hash, code_version, run_spec_hash)``,
+where ``run_spec`` holds every setting outside the config that changes the
+numbers (the pipeline passes ``ResearchPipeline.run_spec``: ``use_ml``,
+``ml_factory`` identity, ``composite_weight``, ``rebalance_every``, ``venue``,
+``nav0``, ``warmup_days``, backtest dates, signal lag).  De-duplication happens
+at **read** time: records sharing a ``dedup_key`` collapse into the latest one
+(at the position of the first), carrying ``n_reruns`` (= occurrences - 1) and
+``ts_first``.  A record is never de-duplicated (always its own trial) when
+``replace_identical`` is False, ``data_hash`` is empty, or the code version is
+empty, ``"unknown"`` or dirty (``...+dirty``): a dirty tree or unknown code may
+differ from the last run in ways nobody recorded.  :meth:`raw_records` returns
+the undeduplicated lines.
 """
 
 from __future__ import annotations
 
+import fcntl
+import functools
 import hashlib
 import json
 import math
 import os
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from qts.validation.deflated_sharpe import deannualize_sharpe, deflated_sharpe_ratio
+
+
+def callable_identity(fn: Callable[..., Any] | None) -> str | None:
+    """Stable identity of a factory callable for the ledger key: module +
+    qualified name, plus a hash of the code object (so two different lambdas /
+    closures with the same name differ) and, for ``functools.partial``, of its
+    bound arguments.  ``None`` -> ``None``."""
+    if fn is None:
+        return None
+    if isinstance(fn, functools.partial):
+        inner = callable_identity(fn.func)
+        bound = repr((fn.args, sorted((fn.keywords or {}).items())))
+        return f"partial({inner};{hashlib.sha256(bound.encode()).hexdigest()[:12]})"
+    target = fn if (hasattr(fn, "__code__") or isinstance(fn, type)) else type(fn)
+    name = f"{getattr(target, '__module__', '?')}.{getattr(target, '__qualname__', repr(target))}"
+    code = getattr(fn, "__code__", None)
+    if code is not None:
+        payload = code.co_code + repr(code.co_consts).encode() + repr(code.co_names).encode()
+        cells = getattr(fn, "__closure__", None) or ()
+        for c in cells:
+            try:
+                v = c.cell_contents
+            except ValueError:  # empty cell
+                continue
+            payload += (callable_identity(v) if callable(v) else repr(v)).encode()
+        name += "#" + hashlib.sha256(payload).hexdigest()[:12]
+    return name
+
+
+def _is_clean_code_version(code_version: str) -> bool:
+    cv = str(code_version or "")
+    return bool(cv) and cv != "unknown" and not cv.endswith("+dirty")
 
 
 class TrialLedger:
@@ -59,14 +110,56 @@ class TrialLedger:
             open(self.path, "a").close()
 
     # ------------------------------------------------------------------ io
-    def _records(self) -> list[dict]:
+    @contextmanager
+    def _locked(self, exclusive: bool) -> Iterator[None]:
+        """``fcntl.flock`` on ``<path>.lock`` (exclusive for writers, shared for readers)."""
+        fd = os.open(self.path + ".lock", os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+    def raw_records(self) -> list[dict]:
+        """Every line of the file, in order (no de-duplication)."""
         out = []
-        with open(self.path) as f:
+        with self._locked(exclusive=False), open(self.path) as f:
             for line in f:
                 line = line.strip()
                 if line:
                     out.append(json.loads(line))
         return out
+
+    def _records(self) -> list[dict]:
+        """Trials: raw records with identical re-runs (same ``dedup_key``) collapsed
+        into the latest record at the first one's position (``n_reruns``, ``ts_first``)."""
+        out: list[dict] = []
+        where: dict[str, int] = {}
+        for r in self.raw_records():
+            k = r.get("dedup_key")
+            if not k:
+                out.append(r)
+                continue
+            if k not in where:
+                where[k] = len(out)
+                out.append(
+                    dict(r, n_reruns=int(r.get("n_reruns", 0)), ts_first=r.get("ts_first", r.get("ts")))
+                )
+                continue
+            first = out[where[k]]
+            out[where[k]] = dict(r, n_reruns=int(first["n_reruns"]) + 1, ts_first=first["ts_first"])
+        return out
+
+    @staticmethod
+    def dedup_key(
+        name: str, config_hash: str, data_hash: str, code_version: str, run_spec: dict | None = None
+    ) -> str:
+        """Identity of an experiment (see the module docstring)."""
+        spec = json.dumps(_jsonable_nested(run_spec or {}), sort_keys=True, default=str)
+        spec_hash = hashlib.sha256(spec.encode()).hexdigest()[:16]
+        ident = json.dumps([str(name), str(config_hash), str(data_hash), str(code_version), spec_hash])
+        return hashlib.sha256(ident.encode()).hexdigest()[:24]
 
     def log(
         self,
@@ -80,9 +173,15 @@ class TrialLedger:
         config_hash: str | None = None,
         returns_monthly: pd.Series | None = None,
         replace_identical: bool = False,
+        run_spec: dict | None = None,
     ) -> dict:
-        """Append one trial (or, with ``replace_identical=True``, update the
-        record with the same ``(name, config_hash, data_hash)``).
+        """Append one trial.
+
+        With ``replace_identical=True`` (and a non-empty ``data_hash`` and a clean
+        ``code_version``) the record carries a ``dedup_key`` so that an identical
+        re-run is counted once at read time (module docstring); otherwise it is
+        always a new trial.  ``run_spec``: settings outside ``config`` that change
+        the result (hashed into the key, stored on the record).
 
         ``metrics`` should include ``sharpe_annual`` (or ``sharpe_daily``),
         ``n_obs`` and optionally ``skew``/``kurt``.  ``config`` should be the
@@ -95,7 +194,7 @@ class TrialLedger:
             config_hash = hashlib.sha256(
                 json.dumps(cfg_json, sort_keys=True, default=str).encode()
             ).hexdigest()[:16]
-        rec = {
+        rec: dict[str, Any] = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "name": str(name),
             "family": family if family is not None else str(name).split(":")[0],
@@ -106,28 +205,24 @@ class TrialLedger:
             "code_version": str(code_version),
             "notes": str(notes),
         }
+        if run_spec is not None:
+            rec["run_spec"] = _jsonable_nested(run_spec)
         if returns_monthly is not None and len(returns_monthly):
             rm = pd.Series(returns_monthly, dtype=float)
             rec["returns_monthly"] = {str(pd.Timestamp(k).strftime("%Y-%m")): float(v) for k, v in rm.items()}
-        if replace_identical and data_hash:
-            recs = self._records()
-            for i, r in enumerate(recs):
-                if (
-                    r.get("name") == rec["name"]
-                    and r.get("config_hash") == rec["config_hash"]
-                    and r.get("data_hash") == rec["data_hash"]
-                ):
-                    rec["ts_first"] = r.get("ts_first", r.get("ts"))
-                    rec["n_reruns"] = int(r.get("n_reruns", 0)) + 1
-                    recs[i] = rec
-                    tmp = self.path + ".tmp"
-                    with open(tmp, "w") as f:
-                        for rr in recs:
-                            f.write(json.dumps(rr, default=str) + "\n")
-                    os.replace(tmp, self.path)
-                    return rec
-        with open(self.path, "a") as f:
-            f.write(json.dumps(rec, default=str) + "\n")
+        if replace_identical and data_hash and _is_clean_code_version(code_version):
+            rec["dedup_key"] = self.dedup_key(name, str(config_hash), data_hash, code_version, run_spec)
+        line = (json.dumps(rec, default=str) + "\n").encode()
+        with self._locked(exclusive=True):
+            fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+            try:
+                view = memoryview(line)
+                while view:
+                    n = os.write(fd, view)
+                    view = view[n:]
+                os.fsync(fd)
+            finally:
+                os.close(fd)
         return rec
 
     # ------------------------------------------------------------------ queries
@@ -259,7 +354,7 @@ class TrialLedger:
         var_sr = float(srs.var(ddof=1)) if len(srs) > 1 else 0.0
         if not math.isfinite(var_sr):
             var_sr = 0.0
-        dsr = deflated_sharpe_ratio(sr_d, max(round(N), 1), var_sr, n, skew, kurt)
+        dsr = deflated_sharpe_ratio(sr_d, max(N, 1.0), var_sr, n, skew, kurt)
         return {
             "name": name,
             "family": fam,

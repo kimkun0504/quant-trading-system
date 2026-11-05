@@ -10,6 +10,7 @@ universe:
   exclude_bottom_size_quantile: 0.2
   refresh_days: 21
   exit_after_n_fails: 3
+  refresh_anchor: month_start
 alpha:
   horizon_days: 20
   secondary_horizons:
@@ -76,6 +77,7 @@ alpha:
   refit_frequency_days: 252
   train_min_days: 756
   embargo_days: null
+  delisting_gap_days: 63
 risk:
   vol_half_life: 84
   corr_half_life: 504
@@ -97,7 +99,7 @@ risk:
   - investment
   - short_interest
   alignment: true
-  alignment_nu_scale: 0.25
+  alignment_nu_scale: 0.05
   eigenfactor_adjust: true
   n_eigen_sims: 200
   eigen_inflation_a: 1.2
@@ -144,7 +146,8 @@ portfolio:
   beta_neutral: true
   industry_band: 0.03
   style_band_sd: 0.1
-  risk_aversion: 10.0
+  risk_aversion_mode: target_vol
+  risk_aversion: 2.0
   trade_aversion: 1.0
   hold_aversion: 1.0
   turnover_penalty: 0.0

@@ -30,7 +30,14 @@ Dataset names understood by :meth:`ParquetStore.as_market_data`:
 ``earnings_yield``          PIT earnings yield
 ``gross_profitability``     PIT gross profits / assets
 ``asset_growth``            PIT YoY asset growth
+``delisting_dates``         long table ``ticker, delisting_date`` (last
+                            trading date; NaT = alive) -> ``delisting_dates``
 ==========================  ===========================================
+
+Dated industries: dates before a ticker's first dated classification read
+``"UNKNOWN"`` (never the static map, which in a store is the *current*
+classification -- a look-ahead; audit 2 #13).  Supply ``industry_history``
+from the panel start for real data.
 
 Any additional wide dataset listed in ``extra_names`` is put in
 ``MarketData.extra``.
@@ -40,8 +47,9 @@ Write modes (:meth:`ParquetStore.write_long` / :meth:`ParquetStore.write_wide`)
 * ``"upsert"`` (default) -- merge into the existing year partitions: rows of
   the stored partition whose key (``date, ticker`` when present) appears in
   the new data are replaced, every other stored row is kept.  Appending one
-  day to a year keeps the rest of the year.  For wide panels a NaN cell in the
-  new frame *deletes* the stored value for that key.
+  day to a year keeps the rest of the year.  For wide panels a NaN cell means
+  "no information" and keeps the stored value (``nan_policy="keep_existing"``,
+  default); ``nan_policy="delete"`` makes a NaN cell delete the stored value.
 * ``"replace_partition"`` -- every year partition touched by the new data is
   rewritten with only the new rows (intentional full rewrite of those years).
 * ``"replace"`` -- the whole dataset is dropped and rewritten.
@@ -49,9 +57,17 @@ Write modes (:meth:`ParquetStore.write_long` / :meth:`ParquetStore.write_wide`)
 Every parquet file is written to a temporary file in the same directory and
 moved into place with ``os.replace`` (atomic on POSIX), so a crash mid-write
 never leaves a truncated partition.
+
+Concurrency (audit 2 #9): every write of a dataset (read-merge-replace of its
+partitions and ``_meta.json``) holds an exclusive ``fcntl.flock`` on
+``<root>/.locks/<dataset>.lock``; every read holds the shared lock, so a reader
+sees a consistent snapshot (never a half-rewritten dataset) and concurrent
+upserts from several processes never lose rows.  Locks are advisory and local
+(POSIX ``flock``; not reliable on NFS).
 """
 from __future__ import annotations
 
+import fcntl
 import glob
 import hashlib
 import json
@@ -59,8 +75,10 @@ import os
 import shutil
 import uuid
 import warnings
-from typing import Dict, Iterable, List, Optional, Sequence
+from contextlib import contextmanager
+from typing import Dict, Iterable, Iterator, List, Optional, Sequence
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -73,6 +91,7 @@ OPTIONAL_PANELS = ("spread_bps", "short_interest_ratio", "borrow_fee", "book_to_
 #: dataset name -> MarketData field for the optional price-level panels
 RAW_PANELS: Dict[str, str] = {"prices_close_raw": "close_raw", "shares_outstanding": "shares_outstanding"}
 WRITE_MODES = ("upsert", "replace_partition", "replace")
+NAN_POLICIES = ("keep_existing", "delete")
 
 
 def _atomic_write_table(table: pa.Table, path: str) -> None:
@@ -115,6 +134,22 @@ class ParquetStore:
         self.root = str(root)
         os.makedirs(self.root, exist_ok=True)
 
+    # ------------------------------------------------------------------ locking
+    @contextmanager
+    def _lock(self, name: str, exclusive: bool) -> Iterator[None]:
+        """Process-level advisory lock of one dataset (exclusive for writers,
+        shared for readers); the lock file lives outside the dataset directory so
+        ``mode="replace"`` / :meth:`drop` can remove the directory under it."""
+        d = os.path.join(self.root, ".locks")
+        os.makedirs(d, exist_ok=True)
+        fd = os.open(os.path.join(d, f"{name}.lock"), os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
     # ------------------------------------------------------------------ paths
     def _dir(self, name: str) -> str:
         return os.path.join(self.root, name)
@@ -133,6 +168,10 @@ class ParquetStore:
         return os.path.exists(self._meta_path(name))
 
     def meta(self, name: str) -> dict:
+        with self._lock(name, exclusive=False):
+            return self._meta_unlocked(name)
+
+    def _meta_unlocked(self, name: str) -> dict:
         with open(self._meta_path(name)) as f:
             return json.load(f)
 
@@ -144,6 +183,10 @@ class ParquetStore:
         os.replace(tmp, self._meta_path(name))
 
     def drop(self, name: str) -> None:
+        with self._lock(name, exclusive=True):
+            self._drop_unlocked(name)
+
+    def _drop_unlocked(self, name: str) -> None:
         if os.path.isdir(self._dir(name)):
             shutil.rmtree(self._dir(name))
 
@@ -157,7 +200,8 @@ class ParquetStore:
         row for ``mode="upsert"``; tables without a ``date`` column are upserted
         on ``ticker`` if present, otherwise replaced.
         """
-        self._write_long(name, df, mode=mode, kind=kind, key=key, drop_null=None)
+        with self._lock(name, exclusive=True):
+            self._write_long(name, df, mode=mode, kind=kind, key=key, drop_null=None)
 
     def _write_long(self, name: str, df: pd.DataFrame, mode: str, kind: str,
                     key: Optional[Sequence[str]], drop_null: Optional[str]) -> None:
@@ -180,9 +224,9 @@ class ParquetStore:
             raise ValueError(f"key columns {sorted(missing)} not in frame")
         prev_cols: List[str] = []
         if mode == "replace":
-            self.drop(name)
+            self._drop_unlocked(name)
         elif self.exists(name):
-            prev_cols = list(self.meta(name).get("columns", []))
+            prev_cols = list(self._meta_unlocked(name).get("columns", []))
         os.makedirs(self._dir(name), exist_ok=True)
 
         def finish(part: pd.DataFrame, path: str) -> None:
@@ -209,6 +253,11 @@ class ParquetStore:
         self._write_meta(name, {"kind": kind, "columns": cols, "partitioned": "date" in df.columns})
 
     def read_long(self, name: str, start=None, end=None, columns: Optional[List[str]] = None) -> pd.DataFrame:
+        with self._lock(name, exclusive=False):
+            return self._read_long_unlocked(name, start, end, columns)
+
+    def _read_long_unlocked(self, name: str, start=None, end=None,
+                            columns: Optional[List[str]] = None) -> pd.DataFrame:
         files = self._files(name)
         if not files:
             raise FileNotFoundError(f"dataset {name!r} not in store {self.root}")
@@ -228,18 +277,26 @@ class ParquetStore:
         return df
 
     # ------------------------------------------------------------------ wide
-    def write_wide(self, name: str, df: Wide, mode: str = "upsert") -> None:
+    def write_wide(self, name: str, df: Wide, mode: str = "upsert", nan_policy: str = "keep_existing") -> None:
         """Store a wide (date x ticker) panel as ``date, ticker, value`` rows.
 
-        NaN cells are not stored (sparse storage); under ``mode="upsert"`` a NaN
-        cell deletes any stored value for that (date, ticker)."""
+        NaN cells are never stored (sparse storage).  Under ``mode="upsert"``:
+        ``nan_policy="keep_existing"`` (default) -- a NaN cell carries no
+        information and leaves any stored value for that (date, ticker) in place
+        (a partial re-delivery of a sparse panel cannot delete data);
+        ``nan_policy="delete"`` -- a NaN cell deletes the stored value."""
+        if nan_policy not in NAN_POLICIES:
+            raise ValueError(f"nan_policy must be one of {NAN_POLICIES}, got {nan_policy!r}")
         if not isinstance(df.index, pd.DatetimeIndex):
             raise TypeError("wide panel must have a DatetimeIndex")
         long = df.stack(future_stack=True)
         long.index.names = ["date", "ticker"]
         long = long.rename("value").reset_index()
         long["ticker"] = long["ticker"].astype(str)
-        self._write_long(name, long, mode=mode, kind="wide", key=("date", "ticker"), drop_null="value")
+        if nan_policy == "keep_existing":
+            long = long[long["value"].notna()]
+        with self._lock(name, exclusive=True):
+            self._write_long(name, long, mode=mode, kind="wide", key=("date", "ticker"), drop_null="value")
 
     def read_wide(self, name: str, start=None, end=None, tickers: Optional[Iterable[str]] = None) -> Wide:
         long = self.read_long(name, start, end)
@@ -279,11 +336,12 @@ class ParquetStore:
     def snapshot_hash(self, name: str) -> str:
         """SHA-256 over the dataset's parquet files (for ``TrialLedger.data_hash``)."""
         h = hashlib.sha256()
-        for f in self._files(name):
-            h.update(os.path.relpath(f, self.root).encode())
-            with open(f, "rb") as fh:
-                for chunk in iter(lambda: fh.read(1 << 20), b""):
-                    h.update(chunk)
+        with self._lock(name, exclusive=False):
+            for f in self._files(name):
+                h.update(os.path.relpath(f, self.root).encode())
+                with open(f, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(1 << 20), b""):
+                        h.update(chunk)
         return h.hexdigest()
 
     def snapshot_hash_all(self, names: Optional[Iterable[str]] = None) -> str:
@@ -322,18 +380,46 @@ class ParquetStore:
             asset_growth=panel("asset_growth"),
             extra={n: panel(n) for n in extra_names if self.exists(n)},
             close_raw=panel("prices_close_raw"), shares_outstanding=panel("shares_outstanding"),
-            industry_history=self._industry_history(end, cols),
+            industry_history=self._industry_history(end, cols, idx[0] if len(idx) else None),
+            delisting_dates=self._delisting_dates(cols),
         )
         md.validate()
         return md
 
-    def _industry_history(self, end, cols: pd.Index) -> Optional[Wide]:
+    def _industry_history(self, end, cols: pd.Index, first_date=None) -> Optional[Wide]:
         """Dated labels up to ``end`` (no ``start`` cut: the label in force at the
-        first panel date may have been set earlier)."""
+        first panel date may have been set earlier).
+
+        A row of ``"UNKNOWN"`` is prepended at the earliest of the history's and
+        the panel's first date for every ticker not yet classified then, so
+        ``MarketData.industry_as_of`` never back-fills a date before a ticker's
+        first dated classification with the static (= current) map."""
         if not self.exists("industry_history"):
             return None
-        ih = self.read_wide("industry_history", None, end)
-        return ih.reindex(columns=cols)
+        ih = self.read_wide("industry_history", None, end).reindex(columns=cols).astype(object)
+        starts = [d for d in (ih.index.min() if len(ih) else None, first_date) if d is not None]
+        if not starts:
+            return ih
+        d0 = pd.Timestamp(min(starts))
+        if d0 not in ih.index:
+            ih = pd.concat([pd.DataFrame(np.nan, index=[d0], columns=ih.columns, dtype=object), ih]).sort_index()
+        ih.loc[d0] = ih.loc[d0].where(ih.loc[d0].notna(), "UNKNOWN")
+        return ih
+
+    def _delisting_dates(self, cols: pd.Index) -> Optional[pd.Series]:
+        """``delisting_dates`` long table -> Series ticker -> last trading date
+        (only tickers listed in the table are covered; see ``MarketData``)."""
+        if not self.exists("delisting_dates"):
+            return None
+        df = self.read_long("delisting_dates")
+        if df.empty:
+            return None
+        s = pd.Series(pd.to_datetime(df["delisting_date"]).to_numpy(), index=df["ticker"].astype(str))
+        s = s[~s.index.duplicated(keep="last")]
+        s = s[s.index.isin(cols)]
+        s.index.name = "ticker"
+        s.name = "delisting_date"
+        return s
 
     def write_market_data(self, md: MarketData, include_extra: bool = False) -> None:
         """Persist every panel of a MarketData under the documented dataset names."""
@@ -351,6 +437,10 @@ class ParquetStore:
                 self.write_wide(n, f)
         if md.industry_history is not None:
             self.write_wide("industry_history", md.industry_history.astype(object))
+        if md.delisting_dates is not None:
+            dd = pd.DataFrame({"ticker": md.delisting_dates.index.astype(str),
+                               "delisting_date": pd.to_datetime(md.delisting_dates).to_numpy()})
+            self.write_long("delisting_dates", dd, mode="replace")
         if include_extra:
             for k, v in md.extra.items():
                 self.write_wide(k, v)

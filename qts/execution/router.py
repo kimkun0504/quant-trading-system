@@ -5,9 +5,13 @@
 | order <= auction_max_pct x expected closing-auction volume | LOC, indicative +/- loc_offset_bps      |
 |   (buy limit above / sell limit below the indicative,      |   submitted before the 15:50 ET cutoff  |
 |    i.e. "through" the price on the order's side)           |                                         |
-| larger / less liquid                                       | ALGO ClosePx (low urgency) or Vwap,     |
-|                                                            |   maxPctVol = urgency_from_half_life    |
-|                                                            |   clipped to [1%, algo_max_pct_adv]     |
+| larger / less liquid                                       | **split**: LOC child for the auction    |
+|                                                            |   cap ``K = auction_max_pct x auction`` |
+|                                                            |   volume (whole shares) + ALGO child    |
+|                                                            |   (ClosePx low urgency, else Vwap) for  |
+|                                                            |   the remainder, maxPctVol =            |
+|                                                            |   urgency_from_half_life clipped to     |
+|                                                            |   [1%, algo_max_pct_adv]                |
 | signal half-life < urgency threshold                       | ALGO ArrivalPx (or Adaptive) next open  |
 | reversal-sleeve order (``meta['sleeve']=='reversal'`` or   | passive LMT at/inside the indicative,   |
 |   ``meta['reversal']``)                                    |   never marketable                      |
@@ -24,6 +28,14 @@ through :func:`qts.execution.scheduler.urgency_from_half_life` (faster decay ->
 higher participation), clipped to ``[1%, cfg.algo_max_pct_adv]``; unknown
 half-life -> ``algo_max_pct_adv``.  An order larger than ``maxPctVol`` x ADV is
 flagged ``multi_day``.
+
+**Split (audit 2, finding 6).**  The cost model's ``routed`` venue prices an
+order as ``q_a = min(q, K)`` in the auction (no spread) plus the remainder in
+the continuous session (:mod:`qts.tcost.model`).  The router executes it the
+same way: an order above the auction cap becomes two child orders with
+``order_id`` suffixes ``-auc`` / ``-algo`` and ``meta['parent_order_id']`` /
+``meta['split'] = "auction"|"continuous"``.  ``ExecutionRouter(split_auction=False)``
+restores the old all-or-nothing routing (the whole order to the algo).
 
 IBKR tags: ``ClosePx`` takes ``maxPctVol, riskAversion, startTime,
 forceCompletion`` only -- ``noTakeLiq`` is not a documented ClosePx parameter
@@ -64,10 +76,12 @@ class ExecutionRouter:
         cfg: ExecutionConfig | None = None,
         cost_cfg: CostConfig | None = None,
         loc_offset_impact_mult: float = 1.5,
+        split_auction: bool = True,
     ):
         self.cfg = cfg or ExecutionConfig()
         self.cost_cfg = cost_cfg or CostConfig()
         self.loc_offset_impact_mult = loc_offset_impact_mult
+        self.split_auction = split_auction
 
     # ------------------------------------------------------------- helpers
     @staticmethod
@@ -151,6 +165,31 @@ class ExecutionRouter:
             return cap
         return float(np.clip(urgency_from_half_life(float(half_life_days)), min(0.01, cap), cap))
 
+    def _auction_order(self, o: Order, qty: float, auc: float, sig: float, ind: float, meta: dict) -> Order:
+        """LOC through the indicative (MOC when no indicative price) for ``qty`` shares."""
+        pct = qty / auc if (np.isfinite(auc) and auc > 0) else np.inf
+        cap = self.cfg.auction_max_pct_of_auction_volume
+        if np.isfinite(ind):
+            off = self.loc_offset_bps(qty, auc, sig)
+            lim = self.loc_limit(o.side, ind, off)
+            meta["loc_offset_bps"] = off
+            meta["routing_reason"] = (
+                f"{pct:.2%} of est. auction volume <= {cap:.0%} -> LOC "
+                f"{'above' if o.side == 'BUY' else 'below'} indicative {ind:.2f} "
+                f"by {off:.1f}bp; submit before 15:50 ET"
+            )
+            return o.with_(
+                qty=float(qty),
+                order_type="LOC",
+                limit_px=lim,
+                algo=None,
+                algo_params={},
+                venue_hint="auction",
+                meta=meta,
+            )
+        meta["routing_reason"] = f"{pct:.2%} of est. auction volume but no indicative price -> MOC"
+        return o.with_(qty=float(qty), order_type="MOC", limit_px=None, venue_hint="auction", meta=meta)
+
     # --------------------------------------------------------------- route
     def route(
         self, orders: list[Order], snapshot: dict, signal_half_life_days: float | None = None, date=None
@@ -219,36 +258,35 @@ class ExecutionRouter:
                 )
                 continue
 
-            # 3) small relative to the closing auction: LOC through the indicative
-            if pct_auc <= cfg.auction_max_pct_of_auction_volume and np.isfinite(ind):
-                off = self.loc_offset_bps(o.qty, auc, sig)
-                lim = self.loc_limit(o.side, ind, off)
-                meta["loc_offset_bps"] = off
-                meta["routing_reason"] = (
-                    f"{pct_auc:.2%} of est. auction volume <= "
-                    f"{cfg.auction_max_pct_of_auction_volume:.0%} -> LOC "
-                    f"{'above' if o.side == 'BUY' else 'below'} indicative {ind:.2f} "
-                    f"by {off:.1f}bp; submit before 15:50 ET"
-                )
-                routed.append(
-                    o.with_(
-                        order_type="LOC",
-                        limit_px=lim,
-                        algo=None,
-                        algo_params={},
-                        venue_hint="auction",
-                        meta=meta,
-                    )
-                )
-                continue
-            if pct_auc <= cfg.auction_max_pct_of_auction_volume:  # no indicative price available
-                meta["routing_reason"] = (
-                    f"{pct_auc:.2%} of est. auction volume but no indicative price -> MOC"
-                )
-                routed.append(o.with_(order_type="MOC", limit_px=None, venue_hint="auction", meta=meta))
+            # 3) small relative to the closing auction: LOC through the indicative (MOC without one)
+            if pct_auc <= cfg.auction_max_pct_of_auction_volume:
+                routed.append(self._auction_order(o, o.qty, auc, sig, ind, meta))
                 continue
 
-            # 4) larger: Close Price algo (low urgency) or VWAP, participation-capped
+            # 4) larger: split -- the auction cap K (whole shares) to LOC/MOC, the rest to
+            #    a Close Price algo (low urgency) or VWAP, participation-capped
+            k_shares = (
+                float(math.floor(cfg.auction_max_pct_of_auction_volume * auc))
+                if self.split_auction and np.isfinite(auc) and auc > 0
+                else 0.0
+            )
+            if k_shares >= 1.0:
+                parent = o.order_id
+                child_meta = dict(meta, parent_order_id=parent, split="auction", parent_qty=o.qty)
+                auc_child = self._auction_order(o, k_shares, auc, sig, ind, child_meta)
+                auc_child.meta["routing_reason"] = (
+                    f"split: {pct_auc:.1%} of est. auction volume > "
+                    f"{cfg.auction_max_pct_of_auction_volume:.0%}; auction child {k_shares:.0f} sh (the cap): "
+                    + auc_child.meta["routing_reason"]
+                )
+                if parent is not None:
+                    auc_child.order_id = f"{parent}-auc"
+                routed.append(auc_child)
+                o = o.with_(
+                    qty=float(o.qty - k_shares), order_id=None if parent is None else f"{parent}-algo"
+                )
+                meta = dict(meta, parent_order_id=parent, split="continuous", parent_qty=o.qty + k_shares)
+                pct_adv = o.qty / adv if (np.isfinite(adv) and adv > 0) else np.inf
             max_pct = self.participation(hl)
             low_urgency = hl is None or float(hl) >= 2 * cfg.urgency_half_life_days_threshold
             algo = ALGO_CLOSE if low_urgency else ALGO_VWAP
@@ -257,7 +295,8 @@ class ExecutionRouter:
                 params.update(startTime="13:00:00 US/Eastern", endTime="16:00:00 US/Eastern", noTakeLiq=False)
             reason = (
                 f"{pct_auc:.1%} of est. auction volume > {cfg.auction_max_pct_of_auction_volume:.0%} "
-                f"-> ALGO {algo}, maxPctVol {max_pct:.1%}"
+                + (f"-> remainder {o.qty:.0f} sh " if meta.get("split") == "continuous" else "")
+                + f"-> ALGO {algo}, maxPctVol {max_pct:.1%}"
             )
             if pct_adv > max_pct:
                 reason += (

@@ -8,7 +8,12 @@ an ``object``; scalar fields become ``number`` / ``integer`` / ``boolean`` /
 ``string`` leaves with the default value, a title derived from the field name, a
 description taken from the field's comments in ``qts/core/config.py`` (the comment
 block directly above it plus its inline comment) and, where curated below, enums
-and bounds.  Optional scalars (``float | None``) are typed by their scalar type and
+and bounds (``minimum`` / ``maximum``, or ``exclusiveMinimum`` / ``exclusiveMaximum``
+for open ends).  The ``cost`` and ``execution`` bounds are the ones
+``CostConfig`` / ``ExecutionConfig`` enforce on construction
+(``qts.core.config.COST_CONFIG_BOUNDS`` / ``EXECUTION_CONFIG_BOUNDS``); every other
+section's bounds are enforced here only (API layer), e.g. ``alpha.lgbm.n_estimators
+<= 10000``.  Optional scalars (``float | None``) are typed by their scalar type and
 have no ``default`` when the default is ``None``.  Lists, tuples and dicts (style
 lists, theme weights, the PBO grid) are not form-editable and are left out; they
 are still settable through a config file.
@@ -52,6 +57,7 @@ SECTION_TITLES: dict[str, str] = {
 ENUMS: dict[str, list[str]] = {
     "portfolio.book": ["long_short", "long_only", "130_30"],
     "portfolio.vol_target_mode": ["projection", "constraint"],
+    "portfolio.risk_aversion_mode": ["target_vol", "fixed"],
     "portfolio.solver": ["CLARABEL", "SCS", "OSQP", "ECOS"],
     "cost.tca_reversion_reference": ["next_close", "next_open"],
     "risk.exposure_dtype": ["float64", "float32"],
@@ -76,12 +82,6 @@ BOUNDS: dict[str, tuple[float | None, float | None]] = {
     "risk.min_history_days": (21, 2520),
     "risk.alignment_nu_scale": (0, None),
     "risk.max_statistical_factors": (0, 50),
-    "cost.impact_exponent": (1.0001, 2),
-    "cost.impact_b_continuous": (0, None),
-    "cost.impact_b_auction": (0, None),
-    "cost.auction_volume_share_default": (0, 1),
-    "cost.max_participation_adv": (0, 1),
-    "cost.delisting_haircut": (-1, 1),
     "portfolio.gross_leverage_max": (0, 10),
     "portfolio.net_exposure_target": (-1, 1),
     "portfolio.net_exposure_band": (0, 1),
@@ -95,9 +95,6 @@ BOUNDS: dict[str, tuple[float | None, float | None]] = {
     "portfolio.turnover_penalty": (0, None),
     "portfolio.target_vol_annual": (0.01, 0.4),
     "portfolio.beta_band": (0, 1),
-    "execution.auction_max_pct_of_auction_volume": (0, 1),
-    "execution.algo_max_pct_adv": (0, 1),
-    "execution.signal_lag_days": (0, 5),
     "validation.n_splits": (2, 12),
     "validation.embargo_days": (0, 120),
     "validation.min_fold_days": (1, 504),
@@ -105,7 +102,54 @@ BOUNDS: dict[str, tuple[float | None, float | None]] = {
     "validation.pbo_threshold": (0, 1),
     "validation.min_fold_pass_fraction": (0, 1),
     "trading_days_per_year": (200, 366),
+    # API-layer guards against absurd sizes (sections without semantic validation in
+    # qts.core.config): a typo must not launch a job that runs for days.
+    "alpha.lgbm.n_estimators": (1, 10_000),
+    "alpha.lgbm.num_leaves": (2, 4096),
+    "alpha.lgbm.min_data_in_leaf": (1, 1_000_000),
+    "alpha.lgbm.learning_rate": (1e-6, 1),
+    "alpha.lgbm.feature_fraction": (0.01, 1),
+    "alpha.lgbm.bagging_fraction": (0.01, 1),
+    "alpha.lgbm.bagging_freq": (0, 1000),
+    "alpha.lgbm.lambda_l2": (0, 1e6),
+    "alpha.lgbm.early_stopping_rounds": (1, 10_000),
+    "alpha.lgbm.n_jobs": (1, 256),
+    "alpha.mlp.alpha": (0, 1e3),
+    "alpha.mlp.max_iter": (1, 10_000),
+    "alpha.mlp.batch_size": (1, 1_000_000),
+    "alpha.mlp.learning_rate_init": (1e-8, 1),
+    "alpha.mlp.max_train_rows": (1_000, 10_000_000),
+    "alpha.mlp.n_iter_no_change": (1, 1000),
+    "alpha.mlp.valid_fraction": (0.01, 0.5),
+    "alpha.ic_window": (20, 2520),
+    "alpha.ic_min_obs": (1, 2520),
+    "alpha.valid_days": (1, 2520),
+    "alpha.refit_frequency_days": (1, 2520),
+    "alpha.train_min_days": (1, 10_000),
+    "alpha.embargo_days": (0, 252),
+    "risk.n_eigen_sims": (0, 10_000),
+    "risk.statistical_window": (21, 2520),
+    "risk.statistical_refit_every": (1, 2520),
+    "portfolio.exit_ineligible_days": (1, 252),
+    "portfolio.effective_holding_days_target": (1, 2520),
 }
+
+#: Open bounds (``exclusiveMinimum`` / ``exclusiveMaximum``) by path.
+EXCLUSIVE: dict[str, tuple[bool, bool]] = {}
+
+
+def _semantic_bounds() -> None:
+    """Bounds of the sections that ``qts.core.config`` validates itself (``CostConfig``,
+    ``ExecutionConfig``): published from the same tables the dataclasses enforce, so the
+    form, this module and ``SystemConfig.from_dict`` agree."""
+    for section, table in (("cost", C.COST_CONFIG_BOUNDS), ("execution", C.EXECUTION_CONFIG_BOUNDS)):
+        for name, (lo, hi, lo_inc, hi_inc) in table.items():
+            BOUNDS[f"{section}.{name}"] = (lo, hi)
+            if not (lo_inc and hi_inc):
+                EXCLUSIVE[f"{section}.{name}"] = (not lo_inc, not hi_inc)
+
+
+_semantic_bounds()
 
 #: Paths the launch request sets through its own fields (rejected as overrides).
 RESERVED: dict[str, str] = {
@@ -121,7 +165,14 @@ DESCRIPTIONS: dict[str, str] = {
     "PortfolioConfig.book": "Dollar-neutral long/short, long-only, or 130/30.",
     "PortfolioConfig.trade_aversion": "Multiplier on the transaction-cost term. Raise it when "
     "effective holding is below target.",
-    "PortfolioConfig.risk_aversion": "Weight on portfolio variance in the objective.",
+    "PortfolioConfig.risk_aversion": "Annual risk aversion gamma on portfolio variance "
+    "(objective alpha'w - gamma*H*w'Sigma_d*w). Used as-is when risk_aversion_mode is "
+    '"fixed" or no vol target is set; in "target_vol" mode gamma is searched per solve '
+    "from the closed form IR/(2*target) and this value is only the fallback when that "
+    "start is not finite.",
+    "PortfolioConfig.risk_aversion_mode": '"target_vol": gamma is searched per solve so the '
+    "book's ex-ante vol hits target_vol_annual (capped books accepted; vol_target_mode "
+    'unused). "fixed": gamma = risk_aversion, target enforced by vol_target_mode.',
     "PortfolioConfig.target_vol_annual": "Annualised volatility target, as a fraction (0.10 = 10%).",
     "PortfolioConfig.max_position_weight": "Cap on |weight| per name, as a fraction of NAV.",
     "PortfolioConfig.beta_neutral": "Constrain the book's beta exposure to the band around zero.",
@@ -260,10 +311,11 @@ def _leaf(path: str, kind: str, default: Any, description: str | None) -> dict[s
         leaf["enum"] = list(ENUMS[path])
     if kind in ("number", "integer") and path in BOUNDS:
         lo, hi = BOUNDS[path]
+        lo_open, hi_open = EXCLUSIVE.get(path, (False, False))
         if lo is not None:
-            leaf["minimum"] = lo
+            leaf["exclusiveMinimum" if lo_open else "minimum"] = lo
         if hi is not None:
-            leaf["maximum"] = hi
+            leaf["exclusiveMaximum" if hi_open else "maximum"] = hi
     return leaf
 
 
@@ -357,6 +409,11 @@ def _check_value(path: str, leaf: dict[str, Any], v: Any) -> tuple[Any, str | No
         return v, f"must be at least {lo}"
     if hi is not None and v > hi:
         return v, f"must be at most {hi}"
+    xlo, xhi = leaf.get("exclusiveMinimum"), leaf.get("exclusiveMaximum")
+    if xlo is not None and v <= xlo:
+        return v, f"must be greater than {xlo}"
+    if xhi is not None and v >= xhi:
+        return v, f"must be less than {xhi}"
     return v, None
 
 

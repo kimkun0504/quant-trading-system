@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 RunKind = Literal["synthetic", "store"]
 RunStatus = Literal["running", "done", "failed"]
@@ -308,6 +308,11 @@ class RunIc(_Model):
 
 # ----------------------------------------------------------------------------- launch / jobs
 class LaunchRunRequest(_Model):
+    """Strict types (pydantic strict mode): ``"stocks": "60"`` or ``"ml": "true"`` are
+    rejected, not coerced; the label may not contain control characters."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     kind: RunKind
     ml: bool
     phase: Phase
@@ -323,6 +328,13 @@ class LaunchRunRequest(_Model):
         default=None, ge=20, description="backtest only the last N out-of-sample days (quick runs)"
     )
     venue: Venue | None = Field(default=None, description="simulator pricing venue (default routed)")
+
+    @field_validator("label")
+    @classmethod
+    def _printable_label(cls, v: str | None) -> str | None:
+        if v is not None and any(ord(ch) < 32 or 0x7F <= ord(ch) < 0xA0 for ch in v):
+            raise ValueError("label must not contain control characters")
+        return v
 
 
 class LaunchRunResponse(_Model):
@@ -372,6 +384,8 @@ class JsonSchemaNumber(_Model):
     default: float = None  # type: ignore[assignment]
     minimum: float = None  # type: ignore[assignment]
     maximum: float = None  # type: ignore[assignment]
+    exclusiveMinimum: float = None  # type: ignore[assignment]  # JSON Schema keyword
+    exclusiveMaximum: float = None  # type: ignore[assignment]
 
 
 class JsonSchemaBoolean(_Model):

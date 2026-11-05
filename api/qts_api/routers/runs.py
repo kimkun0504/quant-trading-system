@@ -12,8 +12,8 @@ from qts_api.deps import get_jobs, get_registry, get_settings
 from qts_api.problems import Problem
 from qts_api.routers._common import problems
 from qts_api.services.config_schema import ConfigError, validate_overrides
-from qts_api.services.jobs import JobManager, default_label
-from qts_api.services.registry import RunNotFound, RunRegistry, RunUnreadable
+from qts_api.services.jobs import JobManager, QueueFull, default_label
+from qts_api.services.registry import RUN_ID_MAX_LEN, RunNotFound, RunRegistry, RunUnreadable, valid_run_id
 from qts_api.settings import Settings
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
@@ -47,7 +47,16 @@ def _pending_summary(j: dict[str, Any]) -> dict[str, Any]:
 
 
 def resolve(registry: RunRegistry, jobs: JobManager, run_id: str) -> str:
-    """``run_id`` if its directory is readable; else 409 (pending / failed job) or 404."""
+    """``run_id`` if its directory is readable; else 409 (pending / failed job) or 404.
+    A malformed id (not a run-directory name, or longer than ``RUN_ID_MAX_LEN``) is a 404
+    without touching the filesystem."""
+    if not valid_run_id(run_id):
+        shown = run_id if len(run_id) <= 64 else run_id[:64] + "…"
+        raise Problem(
+            404,
+            f"No run with id {shown} (run ids are letters, digits, '.', '_' or '-', at most {RUN_ID_MAX_LEN})",
+            type_="run-not-found",
+        )
     try:
         registry.get(run_id)
         return run_id
@@ -147,7 +156,7 @@ def get_ic(run_id: str, registry: Registry, jobs: Jobs) -> dict[str, Any]:
     "",
     response_model=S.LaunchRunResponse,
     status_code=202,
-    responses=problems(422),
+    responses=problems(422, 429),
     summary="Launch a pipeline run as a background job",
 )
 def launch_run(
@@ -186,13 +195,18 @@ def launch_run(
     config_hash = cfg.hash()
     run_id = new_run_id(config_hash)
     label = body.label or default_label(body.ml, body.seed, body.signal_lag_days)
-    job = jobs.submit(
-        request=body.model_dump(),
-        config=cfg.to_dict(),
-        config_hash=config_hash,
-        run_id=run_id,
-        label=label,
-        git_sha=str(git_info()["git_sha"]),
-    )
+    try:
+        job = jobs.submit(
+            request=body.model_dump(),
+            config=cfg.to_dict(),
+            config_hash=config_hash,
+            run_id=run_id,
+            label=label,
+            git_sha=str(git_info()["git_sha"]),
+        )
+    except QueueFull as e:
+        raise Problem(
+            429, str(e), type_="queue-full", title="Too many queued runs", headers={"Retry-After": "60"}
+        ) from e
     response.headers["Location"] = f"/api/jobs/{job['job_id']}"
     return {"job_id": job["job_id"], "run_id": run_id}

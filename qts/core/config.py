@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 from collections.abc import Mapping
 from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
@@ -146,6 +147,11 @@ class UniverseConfig(_ConfigBase):
     # failed refreshes (turnover hysteresis; qts.data.universe.build_universe_mask)
     refresh_days: int = 21
     exit_after_n_fails: int = 3
+    # Refresh grid anchor: "month_start" (default) refreshes on the first trading
+    # day of every calendar month (plus the first panel date), so the refresh
+    # dates do not depend on the load ``start`` (refresh_days is then unused);
+    # "panel_start" is the legacy grid every ``refresh_days`` from the first date.
+    refresh_anchor: str = "month_start"
 
 
 @dataclass
@@ -249,6 +255,12 @@ class AlphaConfig(_ConfigBase):
     refit_frequency_days: int = 252
     train_min_days: int = 756
     embargo_days: int | None = None  # defaults to horizon_days
+    # Causal delisting rule for labels when ``MarketData.delisting_dates`` does not
+    # cover a name: a price gap at the label's window end counts as a delisting
+    # only once the name has had no close for this many trading days after its
+    # last close (decided at that date, never with later prices); a close within
+    # the window makes it a temporary halt (qts.alpha.targets.forward_returns).
+    delisting_gap_days: int = 63
     # Label treatment of names that delist inside the forward window (t, t+h]
     # uses ``CostConfig.delisting_haircut`` -- the single source of the
     # delisting assumption for labels and backtest accounting (the former
@@ -289,9 +301,11 @@ class RiskConfig(_ConfigBase):
     # Saxena-Stubbs alignment variance: nu = alignment_nu_scale * N * median style
     # variance (qts.risk.alignment).  Calibrated so the optimized book's bias
     # statistic is ~1: scripts/calibrate_alignment_nu.py,
-    # docs/notes/alignment_nu_calibration.md (synthetic seeds 0-2: calibrated
-    # 1.58 / 0.05 / 0.28, median 0.28 -> 0.25; recalibrate on real data).
-    alignment_nu_scale: float = 0.25
+    # docs/notes/alignment_nu_calibration.md.  Recalibrated 2026-11-05 with the
+    # production settings (gamma-search sizing, signal_lag_days=1, no out-of-model
+    # names): synthetic seeds 0-2 all at the search floor 0.05 (bias 0.87 / 0.85 /
+    # 0.88; already < 1 at nu = 0) -> 0.05.  Recalibrate on real data.
+    alignment_nu_scale: float = 0.05
     eigenfactor_adjust: bool = True
     n_eigen_sims: int = 200
     # USE4 empirical scaling of the simulated eigenfactor volatility bias,
@@ -312,6 +326,33 @@ class RiskConfig(_ConfigBase):
     # storage dtype of the (T, N, S) style-exposure tensor (qts.risk.exposures.ExposureHistory);
     # "float32" halves its memory at ~1e-7 relative error in the exposures.
     exposure_dtype: str = "float64"
+
+
+#: ``(low, high, low_inclusive, high_inclusive)``; ``None`` = unbounded on that side.
+FieldBound = tuple[float | None, float | None, bool, bool]
+
+
+def check_bounds(obj: object, bounds: Mapping[str, FieldBound]) -> list[str]:
+    """Messages for every field of ``obj`` in ``bounds`` that is not a finite real
+    number inside its interval (empty list = all good).  ``None`` values are skipped
+    (optional fields)."""
+    errs: list[str] = []
+    for name, (lo, hi, lo_inc, hi_inc) in bounds.items():
+        v: Any = getattr(obj, name)
+        if v is None:
+            continue
+        if isinstance(v, bool) or (not isinstance(v, (int, float)) and not hasattr(v, "__float__")):
+            errs.append(f"{name} must be a number, got {v!r}")
+            continue
+        x = float(v)
+        if not math.isfinite(x):
+            errs.append(f"{name} must be finite, got {v!r}")
+            continue
+        if lo is not None and (x < lo or (not lo_inc and x == lo)):
+            errs.append(f"{name} must be {'>=' if lo_inc else '>'} {lo}, got {v!r}")
+        elif hi is not None and (x > hi or (not hi_inc and x == hi)):
+            errs.append(f"{name} must be {'<=' if hi_inc else '<'} {hi}, got {v!r}")
+    return errs
 
 
 @dataclass
@@ -374,6 +415,55 @@ class CostConfig(_ConfigBase):
     # convention, default) or "next_open" (TCALedger.decompose).
     tca_reversion_reference: str = "next_close"
 
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> CostConfig:
+        """Semantic bounds (:data:`COST_CONFIG_BOUNDS`) plus ``gc < htb`` and the
+        reversion enum; raises ``ValueError`` naming every offending field.  Runs on
+        construction (so ``from_dict`` / ``SystemConfig.validate()`` check it);
+        call it again after mutating fields in place."""
+        errs = check_bounds(self, COST_CONFIG_BOUNDS)
+        if not errs and self.borrow_proxy_si_gc >= self.borrow_proxy_si_htb:
+            errs.append("borrow_proxy_si_gc must be < borrow_proxy_si_htb")
+        if self.tca_reversion_reference not in TCA_REVERSION_REFERENCES:
+            errs.append(f"tca_reversion_reference must be one of {list(TCA_REVERSION_REFERENCES)}")
+        if errs:
+            raise ValueError("CostConfig: " + "; ".join(errs))
+        return self
+
+
+TCA_REVERSION_REFERENCES = ("next_close", "next_open")
+
+#: Semantic bounds of :class:`CostConfig` (checked on construction; the API's config
+#: schema publishes them as ``minimum`` / ``exclusiveMinimum`` / ...).  Fees, spreads and
+#: borrow are non-negative (a negative fee would be booked as a rebate); the upper bounds
+#: only reject absurd values (e.g. a typo of 1e12).
+COST_CONFIG_BOUNDS: dict[str, FieldBound] = {
+    "commission_per_share": (0.0, 1.0, True, True),
+    "commission_min_per_order": (0.0, 100.0, True, True),
+    "commission_max_pct_value": (0.0, 1.0, True, True),
+    "clearing_per_share": (0.0, 1.0, True, True),
+    "sec_fee_per_dollar_sold": (0.0, 0.01, True, True),
+    "finra_taf_per_share_sold": (0.0, 1.0, True, True),
+    "finra_taf_max_per_trade": (0.0, 1000.0, True, True),
+    "cat_fee_per_share": (0.0, 1.0, True, True),
+    "auction_exchange_fee_per_share": (0.0, 1.0, True, True),
+    "impact_b_continuous": (0.0, 10.0, False, True),
+    "impact_b_auction": (0.0, 10.0, False, True),
+    "auction_volume_share_default": (0.0, 1.0, False, True),
+    "impact_exponent": (1.0, 2.0, False, True),
+    "default_half_spread_bps": (0.0, 1000.0, True, True),
+    "default_borrow_fee_annual": (0.0, 5.0, True, True),
+    "max_participation_adv": (0.0, 1.0, False, True),
+    "htb_fee_cap_annual": (0.0, 5.0, True, True),
+    "borrow_proxy_si_gc": (0.0, 1.0, True, True),
+    "borrow_proxy_si_htb": (0.0, 1.0, False, True),
+    "small_cap_borrow_multiplier": (0.0, 100.0, True, True),
+    "small_cap_threshold_usd": (0.0, None, True, True),
+    "delisting_haircut": (-1.0, 1.0, True, True),
+}
+
 
 @dataclass
 class PortfolioConfig(_ConfigBase):
@@ -386,7 +476,18 @@ class PortfolioConfig(_ConfigBase):
     beta_neutral: bool = True
     industry_band: float = 0.03
     style_band_sd: float = 0.10
-    risk_aversion: float = 10.0
+    # Sizing (second-pass audit finding 1).  ``risk_aversion_mode``:
+    #   "target_vol" (default): gamma is chosen per solve so the optimal book's
+    #       ex-ante annual vol equals target_vol_annual (subject to every constraint;
+    #       search on log gamma from the closed form gamma0 = IR / (2 target), see
+    #       SinglePeriodOptimizer); vol_target_mode is not used.  With
+    #       target_vol_annual=None it falls back to the fixed risk_aversion.
+    #   "fixed": gamma = risk_aversion; the target, if any, is then enforced by
+    #       vol_target_mode ("projection" / "constraint").
+    risk_aversion_mode: str = "target_vol"
+    # Annual risk aversion of the objective alpha'w - gamma*H*w'Sigma_d*w ("fixed"
+    # mode; fallback otherwise).  2 ~ IR / (2 x 10 % target) on the measured alpha.
+    risk_aversion: float = 2.0
     trade_aversion: float = 1.0
     hold_aversion: float = 1.0
     turnover_penalty: float = 0.0  # extra linear penalty on |x|
@@ -406,10 +507,11 @@ class PortfolioConfig(_ConfigBase):
     # Names that drop out of the eligible universe while held are liquidated
     # linearly over this many trading days (simulator ``force_to_zero`` hook).
     exit_ineligible_days: int = 5
-    # --- vol targeting (qts.portfolio.optimizer, finding #28)
+    # --- vol targeting in risk_aversion_mode="fixed" (qts.portfolio.optimizer, finding #28)
     # "projection": solve the alpha problem, then re-solve
-    #     min ||w - s w*||^2 + vol_target_projection_cost_weight * TC(w - w0)
-    #     over the same constraints plus sqrt(w'Sigma w) <= target  (two solves);
+    #     min gamma*H*(w - s w*)'Sigma(w - s w*) + vol_target_projection_cost_weight * TC(w - w0)
+    #     over the same constraints plus sqrt(w'Sigma w) <= target  (two solves;
+    #     risk-aversion-weighted tracking variance, so both terms are NAV fractions);
     # "constraint": one solve of the alpha problem with the SOC risk cap
     #     sqrt(w'Sigma w) <= target added (no scale-up: risk_aversion sets the level
     #     below the cap).
@@ -448,6 +550,30 @@ class ExecutionConfig(_ConfigBase):
     # orders must be submitted before the 15:50 ET cutoff, so a strategy cannot use the
     # official close it trades at.  Lag 0 remains available as an optimistic bound.
     signal_lag_days: int = 1
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> ExecutionConfig:
+        """Semantic bounds (:data:`EXECUTION_CONFIG_BOUNDS`; ``signal_lag_days``
+        must be an integer); raises ``ValueError`` naming every offending field."""
+        errs = check_bounds(self, EXECUTION_CONFIG_BOUNDS)
+        lag: Any = self.signal_lag_days
+        if isinstance(lag, bool) or not float(lag).is_integer():
+            errs.append(f"signal_lag_days must be an integer, got {lag!r}")
+        if errs:
+            raise ValueError("ExecutionConfig: " + "; ".join(errs))
+        return self
+
+
+#: Semantic bounds of :class:`ExecutionConfig` (see :data:`COST_CONFIG_BOUNDS`).
+EXECUTION_CONFIG_BOUNDS: dict[str, FieldBound] = {
+    "auction_max_pct_of_auction_volume": (0.0, 1.0, False, True),
+    "algo_max_pct_adv": (0.0, 1.0, False, True),
+    "loc_offset_bps": (0.0, 1000.0, True, True),
+    "urgency_half_life_days_threshold": (0.0, 1000.0, True, True),
+    "signal_lag_days": (0.0, 10.0, True, True),
+}
 
 
 @dataclass

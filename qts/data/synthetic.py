@@ -70,6 +70,19 @@ market cap -- are unchanged).  ``md.extra["true_splits"]`` lists the planted
 events (date x ticker panel holding the ratio on the effective date, NaN
 elsewhere).
 
+Halts and delistings
+--------------------
+``n_halts > 0`` blanks ``halt_days`` consecutive days of every price-level
+panel (``close``, ``close_raw``, ``volume``, ``market_cap``, ``spread_bps``) of
+that many randomly chosen names (the price path continues, so the first close
+after the halt carries the whole halt-period return).  ``n_delistings > 0``
+blanks those panels from a random day to the end for that many other names
+and sets ``md.delisting_dates`` (ticker -> last trading date, ``NaT`` for every
+other name).  Both are drawn from their own random stream; with both at 0
+(default) the output is bit-identical to the generator without them (and
+``delisting_dates`` is ``None``).  ``md.extra["true_halts"]`` (1.0 on halted
+days, NaN elsewhere) records the planted halts when ``n_halts > 0``.
+
 Ground truth in ``md.extra``
 ----------------------------
 * ``true_latent_score``  -- the latent alpha score ``z_t`` (date x ticker).
@@ -128,6 +141,12 @@ class SyntheticSpec:
     # Planted forward splits in ``close_raw`` (0 = none, close_raw == close).
     # Drawn from a separate stream: ``close`` and all other panels are unchanged.
     n_splits: int = 0
+    # Planted temporary halts (``halt_days`` consecutive missing closes, then the
+    # name resumes) and delistings (no close from a random day on; recorded in
+    # ``MarketData.delisting_dates``).  Separate random stream; 0 = none.
+    n_halts: int = 0
+    halt_days: int = 10
+    n_delistings: int = 0
 
 
 def _ar1_path(n_steps: int, n: int, phi: float, rng: np.random.Generator) -> np.ndarray:
@@ -249,6 +268,36 @@ def generate(spec: Optional[SyntheticSpec] = None) -> MarketData:
         volume = volume / factor                   # actual shares traded
         shares_out = shares_out / factor           # actual shares outstanding
 
+    extra_events: dict = {}
+    delisting_dates = None
+    if spec.n_halts > 0 or spec.n_delistings > 0:
+        rng_h = np.random.default_rng([int(spec.seed), 0x4A17])
+        n_h = int(min(spec.n_halts, N))
+        n_d = int(min(spec.n_delistings, N - n_h))
+        picks = rng_h.choice(N, size=n_h + n_d, replace=False)
+        gone = np.zeros((T, N), dtype=bool)
+        halted = np.zeros((T, N), dtype=bool)
+        hd = int(spec.halt_days)
+        lo, hi = max(1, T // 4), max(2, T - hd - 1)
+        for j in picks[:n_h]:
+            d = int(rng_h.integers(lo, hi))
+            halted[d:d + hd, j] = True
+        dd = pd.Series(pd.NaT, index=tickers, dtype="datetime64[ns]", name="delisting_date")
+        for j in picks[n_h:]:
+            d = int(rng_h.integers(lo, max(lo + 1, T - 5)))
+            gone[d:, j] = True
+            dd.iloc[j] = dates[d - 1]
+        blank = gone | halted
+        close = close.mask(blank)
+        close_raw = close_raw.mask(blank)
+        volume = volume.mask(blank)
+        market_cap = market_cap.mask(blank)
+        spread_bps = spread_bps.mask(blank)
+        if n_h:
+            extra_events["true_halts"] = pd.DataFrame(np.where(halted, 1.0, np.nan), index=dates, columns=tickers)
+        if n_d:
+            delisting_dates = dd
+
     md = MarketData(
         close=close, volume=volume, market_cap=market_cap, industry=industry,
         close_raw=close_raw, shares_outstanding=shares_out,
@@ -265,7 +314,9 @@ def generate(spec: Optional[SyntheticSpec] = None) -> MarketData:
             "true_style_factor_returns": pd.DataFrame(
                 f.copy(), index=dates, columns=pd.Index(STYLE_FACTORS, name="factor")),
             "true_splits": split_panel,
+            **extra_events,
         },
+        delisting_dates=delisting_dates,
     )
     md.validate()
     return md

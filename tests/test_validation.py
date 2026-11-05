@@ -220,10 +220,11 @@ def test_ledger_dedupes_identical_reruns_and_family_stats(tmp_path):
             config_hash=f"c{k}",
             returns_monthly=rm,
             replace_identical=True,
+            code_version="abc123",
         )
     assert led.n_trials("pipeline_phase1") == 3
-    # identical config + data: updated in place, not appended
-    rec = led.log(
+    # identical config + data + clean code version: one trial (de-duplicated at read time)
+    led.log(
         "pipeline_phase1",
         {"portfolio": {"risk_aversion": 7}},
         {"sharpe_annual": 1.2, "n_obs": 750},
@@ -231,8 +232,10 @@ def test_ledger_dedupes_identical_reruns_and_family_stats(tmp_path):
         config_hash="c2",
         returns_monthly=rm,
         replace_identical=True,
+        code_version="abc123",
     )
-    assert led.n_trials("pipeline_phase1") == 3 and rec["n_reruns"] == 1
+    assert led.n_trials("pipeline_phase1") == 3 and led.records("pipeline_phase1")[2]["n_reruns"] == 1
+    assert len(led.raw_records()) == 4  # the file itself is append-only
     assert led.trial_sharpes_annual("pipeline_phase1").round(6).tolist() == [0.5, 0.8, 1.2]
     # different data hash: a new trial
     led.log(
@@ -243,6 +246,7 @@ def test_ledger_dedupes_identical_reruns_and_family_stats(tmp_path):
         config_hash="c2",
         returns_monthly=rm,
         replace_identical=True,
+        code_version="abc123",
     )
     assert led.n_trials("pipeline_phase1") == 4
     v = led.family_sharpe_variance("pipeline_phase1")

@@ -2,13 +2,15 @@
 
 ``portfolio_vol_scalar`` is the plain ``target / predicted`` multiplier used
 for *reporting* and for realised-vol overlays.  ``SinglePeriodOptimizer`` does
-**not** multiply the book by it.  Depending on ``PortfolioConfig.vol_target_mode``
-it either re-solves a projection ``min ||w - s w*||^2 + c TC(w - w0)`` onto the
-full constraint set with a risk cap (``"projection"``, default; the cost term
-``c = vol_target_projection_cost_weight`` is finding #28), or adds the SOC cap
-``sqrt(w' Sigma w) <= target`` to the alpha solve itself (``"constraint"``,
-one solve, target is a ceiling).  Either way every band holds after
-targeting (see ``qts.portfolio.optimizer``).
+**not** multiply the book by it.  With the default
+``PortfolioConfig.risk_aversion_mode="target_vol"`` it sizes the book by
+choosing the risk aversion so that the alpha-aware optimum has the target
+ex-ante vol (second-pass audit finding 1).  With ``"fixed"`` gamma,
+``vol_target_mode`` either re-solves a projection ``min gamma H (w - s w*)'
+Sigma (w - s w*) + c TC(w - w0)`` onto the full constraint set with a risk cap
+(``"projection"``), or adds the SOC cap ``sqrt(w' Sigma w) <= target`` to the
+alpha solve itself (``"constraint"``, one solve, target is a ceiling).  Every
+band holds after targeting in all modes (see ``qts.portfolio.optimizer``).
 """
 
 from __future__ import annotations

@@ -1,6 +1,65 @@
 # Alignment-factor variance `nu`: calibration on the synthetic market
 
 WORK_PLAN item 1.8; resolves audit `risk_portfolio.md` finding 5 ("`nu` is uncalibrated").
+**Recalibrated 2026-11-05** after the second-pass audit (`second_pass_risk_portfolio.md`
+finding 10): the first calibration (below, "2026-11-04 run") used fixed `gamma = 10` plus the
+alpha-blind vol-target projection, execution lag 0 (production is 1) and books that could hold
+names outside the risk model. **Current default: `alignment_nu_scale = 0.05`.**
+
+## 2026-11-05 recalibration (production settings)
+
+Changes against the first run:
+
+* Sizing: default `PortfolioConfig` = `risk_aversion_mode="target_vol"` (gamma searched per
+  date so the optimal book has 10 % ex-ante vol, capped by gross 2 / 2 % names / ADV).
+* Lag: `calibrate_alignment_nu(..., signal_lag_days=1)` pairs the book built from data as of `t`
+  with the return of `t + 2`, as `DailyBarSimulator` does with `ExecutionConfig.signal_lag_days = 1`.
+* Universe: the optimizer only holds risk-model names (finding 3), and the script puts
+  ineligible names that are not held on `no_trade`, like the simulator.
+* Risk model: Bayesian shrinkage Delta about the cap-weighted mean, specific VRA with lagged
+  daily caps, industry columns as of `t` (findings 4 and 9).
+
+Run (CPU-constrained, so a shorter window than the first run): 300 names, 1512 days, last
+**120** out-of-sample dates (2023-05-03 .. 2023-10-17), 20 burn-in days, `--n-iter 5`,
+grid 0 / 0.25 / 0.5 / 1 / 2 (plus the search ends 0.05 and 50):
+
+    python scripts/calibrate_alignment_nu.py --seeds S --n-dates 120 --burn-in 20 --n-iter 5 --grid 0 0.25 0.5 1 2
+
+Bias statistic of the optimized book (band `1 ± 2/sqrt(2T)` = [0.870, 1.130], T = 120):
+
+| nu_scale | seed 0 | seed 1 | seed 2 |
+|---:|---:|---:|---:|
+| 0    | 0.870 | 0.861 | 0.897 |
+| 0.05 | 0.867 | 0.846 | 0.883 |
+| 0.25 | 0.859 | 0.831 | 0.849 |
+| 0.5  | 0.850 | 0.817 | 0.830 |
+| 1    | 0.843 | 0.796 | 0.810 |
+| 2    | 0.833 | 0.784 | 0.801 |
+| 50   | 0.833 | 0.788 | 0.789 |
+| **calibrated** | **0.05** (floor) | **0.05** (floor) | **0.05** (floor) |
+
+| at nu = 0 | seed 0 | seed 1 | seed 2 |
+|---|---|---|---|
+| ex-ante / realised vol | 8.5 % / 7.4 % | 8.8 % / 7.6 % | 8.3 % / 7.5 % |
+| `abs(y'w)` at nu = 0 → 0.25 → 1 | .051 → .046 → .037 | .072 → .063 → .046 | .083 → .069 → .046 |
+| alignment share of ex-ante variance at 0.25 / 1 | 2.3 % / 5.7 % | 3.5 % / 7.2 % | 4.6 % / 7.5 % |
+
+**Reading.** With the book sized at the vol target by the alpha-aware objective the risk model
+already *over*-forecasts the optimized book (bias 0.86–0.90 at `nu = 0`, at or just below the
+lower band edge on all three seeds). The alignment term only raises the forecast further, so
+the bias is monotone decreasing in `nu` and the calibration lands on the search floor (0.05)
+on every seed. The under-forecast that motivated the term (bias 1.02–1.12 in the first run) was
+produced by the old sizing: a book optimized at 1/3–1/5 of its traded size and then levered by
+a projection that ignored `alpha_perp`, plus phantom hedges outside the model whose market
+moves the forecast did not see. **Default set to the calibrated median, 0.05** (the term stays
+on but carries ~1 % of the ex-ante variance). The remaining over-forecast (~12 %) is a
+risk-model calibration question (eigen inflation `a = 1.2`, VRA), not an alignment one; it is
+on the conservative side for the vol target. On real data the unexplained alpha may carry real
+unpriced risk, so **recalibrate on real data** before relying on this value.
+
+---
+
+# 2026-11-04 run (superseded)
 
 ## What is being calibrated
 

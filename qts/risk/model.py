@@ -186,7 +186,7 @@ class BarraStyleRiskModel:
         F = factor_covariance(F_hist, self.cfg, eigen_bias=v, seed=self.seed)
         mcap = md.market_cap.loc[:date].iloc[-1]
         U_hist = specific_returns.loc[:date]
-        D = specific_risk(U_hist, B, mcap, self.cfg)
+        D = specific_risk(U_hist, B, mcap, self.cfg, market_cap_history=md.market_cap.loc[:date])
         y: pd.Series | None = None
         nu = 0.0
         if alpha is not None and self.cfg.alignment:

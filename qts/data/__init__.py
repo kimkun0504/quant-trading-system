@@ -25,6 +25,7 @@ from qts.data.synthetic import SyntheticSpec, generate
 from qts.data.universe import (
     apply_mask,
     build_universe_mask,
+    masked_levels,
     raw_eligibility,
     survivorship_check,
     universe_turnover,
@@ -47,6 +48,7 @@ __all__ = [
     "finra_publication_date",
     "generate",
     "ken_french_factor_panel",
+    "masked_levels",
     "parse_finra_short_interest",
     "parse_ken_french_csv",
     "parse_ken_french_zip",

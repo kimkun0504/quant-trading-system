@@ -13,9 +13,13 @@ memory; :func:`write_extra_artifacts` adds them next to the core files::
     exposures.parquet    decision date x factor: net book exposure (sum_i w_i X_ik)
                          to the market factor and every style factor
     holdings.parquet     long table at month-end decision dates (most recent
-                         ``HOLDINGS_MAX_DATES``): date, ticker, weight, alpha
-                         (Grinold expected return over the alpha horizon), specific
-                         vol (annualised), industry
+                         ``HOLDINGS_MAX_DATES``): date (decision / execution date of
+                         the post-trade book), signal_date (the date the book's alpha
+                         was formed: ``date`` minus ``signal_lag_days`` trading days,
+                         or the last rebalance's), ticker, weight, alpha (Grinold
+                         expected return over the alpha horizon, ``alpha.as_of(
+                         signal_date)`` -- what the optimizer saw), specific vol
+                         (annualised), industry
 
 Everything here is best effort: a failure is logged and never fails the run (the
 API degrades gracefully when a file is missing, as it does for runs written before
@@ -166,11 +170,32 @@ def month_end_dates(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
     return idx[last]
 
 
+def signal_dates(result: PipelineResult) -> pd.Series:
+    """Decision date -> signal date of the solve that produced the post-trade book
+    (``diagnostics["solve_log"]``; carried forward over non-rebalance days).  NaT
+    where the book was never solved for (held from the start, no signal yet)."""
+    W = result.backtest.weights
+    log_ = result.backtest.diagnostics.get("solve_log") or []
+    pairs = {
+        pd.Timestamp(r["date"]): pd.Timestamp(r["signal_date"])
+        for r in log_  # type: ignore[union-attr]
+        if isinstance(r, Mapping) and r.get("signal_date") is not None
+    }
+    s = pd.Series(pairs, dtype="datetime64[ns]").reindex(pd.DatetimeIndex(W.index))
+    return s.ffill()
+
+
 def holdings(result: PipelineResult, pipeline: ResearchPipeline) -> pd.DataFrame:
-    """Positions at month-end decision dates with alpha, specific vol and industry."""
+    """Positions at month-end decision dates with alpha, specific vol and industry.
+
+    ``alpha`` is the expected return the optimizer used: ``alpha.as_of(signal_date)``
+    where ``signal_date`` is the solve's signal date (lag ``L``: ``L`` trading days
+    before the decision date ``date``), not ``as_of(date)``.  Specific vol and
+    industry are as of the decision date (the book's risk at the time it is held)."""
     W = result.backtest.weights
     ppy = int(pipeline.cfg.trading_days_per_year)
     dates = month_end_dates(pd.DatetimeIndex(W.index))[-HOLDINGS_MAX_DATES:]
+    sig = _guard("signal_dates", lambda: signal_dates(result))
     frames = []
     for d in dates:
         row = W.loc[d]
@@ -178,14 +203,16 @@ def holdings(result: PipelineResult, pipeline: ResearchPipeline) -> pd.DataFrame
         w = row[row.abs().to_numpy() > MIN_ABS_WEIGHT]
         if not len(w):
             continue
+        sd = sig.get(pd.Timestamp(d)) if sig is not None else None
+        sd = pd.Timestamp(sd) if sd is not None and pd.notna(sd) else None
         alpha = pd.Series(np.nan, index=w.index)
         svol = pd.Series(np.nan, index=w.index)
         industry = pd.Series(None, index=w.index, dtype=object)
-        if pipeline.alpha is not None:
+        if pipeline.alpha is not None and sd is not None:
             try:
-                alpha = pipeline.alpha.as_of(d).expected_return.reindex(w.index).astype(float)
+                alpha = pipeline.alpha.as_of(sd).expected_return.reindex(w.index).astype(float)
             except Exception:
-                log.debug("alpha.as_of(%s) failed", d, exc_info=True)
+                log.debug("alpha.as_of(%s) failed", sd, exc_info=True)
         if pipeline.risk is not None:
             try:
                 sv = pipeline.risk.as_of(d).specific_var.reindex(w.index).astype(float)
@@ -201,6 +228,7 @@ def holdings(result: PipelineResult, pipeline: ResearchPipeline) -> pd.DataFrame
             pd.DataFrame(
                 {
                     "date": pd.Timestamp(d),
+                    "signal_date": pd.Timestamp(sd) if sd is not None else pd.NaT,
                     "ticker": w.index.astype(str),
                     "weight": w.to_numpy(dtype=float),
                     "alpha": alpha.to_numpy(dtype=float),
@@ -210,7 +238,9 @@ def holdings(result: PipelineResult, pipeline: ResearchPipeline) -> pd.DataFrame
             )
         )
     if not frames:
-        return pd.DataFrame(columns=["date", "ticker", "weight", "alpha", "specific_vol", "industry"])
+        return pd.DataFrame(
+            columns=["date", "signal_date", "ticker", "weight", "alpha", "specific_vol", "industry"]
+        )
     out = pd.concat(frames, ignore_index=True)
     out["industry"] = out["industry"].astype("string")
     return out

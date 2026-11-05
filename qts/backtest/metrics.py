@@ -137,10 +137,18 @@ def turnover_stats(turnover_series: pd.Series, periods_per_year: int = 252) -> d
 
 
 def breakeven_cost_bps(gross_returns: pd.Series, turnover_series: pd.Series) -> float:
-    """Cost per side (bps of traded notional) that drives the mean gross
-    return to zero: ``mean(gross) / mean(sum_i |x_i|) * 1e4``.  Each unit of
-    two-sided turnover is one side of a trade, so a per-side charge ``c``
-    costs ``c * turnover_t`` per day."""
+    """Cost per side (bps of traded notional) that drives the mean return to
+    zero: ``mean(r) / mean(sum_i |x_i|) * 1e4``.  Each unit of two-sided
+    turnover is one side of a trade, so a per-side charge ``c`` costs
+    ``c * turnover_t`` per day.
+
+    **Which series:** ``r`` must already carry every cost that is *not* a
+    per-side trading cost -- pass ``BacktestResult.returns["gross_after_borrow"]``
+    (gross minus the day's borrow / pre-trade NAV), not ``"gross"``.  Borrow does
+    not scale with turnover, so starting from ``gross`` leaves it out of the gate
+    entirely and overstates the breakeven for short-heavy books (audit 2,
+    finding 1).  ``turnover_series`` must be positionally aligned with ``r``
+    (``BacktestResult.turnover_on_return_dates()``)."""
     g = _clean(gross_returns)
     to = pd.Series(turnover_series, dtype=float).reindex(g.index).dropna()
     g = g.reindex(to.index)
@@ -157,7 +165,11 @@ def cost_sensitivity(
     periods_per_year: int = 252,
 ) -> pd.DataFrame:
     """Net Sharpe / CAGR under ``cost_bps_per_side * m`` for each multiplier
-    ``m``, charging ``cost * turnover_t`` per day."""
+    ``m``, charging ``cost * turnover_t`` per day.
+
+    ``gross_returns`` should be ``BacktestResult.returns["gross_after_borrow"]``
+    (borrow already deducted, as realised); see :func:`breakeven_cost_bps`.  With
+    plain ``"gross"`` the 1x row overstates the net Sharpe by the borrow drag."""
     g = _clean(gross_returns)
     to = pd.Series(turnover, dtype=float).reindex(g.index).fillna(0.0)
     rows = []

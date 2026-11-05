@@ -539,6 +539,10 @@ export interface components {
       minimum?: number;
       /** Maximum */
       maximum?: number;
+      /** Exclusiveminimum */
+      exclusiveMinimum?: number;
+      /** Exclusivemaximum */
+      exclusiveMaximum?: number;
     };
     /** JsonSchemaObject */
     JsonSchemaObject: {
@@ -576,7 +580,11 @@ export interface components {
       /** Enum */
       enum?: string[];
     };
-    /** LaunchRunRequest */
+    /**
+     * LaunchRunRequest
+     * @description Strict types (pydantic strict mode): ``"stocks": "60"`` or ``"ml": "true"`` are
+     *     rejected, not coerced; the label may not contain control characters.
+     */
     LaunchRunRequest: {
       /**
        * Kind
@@ -980,6 +988,15 @@ export interface operations {
       };
       /** @description Invalid request */
       422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Too many runs are already queued */
+      429: {
         headers: {
           [name: string]: unknown;
         };

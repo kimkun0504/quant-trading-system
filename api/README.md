@@ -37,6 +37,12 @@ UI's *New run* page, or `python -m qts_api.fixture runs` for a tiny run (~30 s).
 | `QTS_MAX_WORKERS`      | concurrent pipeline jobs                   | `1`                               |
 | `QTS_STORE_PATH`       | `ParquetStore` root for `kind: "store"`    | unset (store launches get a 422)  |
 | `QTS_JOB_START_METHOD` | `multiprocessing` start method for jobs    | `spawn`                           |
+| `QTS_ALLOWED_HOSTS`    | extra accepted `Host` names (comma-sep.)   | none (`localhost`, `127.0.0.1`, `::1` always) |
+| `QTS_MAX_QUEUED`       | jobs waiting for a worker; more get a 429  | `4`                               |
+
+Requests whose `Host` header is not on the allow-list get a 400 (`TrustedHostMiddleware`):
+this is the DNS-rebinding defence, since CORS does not stop a rebound page from reading a
+local server. Keep the default bind of `127.0.0.1`.
 
 The defaults match `python -m qts.cli` (`runs/`, `runs/trial_ledger.jsonl`), so CLI runs and
 API runs share one registry and one ledger.

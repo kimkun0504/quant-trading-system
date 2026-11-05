@@ -66,6 +66,16 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "Too many runs are already queued",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
           }
         }
       }
@@ -1546,6 +1556,14 @@
           "maximum": {
             "type": "number",
             "title": "Maximum"
+          },
+          "exclusiveMinimum": {
+            "type": "number",
+            "title": "Exclusiveminimum"
+          },
+          "exclusiveMaximum": {
+            "type": "number",
+            "title": "Exclusivemaximum"
           }
         },
         "additionalProperties": false,
@@ -1759,7 +1777,8 @@
           "signal_lag_days",
           "config_overrides"
         ],
-        "title": "LaunchRunRequest"
+        "title": "LaunchRunRequest",
+        "description": "Strict types (pydantic strict mode): ``\"stocks\": \"60\"`` or ``\"ml\": \"true\"`` are\nrejected, not coerced; the label may not contain control characters."
       },
       "LaunchRunResponse": {
         "properties": {

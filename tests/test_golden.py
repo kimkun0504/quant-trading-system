@@ -76,6 +76,8 @@ SUMMARY_KEYS = (
     "breakeven_cost_bps",
     "n_delistings",
     "n_failed_solves",
+    "vol_target_caps_share",
+    "mean_risk_aversion",
 )
 IC_KEYS = ("n", "mean_ic", "ic_sd", "icir", "t_stat", "hit_rate", "periods_per_year")
 

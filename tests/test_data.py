@@ -16,6 +16,8 @@ from qts.data import (
     apply_mask,
     build_universe_mask,
     ff48_from_sic_series,
+    finra_publication_date,
+    masked_levels,
     parse_finra_short_interest,
     parse_ken_french_csv,
     parse_ken_french_zip,
@@ -111,7 +113,12 @@ def test_universe_hysteresis_constructed():
     close.loc[dates[100:], "C"] = np.nan
     md = MarketData(close=close, volume=volume, market_cap=mcap, industry=pd.Series("X", index=tick))
     cfg = UniverseConfig(
-        top_n_by_mcap=10, min_price=5.0, min_adv_usd=0.0, adv_window=5, exclude_bottom_size_quantile=0.0
+        top_n_by_mcap=10,
+        min_price=5.0,
+        min_adv_usd=0.0,
+        adv_window=5,
+        exclude_bottom_size_quantile=0.0,
+        refresh_anchor="panel_start",  # legacy grid: refresh every 21 days from day 0
     )
     mask = build_universe_mask(md, cfg, refresh_days=21, exit_after_n_fails=3)
     assert not mask.iloc[:21].any().any()
@@ -127,7 +134,10 @@ def test_universe_hysteresis_constructed():
     # membership is constant between refreshes
     assert (mask.iloc[21:42].nunique() == 1).all()
     m2 = apply_mask(md, mask)
-    assert np.isnan(m2.market_cap.loc[dates[90], "B"]) and m2.close.loc[dates[90], "B"] == 1.0
+    # audit 2 #6: levels keep their history, membership acts through eligibility()
+    assert m2.market_cap.loc[dates[90], "B"] == 1e9 and m2.close.loc[dates[90], "B"] == 1.0
+    assert not m2.eligibility().loc[dates[90], "B"]
+    assert np.isnan(masked_levels(m2).market_cap.loc[dates[90], "B"])
 
 
 def test_survivorship_check(md):
@@ -201,12 +211,13 @@ def test_parse_finra_and_pit_lag():
     dates = pd.bdate_range("2024-01-02", "2024-03-01")
     shares = pd.DataFrame(1.0e9, index=dates, columns=["AAPL", "MSFT", "OTHER"])
     ratio = to_short_interest_ratio(si, shares, lag_business_days=8)
-    pub1 = pd.Timestamp("2024-01-12") + pd.offsets.BDay(8)  # 2024-01-24
-    assert pub1 == pd.Timestamp("2024-01-24")
+    # 8 NYSE sessions (MLK day 2024-01-15 is a holiday): 2024-01-25, not BDay's 01-24
+    pub1 = finra_publication_date("2024-01-12", 8)
+    assert pub1 == pd.Timestamp("2024-01-25")
     assert np.isnan(ratio.loc["2024-01-12", "AAPL"])  # settlement date: not yet public
-    assert np.isnan(ratio.loc["2024-01-23", "AAPL"])  # day before publication
-    assert ratio.loc["2024-01-24", "AAPL"] == pytest.approx(0.12)
-    pub2 = pd.Timestamp("2024-01-31") + pd.offsets.BDay(8)
+    assert np.isnan(ratio.loc["2024-01-24", "AAPL"])  # day before publication
+    assert ratio.loc["2024-01-25", "AAPL"] == pytest.approx(0.12)
+    pub2 = pd.Timestamp("2024-01-31") + pd.offsets.BDay(8)  # no holiday in between
     assert ratio.loc[pub2 - pd.offsets.BDay(1), "AAPL"] == pytest.approx(0.12)
     assert ratio.loc[pub2, "AAPL"] == pytest.approx(0.13)
     assert ratio.loc["2024-02-20", "MSFT"] == pytest.approx(0.04)
@@ -388,8 +399,8 @@ def test_store_rewrite_day_overwrites_values_and_nan_deletes(tmp_path):
     st.write_wide("px", full)
     fix = full.loc[["2021-12-30", "2022-01-03"]].copy()
     fix.loc[:, "A"] = -1.0
-    fix.loc["2022-01-03", "B"] = np.nan  # NaN deletes the stored cell
-    st.write_wide("px", fix)
+    fix.loc["2022-01-03", "B"] = np.nan  # NaN deletes the stored cell (explicit policy)
+    st.write_wide("px", fix, nan_policy="delete")
     back = st.read_wide("px")
     assert back.shape == full.shape
     assert back.loc["2021-12-30", "A"] == -1.0 and back.loc["2022-01-03", "A"] == -1.0
@@ -541,12 +552,18 @@ def test_universe_refresh_settings_from_config(md):
         exclude_bottom_size_quantile=0.0,
         refresh_days=5,
         exit_after_n_fails=1,
+        refresh_anchor="panel_start",
     )
     m_cfg = build_universe_mask(md, cfg)
     m_kw = build_universe_mask(
         md,
         UniverseConfig(
-            top_n_by_mcap=30, min_price=1.0, min_adv_usd=0.0, adv_window=20, exclude_bottom_size_quantile=0.0
+            top_n_by_mcap=30,
+            min_price=1.0,
+            min_adv_usd=0.0,
+            adv_window=20,
+            exclude_bottom_size_quantile=0.0,
+            refresh_anchor="panel_start",
         ),
         refresh_days=5,
         exit_after_n_fails=1,
@@ -568,9 +585,11 @@ def test_apply_mask_handles_new_fields():
     keep = md.tickers[5:]
     assert list(m2.tickers) == list(keep)
     pd.testing.assert_frame_equal(m2.close_raw, md.close_raw[keep])  # prices intact
-    assert (
-        m2.shares_outstanding.iloc[:60, 0].isna().all() and m2.shares_outstanding.iloc[60:, 0].notna().all()
-    )
+    # levels keep their full history (audit 2 #6); membership is md.eligible
+    pd.testing.assert_frame_equal(m2.shares_outstanding, md.shares_outstanding[keep])
+    assert not m2.eligibility().iloc[:60, 0].any() and m2.eligibility().iloc[60:, 0].all()
+    ml = masked_levels(m2).shares_outstanding
+    assert ml.iloc[:60, 0].isna().all() and ml.iloc[60:, 0].notna().all()
     assert list(m2.industry_history.columns) == list(keep)
     fr = m2.extra["true_style_factor_returns"]  # not a ticker panel
     pd.testing.assert_frame_equal(fr, md.extra["true_style_factor_returns"])
@@ -663,3 +682,81 @@ def test_universe_price_screen_uses_as_traded_price_across_split():
     # legacy behaviour (adjusted close only) excludes SPLT on every date
     legacy = MarketData(close=adj, volume=shares_traded, market_cap=mcap, industry=pd.Series("X", index=tick))
     assert not raw_eligibility(legacy, cfg)["SPLT"].any()
+
+
+# --------------------------------------------------------------------------- audit 2 (#7, #8, #10)
+def test_sharadar_ratios_split_consistent_totals():
+    """2:1 split between two filings: per-share bvps / raw close doubles B/P until the
+    next filing (audit 2 #7); bvps x shares(filing) / market cap(t) does not."""
+    sf1 = pd.DataFrame(
+        {
+            "ticker": ["ABC", "ABC"],
+            "dimension": ["ART", "ART"],
+            "calendardate": ["2024-03-31", "2024-06-30"],
+            "datekey": ["2024-05-01", "2024-08-01"],
+            "bvps": [10.0, 5.0],  # second filing on the post-split basis
+            "eps": [2.0, 1.0],
+        }
+    )
+    dates = pd.bdate_range("2024-04-15", "2024-09-30")
+    split = pd.Timestamp("2024-06-14")
+    raw = pd.DataFrame(25.0, index=dates, columns=["ABC"])
+    raw.loc[split:, "ABC"] = 12.5
+    shares = pd.DataFrame(1.0e6, index=dates, columns=["ABC"])
+    shares.loc[split:, "ABC"] = 2.0e6
+    out = sharadar_sf1_to_pit_fundamentals(sf1, dates=dates, close_raw=raw, shares_outstanding=shares)
+    bp, ep = out["book_to_price"]["ABC"], out["earnings_yield"]["ABC"]
+    for d in ("2024-05-02", "2024-06-13", "2024-06-14", "2024-07-31", "2024-08-02", "2024-09-30"):
+        assert bp.loc[d] == pytest.approx(0.4), d  # true B/P = 10M / 25M throughout
+        assert ep.loc[d] == pytest.approx(0.08), d
+    # explicit market-cap panel gives the same answer
+    out_m = sharadar_sf1_to_pit_fundamentals(
+        sf1, dates=dates, market_cap=raw * shares, shares_outstanding=shares
+    )
+    pd.testing.assert_series_equal(out_m["book_to_price"]["ABC"], bp)
+    # the legacy per-share path is wrong by the split factor (documented)
+    legacy = sharadar_sf1_to_pit_fundamentals(sf1, dates=dates, close_raw=raw)
+    assert legacy["book_to_price"]["ABC"].loc["2024-07-31"] == pytest.approx(0.8)
+    # sharesbas from SF1 is used when no share panel is given
+    sf1b = sf1.assign(sharesbas=[1.0e6, 2.0e6])
+    out_b = sharadar_sf1_to_pit_fundamentals(sf1b, dates=dates, market_cap=raw * shares)
+    assert out_b["book_to_price"]["ABC"].loc["2024-07-31"] == pytest.approx(0.4)
+
+
+def test_sharadar_restatement_of_older_period_does_not_replace_current():
+    sf1 = pd.DataFrame(
+        {
+            "ticker": ["BBB"] * 4,
+            "dimension": ["ARQ"] * 4,
+            "calendardate": ["2023-12-31", "2024-03-31", "2023-12-31", "2024-03-31"],
+            # FY23 10-K, Q1-24 10-Q, FY23 10-K/A (late), Q1-24 10-Q/A (current period restated)
+            "datekey": ["2024-02-20", "2024-05-15", "2024-06-20", "2024-07-10"],
+            "gp": [11.0, 20.0, 11.5, 21.0],
+            "assets": [100.0, 100.0, 104.0, 100.0],
+        }
+    )
+    dates = pd.bdate_range("2024-02-01", "2024-08-30")
+    out = sharadar_sf1_to_pit_fundamentals(sf1, dimension="ARQ", dates=dates, lag_days=0)
+    gpa = out["gross_profitability"]["BBB"]
+    assert gpa.loc["2024-02-20"] == pytest.approx(0.11)
+    assert gpa.loc["2024-05-15"] == pytest.approx(0.20)
+    assert gpa.loc["2024-06-20"] == pytest.approx(0.20)  # was 0.11 (audit repro): stale FY23 not current
+    assert gpa.loc["2024-07-10"] == pytest.approx(0.21)  # restating the current period does replace
+    assert out["assets"]["BBB"].loc["2024-06-28"] == 100.0
+
+
+def test_finra_ratio_uses_shares_at_settlement_across_split():
+    text = (
+        "settlementDate|symbolCode|currentShortPositionQuantity\n20240301|AAA|1000000\n20240315|AAA|2000000\n"
+    )
+    si = parse_finra_short_interest(text.encode())
+    dates = pd.bdate_range("2024-02-26", "2024-04-30")
+    shares = pd.DataFrame(2.0e7, index=dates, columns=["AAA"])
+    shares.loc["2024-03-05":, "AAA"] = 4.0e7  # 2:1 split after the first settlement
+    ratio = to_short_interest_ratio(si, shares)["AAA"]
+    pub1, pub2 = finra_publication_date("2024-03-01"), finra_publication_date("2024-03-15")
+    assert np.isnan(ratio.loc[pub1 - pd.offsets.BDay(1)])
+    # between publication and the next report: 1M / 20M (shares at settlement), not 1M / 40M
+    assert ratio.loc[pub1] == pytest.approx(0.05)
+    assert ratio.loc[pub2 - pd.offsets.BDay(1)] == pytest.approx(0.05)
+    assert ratio.loc[pub2] == pytest.approx(0.05)  # 2M (post-split basis) / 40M

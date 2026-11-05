@@ -3,7 +3,11 @@
 A job runs the research pipeline in a **separate process** (``multiprocessing``,
 ``spawn`` by default): backtests are CPU- and memory-heavy and must not block the
 event loop or share the API's heap.  At most ``Settings.max_workers`` (default 1)
-run at once; the rest wait in a FIFO queue.
+run at once; the rest wait in a FIFO queue of at most ``Settings.max_queued`` (default
+4) jobs -- :meth:`JobManager.submit` raises :class:`QueueFull` beyond that (the route
+answers 429).  The dispatcher thread survives a failing ``Process.start()`` (EAGAIN,
+a pickling or spawn-bootstrap error): that job is marked failed with the error and
+the queue moves on.
 
 State lives in ``<runs root>/_jobs/<job_id>.json`` (atomic replace).  The worker
 writes its own progress there; the API reads the file on ``GET /api/jobs/{id}``, so a
@@ -33,6 +37,7 @@ import json
 import logging
 import multiprocessing as mp
 import os
+import re
 import shutil
 import threading
 import time
@@ -48,6 +53,8 @@ from qts_api.settings import Settings
 log = logging.getLogger(__name__)
 
 STAGING_DIR = "_staging"
+#: Job ids are ``job_<12 hex>``; anything else is not a job (404, never a filesystem error).
+JOB_ID_RE = re.compile(r"^job_[0-9a-f]{12}$")
 TERMINAL = ("done", "failed")
 NAV0 = 5_000_000.0  # qts.cli default (--nav)
 
@@ -243,6 +250,10 @@ class JobNotFound(LookupError):
     pass
 
 
+class QueueFull(RuntimeError):
+    """More than ``Settings.max_queued`` jobs are waiting for a worker."""
+
+
 class JobManager:
     def __init__(self, settings: Settings, start: bool = True):
         self.settings = settings
@@ -250,6 +261,7 @@ class JobManager:
         self.dir.mkdir(parents=True, exist_ok=True)
         self.ctx = mp.get_context(settings.job_start_method)
         self.max_workers = max(1, settings.max_workers)
+        self.max_queued = max(0, int(getattr(settings, "max_queued", 4)))
         self._queue: deque[str] = deque()
         self._payloads: dict[str, dict[str, Any]] = {}
         self._procs: dict[str, Any] = {}
@@ -301,7 +313,7 @@ class JobManager:
 
     # ------------------------------------------------------------------ files
     def _path(self, job_id: str) -> Path:
-        if not job_id or "/" in job_id or job_id.startswith("."):
+        if not isinstance(job_id, str) or not JOB_ID_RE.fullmatch(job_id):
             raise JobNotFound(job_id)
         return self.dir / f"{job_id}.json"
 
@@ -348,6 +360,12 @@ class JobManager:
         label: str,
         git_sha: str,
     ) -> dict[str, Any]:
+        with self._cv:
+            if len(self._queue) >= self.max_queued:
+                raise QueueFull(
+                    f"{len(self._queue)} jobs are already queued (limit {self.max_queued}, "
+                    "QTS_MAX_QUEUED); wait for one to start or cancel one"
+                )
         job_id = f"job_{uuid.uuid4().hex[:12]}"
         rec = {
             "job_id": job_id,
@@ -420,23 +438,46 @@ class JobManager:
                     finished_at=_now(),
                 )
 
+    def _start_process(self, job_id: str, payload: dict[str, Any]) -> Any:
+        p = self.ctx.Process(
+            target=run_job,
+            args=(str(self._path(job_id)), payload),
+            name=f"qts-job-{job_id}",
+            daemon=True,
+        )
+        p.start()
+        return p
+
+    def _dispatch(self) -> None:
+        """Start queued jobs while workers are free (caller holds ``self._cv``).  A job
+        whose process cannot start is marked failed; the others still run."""
+        while self._queue and len(self._procs) < self.max_workers:
+            job_id = self._queue.popleft()
+            payload = self._payloads.get(job_id)
+            if payload is None:
+                continue
+            try:
+                self._procs[job_id] = self._start_process(job_id, payload)
+            except Exception as e:  # EAGAIN, pickling, spawn bootstrap ...
+                log.exception("could not start the worker process for %s", job_id)
+                self._payloads.pop(job_id, None)
+                with contextlib.suppress(Exception):
+                    self._mark(
+                        job_id,
+                        status="failed",
+                        message=f"Failed: the worker process could not start: {type(e).__name__}: {e}"[:500],
+                        error=traceback.format_exc()[-4000:],
+                        finished_at=_now(),
+                    )
+
     def _loop(self) -> None:
         while True:
             with self._cv:
                 if self._stop:
                     return
-                self._reap()
-                while self._queue and len(self._procs) < self.max_workers:
-                    job_id = self._queue.popleft()
-                    payload = self._payloads.get(job_id)
-                    if payload is None:
-                        continue
-                    p = self.ctx.Process(
-                        target=run_job,
-                        args=(str(self._path(job_id)), payload),
-                        name=f"qts-job-{job_id}",
-                        daemon=True,
-                    )
-                    p.start()
-                    self._procs[job_id] = p
+                try:
+                    self._reap()
+                    self._dispatch()
+                except Exception:  # never let the dispatcher thread die
+                    log.exception("job dispatcher error (continuing)")
                 self._cv.wait(timeout=0.5)

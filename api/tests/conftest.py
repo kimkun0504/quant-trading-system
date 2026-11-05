@@ -22,6 +22,8 @@ from qts_api.main import create_app
 from qts_api.settings import Settings
 
 OLD_RUN_ID = "20200101T000000000000Z_0ldrun00"
+#: TestClient base URL: the app only accepts Host headers on its allow-list (localhost, ...).
+LOCAL = "http://localhost"
 EXTRA_FILES = ("extras.json", "exante_vol.parquet", "exposures.parquet", "holdings.parquet")
 
 
@@ -65,7 +67,7 @@ def returns(run_dir) -> pd.DataFrame:
 def client(fixture_root) -> TestClient:
     """App over the session's runs root; the job dispatcher is off (no worker processes)."""
     app = create_app(Settings(runs_root=fixture_root), start_jobs=False)
-    with TestClient(app) as c:
+    with TestClient(app, base_url=LOCAL) as c:
         yield c
     for f in (fixture_root / "_jobs").glob("*.json"):
         f.unlink()

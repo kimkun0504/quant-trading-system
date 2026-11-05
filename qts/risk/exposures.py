@@ -203,7 +203,11 @@ def industry_panel(md: MarketData, dates: pd.DatetimeIndex | None = None) -> pd.
 
 
 def _industry_labels(md: MarketData) -> list[str]:
-    """Every industry label the exposure matrices can carry (static + dated), sorted."""
+    """Every industry label the exposure matrices can carry (static + dated), sorted.
+
+    This is the label set over the *whole* sample.  A per-date exposure frame
+    carries only the labels already carried by an eligible name on or before
+    that date (``ExposureHistory.industry_first_row``, second-pass finding 4)."""
     labs = set(md.industry.reindex(md.tickers).dropna().unique())
     if md.industry_history is not None:
         labs |= set(pd.unique(md.industry_history.reindex(columns=md.tickers).stack().dropna()))
@@ -227,10 +231,17 @@ class ExposureHistory(dict):
       industry indices into ``factors[1:1 + I]`` (``-1`` = unclassified) as of
       each date (``MarketData.industry_as_of``), and ``static`` is then only the
       ``(N, 1)`` market column;
+    * ``industry_first_row`` -- ``(I,)`` int: the first stored row on which an
+      eligible name carries each label (static or dated classification).  The frame for row ``i`` carries
+      only the industry columns with ``industry_first_row <= i`` (columns
+      *as of* the date, audit second pass finding 4), so ``hist[t]`` never
+      reveals a label introduced after ``t`` and a risk model fitted on the
+      full sample equals one fitted on data truncated at ``t``.  ``factors``
+      is the union over all dates;
     * ``styles``  -- ``(T, N, S)`` standardised style exposures (``dtype``,
       float64 by default; float32 halves the memory at ~1e-7 relative error);
     * ``valid``   -- ``(T, N)`` bool: ticker in the exposure universe on the date
-      (finite close and positive market cap).
+      (``md.eligibility()`` and positive market cap).
 
     ``hist[date]`` / ``hist.get(date)`` / ``hist.as_of(date)`` rebuild the
     ``tickers x factors`` DataFrame for one date (``as_of`` = most recent stored
@@ -252,6 +263,7 @@ class ExposureHistory(dict):
         valid: np.ndarray,
         industry_codes: np.ndarray | None = None,
         n_industries: int = 0,
+        industry_first_row: np.ndarray | None = None,
     ):
         super().__init__()
         self.dates = pd.DatetimeIndex(dates)
@@ -262,6 +274,7 @@ class ExposureHistory(dict):
         self.valid = valid
         self.industry_codes = industry_codes
         self.n_industries = int(n_industries)
+        self.industry_first_row = industry_first_row
         self._pos = {d: i for i, d in enumerate(self.dates)}
 
     # ---------------------------------------------------------------- mapping
@@ -276,7 +289,17 @@ class ExposureHistory(dict):
             ok = codes >= 0
             ind[np.flatnonzero(ok), codes[ok]] = 1.0
             arr = np.concatenate([self.static[mask], ind, sty], axis=1)
-        return pd.DataFrame(arr, index=self.tickers[mask], columns=self.factors)
+        cols = self.factors
+        if self.industry_first_row is not None:
+            active = self.industry_first_row <= i
+            if not active.all():  # labels not yet observed in the estimation universe
+                keep = np.r_[
+                    0,  # market
+                    1 + np.flatnonzero(active),
+                    np.arange(1 + self.n_industries, len(cols)),
+                ]
+                arr, cols = arr[:, keep], cols[keep]
+        return pd.DataFrame(arr, index=self.tickers[mask], columns=cols)
 
     def __getitem__(self, date) -> pd.DataFrame:
         i = self._pos.get(pd.Timestamp(date))
@@ -369,8 +392,8 @@ def exposure_history(
     ``(T, N)`` array of point-in-time industry codes, row ``t`` =
     ``md.industry_as_of(t)``); ``hist[date]`` rebuilds the per-date frame.  Because
     every descriptor is causal this is point-in-time correct.  A ticker is
-    included on date ``t`` if it has a finite close and a positive market cap
-    on ``t``.  Dates not in ``md.dates`` are skipped."""
+    included on date ``t`` if it is eligible (``md.eligibility()``: universe
+    member with a finite close) and has a positive market cap on ``t``.  Dates not in ``md.dates`` are skipped."""
     cfg = cfg or RiskConfig()
     dates = md.dates if dates is None else pd.DatetimeIndex(list(dates))
     styles = list(cfg.styles)
@@ -382,10 +405,12 @@ def exposure_history(
     rows = rows[keep]
     sel_dates = dates[keep]
     codes: np.ndarray | None = None
+    static_codes = np.full(N, -1)
     if md.industry_history is None:  # static classification: fast path
         dummies = industry_dummies(md.industry, md.tickers)
         inds = list(dummies.columns)
         static = np.column_stack([np.ones(N)] + [dummies[c].values for c in dummies.columns])
+        static_codes = np.where(dummies.values.any(axis=1), dummies.values.argmax(axis=1), -1)
     else:  # dated classification (finding #43)
         inds = _industry_labels(md)
         panel = industry_panel(md, sel_dates)
@@ -403,9 +428,31 @@ def exposure_history(
             style_arr[:, :, j] = panels[st].reindex(index=md.dates, columns=tickers_all).values[rows]
     else:
         style_arr = np.zeros((len(rows), N, 0), dtype=dtype)
-    valid = (md.close.notna() & (md.market_cap > 0)).values[rows]
+    # estimation universe: eligible on the date (universe member with a price,
+    # ``md.eligibility()``) and a positive market cap.  ``apply_mask`` no longer
+    # NaNs volume / caps outside the universe, so ``close.notna()`` alone would
+    # admit names that are only in the panel because they join the universe later.
+    valid = (md.eligibility() & (md.market_cap > 0)).values[rows]
+    # industry columns *as of* each date (second-pass finding 4): a label is a
+    # column from the first stored date on which an eligible name carries it
+    # (dated label assigned and/or a member in the estimation universe), so the
+    # column set at t never depends on classifications or universe entries after t
+    code_arr = codes if codes is not None else np.broadcast_to(static_codes, valid.shape)
+    first_row = np.full(len(inds), len(rows), dtype=np.int64)
+    for k in range(len(inds)):
+        seen = ((code_arr == k) & valid).any(axis=1)
+        if seen.any():
+            first_row[k] = int(np.argmax(seen))
     return ExposureHistory(
-        sel_dates, tickers_all, cols, static, style_arr, valid, industry_codes=codes, n_industries=len(inds)
+        sel_dates,
+        tickers_all,
+        cols,
+        static,
+        style_arr,
+        valid,
+        industry_codes=codes,
+        n_industries=len(inds),
+        industry_first_row=first_row,
     )
 
 

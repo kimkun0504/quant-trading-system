@@ -12,6 +12,8 @@ from qts_api import schemas as S
 from qts_api.main import create_app
 from qts_api.settings import Settings
 
+LOCAL = "http://localhost"  # Host allow-list (see conftest.LOCAL)
+
 REQ = {
     "kind": "synthetic",
     "ml": False,
@@ -40,7 +42,7 @@ def poll(c: TestClient, job_id: str, until, timeout: float = 420.0) -> list[dict
 
 
 def test_job_lifecycle(tmp_path):
-    with TestClient(create_app(Settings(runs_root=tmp_path))) as c:
+    with TestClient(create_app(Settings(runs_root=tmp_path)), base_url=LOCAL) as c:
         out = c.post("/api/runs", json=REQ).json()
         seen = poll(c, out["job_id"], lambda j: j["status"] in ("done", "failed"))
         last = seen[-1]
@@ -64,12 +66,12 @@ def test_job_lifecycle(tmp_path):
         assert len(led["trials"]) == 1
 
     # a fresh API process still reports the finished job
-    with TestClient(create_app(Settings(runs_root=tmp_path), start_jobs=False)) as c2:
+    with TestClient(create_app(Settings(runs_root=tmp_path), start_jobs=False), base_url=LOCAL) as c2:
         assert c2.get(f"/api/jobs/{out['job_id']}").json()["status"] == "done"
 
 
 def test_cancel_running_job(tmp_path):
-    with TestClient(create_app(Settings(runs_root=tmp_path))) as c:
+    with TestClient(create_app(Settings(runs_root=tmp_path)), base_url=LOCAL) as c:
         out = c.post("/api/runs", json={**REQ, "max_days": None}).json()
         poll(c, out["job_id"], lambda j: j["status"] == "running" and j["progress"] >= 0.05, timeout=120)
         j = c.delete(f"/api/jobs/{out['job_id']}").json()

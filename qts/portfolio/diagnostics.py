@@ -8,6 +8,7 @@ from collections.abc import Mapping
 import numpy as np
 import pandas as pd
 
+from qts.core.risk_fill import fill_specific_var
 from qts.core.types import RiskModelOutput
 
 
@@ -91,7 +92,7 @@ def factor_exposure_report(w: pd.Series, risk: RiskModelOutput) -> pd.DataFrame:
     f = B.values.T @ wv
     Ff = F @ f
     contrib = f * Ff
-    d = pd.Series(risk.specific_var, dtype=float).reindex(t).fillna(risk.specific_var.median()).values
+    d = fill_specific_var(risk.specific_var, t)  # out-of-model rule of qts.core.risk_fill
     spec = float((wv**2 * d).sum())
     total = float(f @ Ff + spec)
     out = pd.DataFrame(

@@ -74,17 +74,35 @@ Multi-day impact persistence (``cfg.impact_persistence``)
 ----------------------------------------------------------
 A position built over ``k`` days in the same direction with daily notionals
 ``q_1..q_k`` is one metaorder of size ``Q_k = sum q_j``; its integrated cost is
-``C(Q_k)`` (``V`` = one day's volume, the convention under which ``b`` is
-calibrated).  The cost attributable to day ``k`` is the increment
-``C(Q_k) - C(Q_{k-1})``.  :meth:`estimate` receives only today's notional
-``q_k`` and the streak length ``k`` (``streak``), so it assumes equal earlier
-days (``Q_{k-1} = (k-1) q_k``), which gives the multiplier on the one-day impact::
+``C(Q_k)`` (``V`` = one day's volume -- today's ``V``, the convention under which
+``b`` is calibrated).  The cost attributable to day ``k`` is the increment
+``C(Q_k) - C(Q_{k-1})``.
+
+*Exact form (simulator default).*  :class:`qts.backtest.DailyBarSimulator` tracks
+each name's cumulative same-direction USD ``Q_{k-1}`` of the current streak
+(reset when the sign flips or a day has no trade) and passes it as
+``prior_streak_usd``.  The impact leg becomes the one-day venue impact plus the
+streak surcharge ``S = C(Q_{k-1} + q) - C(Q_{k-1}) - C(q) >= 0`` (``C``
+superadditive), so for ``continuous`` it is exactly ``C(Q_k) - C(Q_{k-1})``; for
+``auction`` ``C`` is ``C_{phi A},b_a``; for ``routed`` ``S`` uses ``C_A,b_c`` (the
+earlier days and the continuous increment share ``V = A``), i.e. impact
+``= [C_A,b_c(Q_k) - C_A,b_c(Q_{k-1})] + [C_{phi A},b_a(q_a) - C_A,b_c(q_a)]``:
+the exact streak increment plus the one-day auction discount on the first
+``q_a`` dollars (0 under D2).  This is exact for any trade path (halving or
+growing daily trades).
+
+*Fallback.*  When only the streak length ``k`` is known (``streak``; no
+``prior_streak_usd``), equal earlier days are assumed (``Q_{k-1} = (k-1) q_k``),
+which gives the multiplier on the one-day impact::
 
     m_k = k^e - (k-1)^e     (e = 1.5: m_1 = 1, m_2 = 1.828, m_3 = 2.368, m_k ~ 1.5 sqrt(k))
 
-applied to the impact leg only (spread and fees are per-day).  This treats impact
-within a streak as fully persistent, an upper bound (Frazzini et al. estimate
-~70% permanent); deliberately conservative.  **Asymmetry:** :meth:`cvx_terms`
+This is **not** a bound: it understates the increment when daily trades shrink
+(e.g. 0.79x on a halving path at e = 1.5) and overstates it when they grow.
+
+Both apply to the impact leg only (spread and fees are per-day) and treat impact
+within a streak as fully persistent (Frazzini et al. estimate ~70% permanent);
+deliberately conservative.  **Asymmetry:** :meth:`cvx_terms`
 gives the optimizer the one-day marginal cost (``m = 1``), because the optimizer
 does not know how many days it will keep trading in the same direction; the
 realised backtest cost is therefore >= the optimizer's expectation during
@@ -115,6 +133,17 @@ from qts.tcost.fees import FeeSchedule
 from qts.tcost.impact import SquareRootImpact
 
 log = logging.getLogger(__name__)
+
+
+def borrow_source_label(by_name: pd.Series) -> str:
+    """``LiquiditySnapshot.borrow_fee_source`` summary of the per-name sources: the
+    sources used by at least one name, in the order data, proxy, default, joined by
+    ``"+"`` (``"data"``, ``"proxy+default"``, ...).  ``"data"`` therefore only
+    appears when at least one name has a finite datum (an all-NaN ``borrow_fee`` row
+    reports ``"proxy"`` / ``"default"``, audit 2 finding 8)."""
+    used = set(by_name.astype(str))
+    parts = [k for k in ("data", "proxy", "default") if k in used]
+    return "+".join(parts) if parts else "default"
 
 
 def persistence_multiplier(streak, exponent: float = 1.5) -> np.ndarray:
@@ -221,26 +250,49 @@ class TransactionCostModel:
     def _borrow_fee_asof(
         self, md: MarketData, date, tickers: pd.Index, adv_shares: pd.Series | None = None
     ) -> tuple[pd.Series, str]:
-        """Per-name annual borrow fee as of ``date``: data when present, else the
-        short-interest proxy (:func:`qts.tcost.borrow.borrow_fee_proxy`) when
-        ``md.short_interest_ratio`` exists, else the GC default.  Names with a
-        NaN datum fall through to the proxy, then to the default."""
-        default = self.cfg.default_borrow_fee_annual
+        bf, by_name = self._borrow_fee_detail(md, date, tickers, adv_shares)
+        return bf, borrow_source_label(by_name)
+
+    def borrow_fee_sources(self, md: MarketData, date) -> pd.Series:
+        """Per-name source of the snapshot's borrow fee as of ``date``: ``"data"``,
+        ``"proxy"`` or ``"default"`` (see :meth:`_borrow_fee_detail`)."""
+        snap = self.snapshot(md, date)
+        return self._borrow_fee_detail(md, pd.Timestamp(date), md.tickers, snap.adv_shares)[1]
+
+    def _borrow_fee_detail(
+        self, md: MarketData, date, tickers: pd.Index, adv_shares: pd.Series | None = None
+    ) -> tuple[pd.Series, pd.Series]:
+        """Per-name annual borrow fee as of ``date`` and its per-name source.
+
+        Order: the ``md.borrow_fee`` datum when finite (``"data"``); else the
+        short-interest proxy (:func:`qts.tcost.borrow.borrow_fee_proxy`) when the
+        name has a short-interest ratio (``"proxy"``); else the GC default
+        (``"default"``).  **Small caps without SI data:** the GC default is still
+        multiplied by ``cfg.small_cap_borrow_multiplier`` when the name's market cap
+        is known and below ``cfg.small_cap_threshold_usd`` -- the data-poor small
+        caps are exactly the ones that should not get the cheapest borrow (audit 2,
+        finding 8).  Their source stays ``"default"``."""
+        cfg = self.cfg
+        default = float(cfg.default_borrow_fee_annual)
         bf = pd.Series(np.nan, index=tickers, dtype=float)
-        source = "default"
+        src = pd.Series("default", index=tickers, dtype=object)
         if md.borrow_fee is not None:
             hist = md.borrow_fee.loc[:date]
             if len(hist):
                 bf = hist.iloc[-1].reindex(tickers).astype(float)
-                source = "data"
-        if bf.isna().any() and md.short_interest_ratio is not None:
+                bf = bf.where(np.isfinite(bf))
+                src[bf.notna()] = "data"
+        if not bf.isna().any():
+            return bf, src
+        mc = None
+        if md.market_cap is not None and len(md.market_cap.loc[:date]):
+            mc = md.market_cap.loc[:date].iloc[-1].reindex(tickers).astype(float)
+        si = pd.Series(np.nan, index=tickers, dtype=float)
+        dtc = None
+        if md.short_interest_ratio is not None:
             si_hist = md.short_interest_ratio.loc[:date]
             if len(si_hist):
                 si = si_hist.iloc[-1].reindex(tickers).astype(float)
-                mc = None
-                if md.market_cap is not None and len(md.market_cap.loc[:date]):
-                    mc = md.market_cap.loc[:date].iloc[-1].reindex(tickers).astype(float)
-                dtc = None
                 if adv_shares is not None and md.shares_outstanding is not None:
                     so = md.shares_outstanding.loc[:date]
                     if len(so):
@@ -249,21 +301,20 @@ class TransactionCostModel:
                             * so.iloc[-1].reindex(tickers).astype(float)
                             / adv_shares.reindex(tickers).replace(0.0, np.nan)
                         )
-                proxy = borrow_fee_proxy(si, days_to_cover=dtc, cfg=self.cfg, market_cap=mc)
-                proxy = proxy.where(si.notna())
-                n_proxy = int((bf.isna() & proxy.notna()).sum())
-                if n_proxy:
-                    if source == "default":
-                        source = "proxy"
-                        if not getattr(self, "_warned_proxy", False):
-                            log.warning(
-                                "md.borrow_fee absent: using the short-interest borrow-fee PROXY "
-                                "for %d names (placeholder until IBKR SLB history exists)",
-                                n_proxy,
-                            )
-                            self._warned_proxy = True
-                    bf = bf.fillna(proxy)
-        return bf.fillna(default), source
+        # NaN SI -> GC default inside the proxy, times the small-cap multiplier when small
+        proxy = borrow_fee_proxy(si, days_to_cover=dtc, cfg=cfg, market_cap=mc)
+        proxy = pd.Series(proxy, index=tickers, dtype=float).fillna(default)
+        fill = bf.isna()
+        is_proxy = fill & si.notna()
+        if is_proxy.any() and not (src == "data").any() and not getattr(self, "_warned_proxy", False):
+            log.warning(
+                "md.borrow_fee absent: using the short-interest borrow-fee PROXY "
+                "for %d names (placeholder until IBKR SLB history exists)",
+                int(is_proxy.sum()),
+            )
+            self._warned_proxy = True
+        src[is_proxy] = "proxy"
+        return bf.fillna(proxy), src
 
     # ------------------------------------------------------------- helpers
     def _snap(self, snap: SnapshotLike, index: pd.Index | None) -> LiquiditySnapshot:
@@ -309,14 +360,19 @@ class TransactionCostModel:
         venue: str | None = None,
         streak: pd.Series | None = None,
         date=None,
+        prior_streak_usd: pd.Series | None = None,
     ) -> CostEstimate:
         """Expected USD cost of ``trades_usd`` (signed dollars, indexed by ticker).
 
         ``venue`` in {"continuous", "auction", "routed"} (default
-        ``self.default_venue``) -- formulas in the module docstring.  ``streak``
-        (per-name consecutive same-direction trading days, including today)
-        scales the impact leg by ``k^e - (k-1)^e`` when ``cfg.impact_persistence``
-        is on.  ``date`` overrides ``snap.date`` for the dated fee tables.
+        ``self.default_venue``) -- formulas in the module docstring.  Multi-day
+        impact persistence (``cfg.impact_persistence``; module docstring):
+        ``prior_streak_usd`` (per-name USD already traded in the current
+        same-direction streak *before* today, ``Q_{k-1}``; 0 / missing = first
+        day) prices the exact streak increment ``C(Q_{k-1} + q) - C(Q_{k-1})``;
+        without it, ``streak`` (consecutive same-direction days including today)
+        falls back to the equal-days multiplier ``k^e - (k-1)^e``.
+        ``date`` overrides ``snap.date`` for the dated fee tables.
         Fully vectorised (numpy); ``snap`` may be an old dict snapshot.
         """
         idx = trades_usd.index
@@ -361,7 +417,25 @@ class TransactionCostModel:
                 auction_fraction = pd.Series(np.where(q > 0, qa / q, 0.0), index=idx, name="auction_fraction")
 
         mult = np.ones_like(q)
-        if streak is not None and self.cfg.impact_persistence:
+        if prior_streak_usd is not None and self.cfg.impact_persistence:
+            qp = pd.Series(prior_streak_usd, dtype=float).reindex(idx).fillna(0.0).to_numpy()
+            qp = np.where(np.isfinite(qp) & (q > 0), np.maximum(np.abs(qp), 0.0), 0.0)
+            # streak surcharge at the venue's metaorder volume / prefactor:
+            #   C(Q_prev + q) - C(Q_prev) - C(q)  (>= 0: C is superadditive)
+            if v == VENUE_AUCTION:
+                vol_s, b_s = phi * A, b_a
+            else:  # continuous; routed: earlier days and the continuous increment share V = ADV
+                vol_s, b_s = A, b_c
+            surcharge = (
+                self._impact_usd(qp + q, vol_s, sig, b_s)
+                - self._impact_usd(qp, vol_s, sig, b_s)
+                - self._impact_usd(q, vol_s, sig, b_s)
+            )
+            surcharge = np.where(qp > 0, np.maximum(surcharge, 0.0), 0.0)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                mult = np.where((q > 0) & (impact > 0), (impact + surcharge) / impact, 1.0)
+            impact = impact + surcharge
+        elif streak is not None and self.cfg.impact_persistence:
             k = pd.Series(streak, dtype=float).reindex(idx).fillna(1.0).to_numpy()
             mult = np.where(q > 0, persistence_multiplier(k, self.exponent), 1.0)
             impact = impact * mult

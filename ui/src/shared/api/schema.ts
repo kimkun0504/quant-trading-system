@@ -336,6 +336,9 @@ export interface JsonSchemaNumber {
   default?: number;
   minimum?: number;
   maximum?: number;
+  /** Open bounds (value must be strictly greater / less); the API rejects values outside them. */
+  exclusiveMinimum?: number;
+  exclusiveMaximum?: number;
 }
 
 export interface JsonSchemaBoolean {

@@ -1,5 +1,6 @@
 """Optimizer daily-solve benchmark (work plan 1.6): solve time at N = 300 / 1000
-/ 1500, with and without DPP problem reuse, and for the two vol-target modes.
+/ 1500, with and without DPP problem reuse, for the two fixed-gamma vol-target
+modes and for the default gamma-search sizing (``risk_aversion_mode="target_vol"``).
 
 Slow-marked: run with ``python -m pytest tests/test_optimizer_perf.py -m slow -s``.
 Timings are *reported*, never asserted (wall-clock bounds flake on loaded CI
@@ -132,10 +133,13 @@ def test_daily_solve_time(N):
             f"; DPP reuse first {reused['first']:.2f}s, steady {reused['steady']:.3f}s/day "
             f"(x{fresh['steady'] / reused['steady']:.2f})"
         )
-    proj = run_days(N, reuse=False, cfg=PortfolioConfig(target_vol_annual=0.10, vol_target_mode="projection"))
-    cons = run_days(N, reuse=False, cfg=PortfolioConfig(target_vol_annual=0.10, vol_target_mode="constraint"))
+    fixed = {"risk_aversion_mode": "fixed", "risk_aversion": 10.0, "target_vol_annual": 0.10}
+    proj = run_days(N, reuse=False, cfg=PortfolioConfig(**fixed, vol_target_mode="projection"))
+    cons = run_days(N, reuse=False, cfg=PortfolioConfig(**fixed, vol_target_mode="constraint"))
+    tv = run_days(N, reuse=False, cfg=PortfolioConfig(target_vol_annual=0.10))  # default gamma search
     line += (
-        f"; with vol target: projection {proj['steady']:.3f}s/day, constraint {cons['steady']:.3f}s/day "
-        f"(x{proj['steady'] / cons['steady']:.2f})"
+        f"; with vol target: fixed-gamma projection {proj['steady']:.3f}s/day, constraint "
+        f"{cons['steady']:.3f}s/day (x{proj['steady'] / cons['steady']:.2f}), gamma search "
+        f"{tv['steady']:.3f}s/day"
     )
     print(line)

@@ -18,10 +18,16 @@ from qts.portfolio.diagnostics import (
     realized_vs_exante_risk,
     transfer_coefficient,
 )
-from qts.portfolio.optimizer import VOL_TARGET_MODES, OptimizationResult, SinglePeriodOptimizer
+from qts.portfolio.optimizer import (
+    RISK_AVERSION_MODES,
+    VOL_TARGET_MODES,
+    OptimizationResult,
+    SinglePeriodOptimizer,
+)
 from qts.portfolio.vol_target import portfolio_vol_scalar, realized_vol_annual, realized_vol_scalar
 
 __all__ = [
+    "RISK_AVERSION_MODES",
     "VOL_TARGET_MODES",
     "CostTerms",
     "OptimizationResult",

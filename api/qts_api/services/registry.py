@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shlex
 import threading
 from collections import OrderedDict
@@ -41,6 +42,17 @@ from qts_api.services import series as SR
 log = logging.getLogger(__name__)
 
 FULL_CACHE_SIZE = 8
+#: A run id is a directory name: starts with a letter or digit, then letters, digits,
+#: ``.``, ``_`` or ``-``; at most 128 characters (``new_run_id`` gives 31).  Anything else
+#: (``..``, ``_jobs``, ``.hidden``, 300 characters ...) is a 404, never a filesystem call.
+RUN_ID_MAX_LEN = 128
+RUN_ID_RE = re.compile(rf"^[A-Za-z0-9][A-Za-z0-9._-]{{0,{RUN_ID_MAX_LEN - 1}}}$")
+
+
+def valid_run_id(run_id: object) -> bool:
+    return isinstance(run_id, str) and bool(RUN_ID_RE.fullmatch(run_id)) and ".." not in run_id
+
+
 GATE_NAMES = set(S.GateName.__args__)  # type: ignore[attr-defined]
 DEMO_DEFAULTS = {"stocks": 300, "days": 1512}
 
@@ -191,7 +203,7 @@ class RunRegistry:
 
     # ------------------------------------------------------------------ discovery
     def run_dirs(self) -> list[Path]:
-        return list_runs(self.runs_root)
+        return [d for d in list_runs(self.runs_root) if valid_run_id(d.name)]
 
     def _parse(self, path: Path, sig: tuple) -> RunEntry:
         try:
@@ -207,8 +219,16 @@ class RunRegistry:
             config = {}
         extras = read_extras(path) if (path / EXTRAS_FILE).exists() else {}
         facts = {**_command_args(str(manifest.get("command", ""))), **(extras.get("run") or {})}
+        # The id is the directory name (unique, and what get() resolves); a copied run
+        # directory keeps its manifest's run_id, which would duplicate list rows (audit 2 #12).
+        if str(manifest.get("run_id", path.name)) != path.name:
+            log.warning(
+                "run directory %s has manifest run_id %r; listing it under the directory name",
+                path.name,
+                manifest.get("run_id"),
+            )
         return RunEntry(
-            run_id=str(manifest.get("run_id", path.name)),
+            run_id=path.name,
             path=path,
             sig=sig,
             manifest=manifest,
@@ -248,8 +268,8 @@ class RunRegistry:
         return out
 
     def get(self, run_id: str) -> RunEntry:
-        if not run_id or "/" in run_id or run_id.startswith(".") or run_id.startswith("_"):
-            raise RunNotFound(run_id)
+        if not valid_run_id(run_id):
+            raise RunNotFound(str(run_id)[:RUN_ID_MAX_LEN])
         path = self.runs_root / run_id
         if not (path / "manifest.json").exists():
             raise RunNotFound(run_id)
@@ -504,7 +524,7 @@ class RunRegistry:
         s = fr.series
         sens = SR.cost_sensitivity_rows(
             e.summary.get("cost_sensitivity"),
-            s.get("gross"),
+            SR.gross_after_borrow(r.returns, c, nav_pre, s.get("gross")),
             s.get("turnover"),
             _num(e.backtest.get("avg_cost_bps_per_side")),
         )

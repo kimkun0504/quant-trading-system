@@ -405,10 +405,46 @@ def test_exposures_follow_dated_industry_classification(cfg):
         pd.testing.assert_frame_equal(f[inds], expected, check_names=False)
         pd.testing.assert_frame_equal(f[styles], f0[styles])
         assert (f[MARKET_FACTOR] == 1.0).all() and np.allclose(f[inds].sum(axis=1), 1.0)
-    assert (h[md0.dates[299]]["NEWIND"] == 0).all()  # nothing before d1
+    # second-pass finding 4: a label first assigned on d1 is not a column before d1
+    assert "NEWIND" not in h[md0.dates[299]].columns
+    assert "NEWIND" not in h.as_of(md0.dates[299]).columns
     assert h[md0.dates[300]]["NEWIND"].sum() == 5 and h[md0.dates[350]]["NEWIND"].sum() == 3
     # the dated path also fits end to end
     BarraStyleRiskModel(cfg).fit(md_h).as_of(md0.dates[-1])
+
+
+@pytest.mark.parametrize("hybrid", [False, True])
+def test_future_industry_label_is_point_in_time(hybrid):
+    """Second-pass audit finding 4: a reclassification into a *brand-new* label
+    dated after ``t`` must not change anything at ``t``.  The full-sample fit's
+    ``as_of(t)`` equals a fit on data truncated at ``t``: same factor columns
+    (the future label is absent), same exposures, factor covariance (the
+    eigenfactor simulation dimension used to differ), specific variance."""
+    import dataclasses
+
+    from qts.risk import build_risk_model
+
+    md0 = generate(SyntheticSpec(n_stocks=40, n_days=640, seed=7))
+    d_new = md0.dates[600]
+    lab0 = md0.industry.reindex(md0.tickers)
+    hist = pd.DataFrame([lab0.to_numpy()], index=[d_new], columns=md0.tickers)
+    hist.iloc[0, :6] = "ZZZ_NEW"  # brand-new label, first observable on d_new
+    md_h = dataclasses.replace(md0, industry_history=hist)
+    cfg = RiskConfig(statistical_companion=hybrid, n_eigen_sims=40)
+    full = build_risk_model(cfg).fit(md_h)
+    for t in (md0.dates[560], md0.dates[599]):
+        cut = build_risk_model(cfg).fit(md_h.slice_until(t))
+        a, b = full.as_of(t), cut.as_of(t)
+        assert "ZZZ_NEW" not in a.exposures.columns
+        assert list(a.exposures.columns) == list(b.exposures.columns)
+        assert a.factor_cov.shape == b.factor_cov.shape
+        pd.testing.assert_frame_equal(a.exposures, b.exposures, check_exact=False, atol=1e-14, rtol=0)
+        pd.testing.assert_frame_equal(a.factor_cov, b.factor_cov, check_exact=False, atol=1e-16, rtol=1e-12)
+        pd.testing.assert_series_equal(a.specific_var, b.specific_var, check_exact=False, rtol=1e-12)
+        assert a.factor_groups == b.factor_groups
+    # from d_new on the label is a column with its 6 members
+    after = full.as_of(md0.dates[620])
+    assert after.exposures["ZZZ_NEW"].sum() == 6
 
 
 def test_style_exposures_ignore_future_universe_members():
@@ -435,3 +471,83 @@ def test_style_exposures_ignore_future_universe_members():
     b = exposure_history(cut, [t])[t]
     assert list(a.index) == list(b.index)
     pd.testing.assert_frame_equal(a, b.reindex(columns=a.columns), check_exact=False, atol=1e-12, rtol=0)
+
+
+# --------------------------------------------------------------------------- USE4 details (second pass, finding 9)
+def test_bayesian_shrink_delta_about_cap_weighted_mean():
+    """Hand computation, one decile (n < 20): sigma_bar = cap-weighted mean,
+    Delta = sqrt(mean (sigma - sigma_bar)^2), v = q|s - sbar| / (Delta + q|s - sbar|)."""
+    from qts.risk.covariance import bayesian_shrink_specific
+
+    sig = pd.Series([0.01, 0.02, 0.04], index=list("abc"))
+    cap = pd.Series([8.0, 1.0, 1.0], index=list("abc"))
+    sbar = (0.01 * 8 + 0.02 + 0.04) / 10.0  # 0.014
+    delta = np.sqrt(((0.01 - sbar) ** 2 + (0.02 - sbar) ** 2 + (0.04 - sbar) ** 2) / 3.0)
+    assert delta != pytest.approx(sig.std(ddof=0))  # differs from the equal-weighted sd
+    q = 0.1
+    dev = (sig - sbar).abs()
+    v = q * dev / (delta + q * dev)
+    expected = v * sbar + (1 - v) * sig
+    got = bayesian_shrink_specific(sig, cap, q)
+    pd.testing.assert_series_equal(got, expected, check_exact=False, rtol=1e-12)
+
+
+def test_specific_vra_uses_lagged_daily_caps():
+    """A constant cap panel reproduces the Series path; a panel weights each
+    day's bias statistic by the previous day's caps (hand check on 2 names)."""
+    from qts.risk.covariance import ewma_weights, specific_vra_multiplier
+
+    rng = np.random.default_rng(0)
+    idx = pd.bdate_range("2021-01-01", periods=80)
+    U = pd.DataFrame(rng.standard_normal((80, 2)) * [0.01, 0.02], index=idx, columns=["a", "b"])
+    cap = pd.Series({"a": 3.0, "b": 1.0})
+    panel = pd.DataFrame([cap.to_numpy()] * 80, index=idx, columns=cap.index)
+    assert specific_vra_multiplier(U, panel, 10, 5) == pytest.approx(specific_vra_multiplier(U, cap, 10, 5))
+    # time-varying caps: reference computation
+    panel2 = panel.copy()
+    panel2.iloc[40:, 0] = 0.5
+    u2 = U.pow(2)
+    s2 = u2.ewm(halflife=10, min_periods=20, ignore_na=True).mean().shift(1)
+    z2 = u2 / s2
+    w = panel2.shift(1).fillna(panel2.iloc[-1])
+    B2 = ((z2 * w).sum(axis=1) / w.where(z2.notna()).sum(axis=1)).where(z2.notna().any(axis=1)).dropna()
+    ref = np.sqrt(float(ewma_weights(len(B2), 5) @ B2.to_numpy()))
+    assert specific_vra_multiplier(U, panel2, 10, 5) == pytest.approx(ref, rel=1e-12)
+    assert specific_vra_multiplier(U, panel2, 10, 5) != pytest.approx(specific_vra_multiplier(U, cap, 10, 5))
+
+
+def test_eigen_bias_clip_after_inflation():
+    """The raw simulated bias is returned unclipped; the [0.5, 2] clip applies
+    after the USE4 inflation v_S = a (v - 1) + 1."""
+    from qts.risk.covariance import scale_eigen_bias
+
+    v = np.array([0.3, 1.0, 1.9])
+    out = scale_eigen_bias(v, a=1.2)
+    np.testing.assert_allclose(out, np.clip(1.2 * (v - 1) + 1, 0.5, 2.0))
+    assert out[0] == 0.5 and out[2] == 2.0
+
+
+def test_out_of_model_specific_var_rule_is_shared():
+    """One out-of-model fill (90th percentile of the modelled specific variances) for the
+    optimizer helper, ``RiskModelOutput.covariance`` and ``portfolio_variance``."""
+    from qts.core.risk_fill import OUT_OF_MODEL_SPECIFIC_VAR_PCTL, out_of_model_specific_var
+    from qts.core.types import RiskModelOutput
+    from qts.risk import out_of_model_specific_var as public
+
+    assert public is out_of_model_specific_var and OUT_OF_MODEL_SPECIFIC_VAR_PCTL == 90
+    names = [f"N{i}" for i in range(10)]
+    sv = pd.Series(np.linspace(1e-4, 1e-3, 10), index=names)
+    rm = RiskModelOutput(
+        date=pd.Timestamp("2020-01-02"),
+        exposures=pd.DataFrame({"mkt": 1.0}, index=names),
+        factor_cov=pd.DataFrame([[1e-4]], index=["mkt"], columns=["mkt"]),
+        specific_var=sv,
+        factor_returns=pd.DataFrame(),
+    )
+    fill = out_of_model_specific_var(sv)
+    assert fill == pytest.approx(np.percentile(sv.to_numpy(), 90)) and fill > sv.median()
+    t = pd.Index([*names[:2], "OUT"])
+    assert rm.covariance(t).loc["OUT", "OUT"] == pytest.approx(fill)  # zero exposure, fill only
+    w = pd.Series([0.0, 0.0, 0.5], index=t)
+    assert rm.portfolio_variance(w) == pytest.approx(0.25 * fill)
+    assert out_of_model_specific_var(pd.Series([np.nan])) == pytest.approx(1e-4)

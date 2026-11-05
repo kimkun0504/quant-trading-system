@@ -41,8 +41,9 @@ It is slow (one optimisation per date per bisection step) and is deliberately
 **not** on the default ``as_of`` path -- run it offline
 (``scripts/calibrate_alignment_nu.py``) and set ``RiskConfig.alignment_nu_scale``
 (used whenever ``as_of`` / :func:`alpha_alignment` get ``nu_scale=None``).  The
-shipped default 0.25 is the median over three synthetic seeds of the
-production-optimizer calibration (``docs/notes/alignment_nu_calibration.md``).
+shipped default 0.05 is the median over three synthetic seeds of the
+production-optimizer calibration (``docs/notes/alignment_nu_calibration.md``;
+gamma-search sizing, execution lag 1).
 """
 
 from __future__ import annotations
@@ -151,13 +152,18 @@ def calibrate_alignment_nu(
     n_iter: int = 10,
     tol: float = 0.02,
     grid: Iterable[float] | None = None,
+    signal_lag_days: int = 0,
 ) -> dict[str, object]:
     """Saxena-Stubbs calibration of the alignment variance scale.
 
     For a candidate ``nu_scale`` the optimized book on every date ``t`` in
     ``dates`` is ``w_t = solve_fn(t, model.as_of(t, alpha_t, nu_scale), alpha_t)``,
     its forecast ``sqrt(w' Sigma_aug w)`` (alignment included) is compared
-    with the realised return on ``t+1`` and the bias statistic
+    with the realised return on ``t + 1 + signal_lag_days`` (``t`` is the
+    signal date: with execution lag ``L`` the book built from data as of ``t``
+    is traded at the close of ``t + L`` and earns the return of ``t + L + 1``,
+    as in ``DailyBarSimulator``; ``ExecutionConfig.signal_lag_days`` = 1 in
+    production) and the bias statistic
     ``sd(realised / forecast)`` is formed.  A larger ``nu_scale`` both raises the
     forecast and pushes the optimizer off ``alpha_perp``, so the bias falls
     monotonically (in expectation); the function bisects on ``log nu_scale``
@@ -191,16 +197,17 @@ def calibrate_alignment_nu(
     def alpha_at(d):
         return alphas_by_date(d) if callable(alphas_by_date) else alphas_by_date[d]
 
-    base: list = []  # (date, rm_at_nu_scale_1, alpha, r_next)
+    lag = max(int(signal_lag_days), 0)
+    base: list = []  # (date, rm_at_nu_scale_1, alpha, r_realised)
     for d in dates:
         i = pos.get(d)
-        if i is None or i + 1 >= len(all_dates):
+        if i is None or i + 1 + lag >= len(all_dates):
             continue
         a = pd.Series(alpha_at(d), dtype=float)
         rm = model.as_of(d, alpha=a, nu_scale=1.0)
         if rm.alignment_vector is None or rm.alignment_var <= 0:
             continue
-        base.append((d, rm, a, rets.loc[all_dates[i + 1]]))
+        base.append((d, rm, a, rets.loc[all_dates[i + 1 + lag]]))
     if not base:
         raise ValueError("no dates with an alignment term (is cfg.alignment on?)")
 

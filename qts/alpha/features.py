@@ -149,8 +149,11 @@ class FeatureBuilder:
         f["mom_12_1"] = _trailing_return(close, 252, 21)
         f["mom_6_1"] = _trailing_return(close, 126, 21)
         f["mom_change"] = f["mom_12_1"] - f["mom_12_1"].shift(63)
+        # cross-sectional statistic: cap weights of names eligible at t only (the
+        # level panels carry full history for every listed name, audit 2 #6)
+        mcap_elig = mcap.where(valid)
         f["industry_momentum"] = _by_industry(
-            lambda v, lab: cap_weighted_group_mean(v, mcap.loc[v.index], lab), f["mom_6_1"], segs
+            lambda v, lab: cap_weighted_group_mean(v, mcap_elig.loc[v.index], lab), f["mom_6_1"], segs
         )
 
         # quality / investment

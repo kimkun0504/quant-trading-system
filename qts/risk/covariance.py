@@ -26,6 +26,11 @@ import numpy as np
 import pandas as pd
 
 from qts.core.config import RiskConfig
+from qts.core.risk_fill import (  # noqa: F401  (re-exported)
+    OUT_OF_MODEL_FALLBACK_VAR,
+    OUT_OF_MODEL_SPECIFIC_VAR_PCTL,
+    out_of_model_specific_var,
+)
 from qts.risk.exposures import split_factor_columns
 
 
@@ -153,8 +158,10 @@ def eigenfactor_bias(
        are too small for the small-eigenvalue eigenfactors and too large for
        the large ones; this de-biases them).
 
-    This returns the **raw** simulated ``v_k`` (clipped to [0.5, 2]), in
-    ascending-eigenvalue order.  USE4 then optionally smooths ``v`` across ``k``
+    This returns the **raw** simulated ``v_k`` (unclipped), in
+    ascending-eigenvalue order; the [0.5, 2] safety clip is applied once, after
+    the USE4 smoothing / inflation (second-pass audit finding 9: clipping the
+    raw ratio first would change what the inflation acts on).  USE4 then optionally smooths ``v`` across ``k``
     with a parabola and inflates it by the empirical factor ``a`` (1.2):
     :func:`scale_eigen_bias`, applied inside :func:`factor_covariance` from
     ``cfg.eigen_inflation_a`` / ``cfg.eigen_parabola_smoothing``.
@@ -172,8 +179,7 @@ def eigenfactor_bias(
         dm = np.clip(dm, 1e-18, None)
         d_true = np.einsum("ik,ij,jk->k", Um, F0, Um)
         ratio += d_true / dm
-    v = np.sqrt(ratio / n_sims)
-    return np.clip(v, 0.5, 2.0)
+    return np.sqrt(ratio / n_sims)
 
 
 def scale_eigen_bias(
@@ -384,12 +390,31 @@ def ewma_nw_variance(U: pd.DataFrame, half_life: float, newey_west_lags: int) ->
 
 
 def specific_vra_multiplier(
-    U: pd.DataFrame, market_cap: pd.Series, half_life: float, vra_half_life: float, min_periods: int = 20
+    U: pd.DataFrame,
+    market_cap: pd.Series | pd.DataFrame,
+    half_life: float,
+    vra_half_life: float,
+    min_periods: int = 20,
 ) -> float:
-    """Specific-risk VRA: cap-weighted cross-sectional bias statistic
-    ``B_t^2 = sum_i w_i (u_it / sigma_{i,t-1})^2`` (USE4 uses this form with
-    the structural specific risk forecasts; we use the EWMA forecast made at
-    ``t-1``), then ``lambda_S = sqrt(EWMA_{vra}(B_t^2))``."""
+    """Specific-risk VRA (USE4 Methodology Notes, "Specific risk volatility
+    regime adjustment"): cap-weighted cross-sectional bias statistic
+
+        B_t^2 = sum_i w_it (u_it / sigma_{i,t-1})^2 / sum_i w_it,
+
+    then ``lambda_S = sqrt(EWMA_{vra}(B_t^2))``.
+
+    ``w_it``: with a ``market_cap`` *panel* (date x ticker) the cap of the
+    previous trading day ``t-1`` (USE4 weights each day's statistic by that
+    day's caps; ``t-1`` keeps it point-in-time, matching the regression
+    convention), falling back to the latest cap where missing; with a Series
+    (older callers) today's cap on every day.
+
+    Documented deviation from USE4: ``sigma_{i,t-1}`` is the per-stock
+    EWMA(u^2) forecast made at ``t-1``, not the final (structural-blended,
+    Bayesian-shrunk) specific forecast -- re-running the full specific-risk
+    pipeline for every historical day would multiply the cost of ``as_of`` by
+    the VRA window.  The EWMA forecast is the time-series component of the
+    final forecast, so the bias statistic measures the same regime shift."""
     A = U.values.astype(float)
     T = A.shape[0]
     if min_periods + 1 >= T:
@@ -397,7 +422,14 @@ def specific_vra_multiplier(
     u2 = pd.DataFrame(A**2)
     s2_prev = u2.ewm(halflife=half_life, min_periods=min_periods, ignore_na=True).mean().shift(1).values
     z2 = A**2 / np.where(s2_prev > 0, s2_prev, np.nan)
-    w = market_cap.reindex(U.columns).fillna(0.0).clip(lower=0.0).values
+    if isinstance(market_cap, pd.DataFrame):
+        latest = market_cap.reindex(columns=U.columns).ffill().iloc[-1] if len(market_cap) else None
+        panel = market_cap.reindex(columns=U.columns).shift(1).reindex(U.index)
+        if latest is not None:
+            panel = panel.fillna(latest)
+        w = panel.fillna(0.0).clip(lower=0.0).values
+    else:
+        w = np.broadcast_to(market_cap.reindex(U.columns).fillna(0.0).clip(lower=0.0).values, A.shape)
     ok = np.isfinite(z2)
     wsum = (ok * w).sum(axis=1)
     B2 = np.where(wsum > 0, (np.where(ok, z2, 0.0) * w).sum(axis=1) / np.where(wsum > 0, wsum, 1.0), np.nan)
@@ -442,8 +474,11 @@ def bayesian_shrink_specific(
         sigma_SH = v sigma_bar + (1 - v) sigma,
         v = q |sigma - sigma_bar| / ( Delta + q |sigma - sigma_bar| ),
 
-    where ``sigma_bar`` is the cap-weighted mean and ``Delta`` the equal-weighted
-    standard deviation of ``sigma`` within the decile."""
+    where ``sigma_bar`` is the cap-weighted mean and ``Delta`` the dispersion of
+    ``sigma`` *about that cap-weighted mean* within the decile,
+    ``Delta = sqrt(mean_n (sigma_n - sigma_bar)^2)`` (USE4 Methodology Notes,
+    "Bayesian shrinkage"; second-pass audit finding 9 -- it was the
+    equal-weighted sd, i.e. about the equal-weighted mean)."""
     cap = market_cap.reindex(sigma.index).fillna(market_cap.median()).clip(lower=1e-9).values
     s = sigma.values.astype(float)
     n = len(s)
@@ -458,7 +493,7 @@ def bayesian_shrink_specific(
             continue
         sd_, cd = s[m], cap[m]
         sbar = float((sd_ * cd).sum() / cd.sum())
-        delta = float(sd_.std())
+        delta = float(np.sqrt(np.mean((sd_ - sbar) ** 2)))
         dev = np.abs(sd_ - sbar)
         den = delta + q * dev
         v = np.where(den > 0, q * dev / np.where(den > 0, den, 1.0), 0.0)
@@ -472,6 +507,7 @@ def specific_risk(
     market_cap: pd.Series,
     cfg: RiskConfig | None = None,
     return_details: bool = False,
+    market_cap_history: pd.DataFrame | None = None,
 ) -> pd.Series:
     """USE4 specific-risk forecast (daily **variance**) per ticker.
 
@@ -484,7 +520,8 @@ def specific_risk(
        (1 - gamma) sigma_STR`` with the structural model of
        :func:`structural_specific_vol`.
     3. Bayesian shrinkage toward the size-decile mean with ``q = specific_shrink_q``.
-    4. Specific VRA multiplier ``lambda_S``.
+    4. Specific VRA multiplier ``lambda_S`` (daily cap weights from
+       ``market_cap_history`` when given, see :func:`specific_vra_multiplier`).
 
     Returns ``(lambda_S * sigma_SH)^2`` indexed like ``exposures_latest``."""
     cfg = cfg or RiskConfig()
@@ -508,7 +545,12 @@ def specific_risk(
     sigma = sigma.where(sigma > 0, sigma_str)
 
     sigma_sh = bayesian_shrink_specific(sigma, market_cap, cfg.specific_shrink_q)
-    lam = specific_vra_multiplier(U, market_cap, cfg.specific_half_life, cfg.vra_half_life)
+    lam = specific_vra_multiplier(
+        U,
+        market_cap_history if market_cap_history is not None else market_cap,
+        cfg.specific_half_life,
+        cfg.vra_half_life,
+    )
     var = (lam * sigma_sh) ** 2
     var.name = "specific_var"
     if return_details:
@@ -521,6 +563,12 @@ def specific_risk(
             "n_obs": n_obs,
         }
     return var
+
+
+# Out-of-model specific variance (second-pass finding 8): the rule
+# (OUT_OF_MODEL_SPECIFIC_VAR_PCTL = 90th percentile) lives in qts.core.risk_fill, shared
+# with RiskModelOutput.covariance / portfolio_variance; ``out_of_model_specific_var`` is
+# re-exported here (and from qts.risk) under its public name.
 
 
 def style_variances(factor_cov: pd.DataFrame, cfg: RiskConfig) -> pd.Series:

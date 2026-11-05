@@ -1,11 +1,16 @@
 """Daily-bar backtest simulator (closing-auction rebalancer).
 
 Timeline for each simulation date ``t`` (close of ``t``), with
-``L = signal_lag_days`` (``cfg.execution.signal_lag_days``, default 0; design
+``L = signal_lag_days`` (``cfg.execution.signal_lag_days``, default 1; design
 decision D4) and ``s`` = the trading day ``L`` days before ``t`` in ``md.dates``:
 
 1. ``alpha_fn(s)`` and ``risk_fn(s, alpha)`` see only data ``<= s``; the
-   optimizer prices costs on the snapshot as of ``s``.  With ``L = 0``,
+   optimizer prices costs on the snapshot as of ``s`` (ADV, sigma, spread,
+   borrow: data ``<= s``) **with the auction share of the execution date**
+   ``t`` -- the closing-auction calendar (quad witching, Russell
+   reconstitution) is published in advance, so pricing a heavy day ``t`` as
+   the normal day ``s`` would only make the optimizer under-use a cheap
+   auction (audit 2, finding 14).  With ``L = 0``,
    ``s = t`` (close-as-signal).  With ``L >= 1`` the decision uses data that
    is ``L`` days stale -- the honest setting for a strategy that cannot see
    the close it trades at; the Sharpe difference between 0 and 1 bounds the
@@ -23,6 +28,12 @@ decision D4) and ``s`` = the trading day ``L`` days before ``t`` in ``md.dates``
    ``ExecutionConfig.auction_max_pct_of_auction_volume`` of the closing
    auction is priced at the auction, the rest in the continuous session
    (``qts.tcost.model`` docstring).
+   Multi-day impact persistence: per name, the simulator carries the USD
+   already traded in the current same-direction streak (``Q_prev``; reset
+   when the trade sign flips or a day has no trade) and passes it to
+   ``estimate(prior_streak_usd=)`` when the model accepts it (exact streak
+   increment ``C(Q_prev + q) - C(Q_prev)``, ``qts.tcost.model`` docstring),
+   besides the streak length ``streak``.
 4. Positions earn close-to-close returns ``t -> t+1``; shorts pay one day of
    borrow ``cost_model.holding_cost_usd(w_post, nav_t, snapshot_t)``.
 5. NAV identity (exact by construction, tested):
@@ -54,8 +65,14 @@ allowed ``|w|`` shrinking linearly to 0 over
 ``diagnostics["forced_exits"]``).
 
 Recorded panels are indexed by the decision date ``t``: ``weights`` (post-
-trade), ``trades``, ``costs``, ``exante_var``; ``returns`` (gross/net) and
-``nav`` are indexed by the date the return is realised (``t+1``).
+trade), ``trades``, ``costs``, ``exante_var``; ``returns`` and ``nav`` are
+indexed by the date the return is realised (``t+1``).  ``returns`` columns:
+``gross`` (``sum_i w_post_i r_{i,t+1}``, before every cost), ``net``
+(``nav_{t+1}/nav_t - 1``) and ``gross_after_borrow`` (``gross - borrow_t /
+nav_t``: after the holding cost but before trading costs).  Per-side trading
+cost gates (breakeven cost, cost sensitivity) must start from
+``gross_after_borrow``: borrow is not a per-side cost, and charging it nowhere
+makes the gate optimistic for short-heavy books (audit 2, finding 1).
 """
 
 from __future__ import annotations
@@ -65,6 +82,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from dataclasses import replace as dc_replace
 from typing import Any
 
 import numpy as np
@@ -72,7 +90,7 @@ import pandas as pd
 
 from qts.backtest import metrics as M
 from qts.core.config import SystemConfig
-from qts.core.costs import VENUE_CONTINUOUS, VENUE_ROUTED, CostEstimate
+from qts.core.costs import VENUE_CONTINUOUS, VENUE_ROUTED, CostEstimate, LiquiditySnapshot
 from qts.core.types import AlphaOutput, MarketData, RiskModelOutput, Wide
 from qts.portfolio.costs import Snapshot, align_snapshot, snapshot_from_market
 from qts.portfolio.diagnostics import effective_holding_days, realized_vs_exante_risk
@@ -86,7 +104,7 @@ COST_COLUMNS = ["spread", "impact", "fees", "borrow", "total"]
 @dataclass
 class BacktestResult:
     nav: pd.Series  # indexed by date (first entry = nav0 on dates[0])
-    returns: pd.DataFrame  # columns: gross, net (indexed by realisation date)
+    returns: pd.DataFrame  # columns: gross, net, gross_after_borrow (indexed by realisation date)
     weights: Wide  # post-trade weights by decision date
     trades: Wide  # weight changes by decision date
     costs: pd.DataFrame  # USD by decision date: spread, impact, fees, borrow, total
@@ -106,6 +124,34 @@ class BacktestResult:
         return self.returns["net"]
 
     @property
+    def gross_after_borrow_returns(self) -> pd.Series:
+        """``gross - borrow/nav_pre`` (module docstring); computed from ``costs``
+        and ``nav`` for results built without the column."""
+        if "gross_after_borrow" in self.returns:
+            return self.returns["gross_after_borrow"]
+        n = min(len(self.costs), len(self.returns))
+        nav_pre = self.nav.reindex(self.costs.index).to_numpy(dtype=float)[:n]
+        borrow = self.costs["borrow"].to_numpy(dtype=float)[:n] if "borrow" in self.costs else np.zeros(n)
+        out = self.returns["gross"].astype(float).copy()
+        out.iloc[:n] = out.to_numpy(dtype=float)[:n] - borrow / nav_pre
+        return out.rename("gross_after_borrow")
+
+    def cost_sensitivity(
+        self,
+        cost_bps_per_side: float | None = None,
+        multipliers: tuple[float, ...] = (0.5, 1, 2, 3),
+    ) -> pd.DataFrame:
+        """:func:`qts.backtest.metrics.cost_sensitivity` on ``gross_after_borrow``
+        (borrow charged as realised, trading cost scaled); default cost = the
+        realised ``avg_cost_bps_per_side``."""
+        r = self.gross_after_borrow_returns.dropna()
+        c = self.summary()["avg_cost_bps_per_side"] if cost_bps_per_side is None else cost_bps_per_side
+        c = float(c) if np.isfinite(c) else 10.0
+        return M.cost_sensitivity(
+            r, self.turnover_on_return_dates().reindex(r.index), c, multipliers, self.periods_per_year
+        )
+
+    @property
     def cost_bps_of_nav(self) -> pd.Series:
         nav_pre = self.nav.reindex(self.costs.index)
         return (self.costs["total"] / nav_pre * 1e4).rename("cost_bps_of_nav")
@@ -118,6 +164,7 @@ class BacktestResult:
     def summary(self) -> dict[str, float]:
         q = self.periods_per_year
         g, n = self.gross_returns.dropna(), self.net_returns.dropna()
+        gb = self.gross_after_borrow_returns.dropna()
         traded = float(self.traded_usd.sum())
         trading_cost = float((self.costs["spread"] + self.costs["impact"] + self.costs["fees"]).sum())
         rv = (
@@ -157,11 +204,32 @@ class BacktestResult:
             if len(self.transfer_coefficient.dropna())
             else float("nan"),
             "realized_vs_exante_vol_ratio": rv["ratio"],
-            "breakeven_cost_bps": M.breakeven_cost_bps(g, self.turnover_on_return_dates().reindex(g.index)),
+            # per-side breakeven net of borrow (borrow is not a per-side cost; audit 2 #1)
+            "breakeven_cost_bps": M.breakeven_cost_bps(gb, self.turnover_on_return_dates().reindex(gb.index)),
             "n_delistings": len(self.diagnostics.get("delistings", [])),
             "n_failed_solves": int(self.diagnostics.get("n_failed_solves", 0)),
+            **self.sizing_summary(),
         }
         return out
+
+    def sizing_summary(self) -> dict[str, float]:
+        """From ``diagnostics["solve_log"]``: ``vol_target_caps_share`` = share of the
+        target-vol solves (non-empty ``vol_target_binding``) whose book was capped below
+        the vol target by the gross / position / ADV limits (``"caps"``);
+        ``mean_risk_aversion`` = mean annual gamma of the returned books.  NaN when the
+        log has no such entries (fixed gamma without a search, or no solves)."""
+        log_ = self.diagnostics.get("solve_log") or []
+        entries = [e for e in log_ if isinstance(e, dict)] if isinstance(log_, list) else []
+        binding = [str(e.get("vol_target_binding") or "") for e in entries]
+        searched = [b for b in binding if b]
+        gam = np.array([float(e.get("risk_aversion", np.nan)) for e in entries], dtype=float)
+        gam = gam[np.isfinite(gam)]
+        return {
+            "vol_target_caps_share": float(np.mean([b == "caps" for b in searched]))
+            if searched
+            else float("nan"),
+            "mean_risk_aversion": float(gam.mean()) if len(gam) else float("nan"),
+        }
 
     def turnover_on_return_dates(self) -> pd.Series:
         """Turnover on decision date t re-indexed to the realisation date t+1
@@ -262,13 +330,20 @@ class _LegacyCostModel:
         return out
 
     def estimate(
-        self, trades_usd: pd.Series, snap: Snapshot, venue: str | None = None, streak: pd.Series | None = None
+        self,
+        trades_usd: pd.Series,
+        snap: Snapshot,
+        venue: str | None = None,
+        streak: pd.Series | None = None,
+        prior_streak_usd: pd.Series | None = None,
     ) -> CostEstimate:
         kw: dict[str, object] = {}
         if "venue" in self._params and venue is not None:
             kw["venue"] = venue
         if "streak" in self._params and streak is not None:
             kw["streak"] = streak
+        if "prior_streak_usd" in self._params and prior_streak_usd is not None:
+            kw["prior_streak_usd"] = prior_streak_usd
         cf = cost_frame(self.model.estimate(trades_usd, snap, **kw), trades_usd.index)
         return CostEstimate.from_components(
             trades_usd.index,
@@ -308,12 +383,36 @@ class DailyBarSimulator:
                 type(cost_model).__name__,
             )
             self._cm = _LegacyCostModel(cost_model, cfg, adv_window, vol_window)
+        try:
+            params = inspect.signature(self._cm.estimate).parameters
+            self._pass_prior_streak = "prior_streak_usd" in params or any(
+                p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+            )
+        except (TypeError, ValueError):
+            self._pass_prior_streak = False
 
     _cost_frame = staticmethod(cost_frame)
 
     def _snapshot(self, md: MarketData, t: pd.Timestamp) -> Snapshot:
         """Point-in-time cost snapshot as of ``t`` (``cost_model.snapshot``)."""
         return self._cm.snapshot(md, pd.Timestamp(t))
+
+    @staticmethod
+    def _optimizer_snapshot(snap_sig: Snapshot, snap_exec: Snapshot) -> Snapshot:
+        """The optimizer's cost snapshot: signal-date liquidity (``snap_sig``) with the
+        execution date's auction share (``snap_exec``) -- module docstring, step 1."""
+        if snap_sig is snap_exec:
+            return snap_sig
+        share = snap_exec.get("auction_share") if hasattr(snap_exec, "get") else None
+        if share is None:
+            return snap_sig
+        if isinstance(snap_sig, LiquiditySnapshot):
+            if snap_sig.auction_share == float(share):
+                return snap_sig
+            return dc_replace(snap_sig, auction_share=float(share))
+        out = dict(snap_sig)
+        out["auction_share"] = share
+        return out
 
     # ----------------------------------------------------------------- run
     def run(
@@ -403,7 +502,9 @@ class DailyBarSimulator:
         gross = np.empty(T)
         net = np.empty(T)
         streak = np.zeros(N)  # consecutive same-direction trading days per name
+        streak_usd = np.zeros(N)  # |USD| traded in the current streak, through the last trade
         last_sign = np.zeros(N)
+        borrow_ret = np.empty(T)
         delistings: list[dict[str, object]] = []
         solve_log: list[dict[str, object]] = []
         n_failed = 0
@@ -464,7 +565,7 @@ class DailyBarSimulator:
                     risk=last_risk,
                     w_current=pd.Series(w_pre, index=tickers),
                     nav=nav,
-                    snapshot=snap_at(sig_date),
+                    snapshot=self._optimizer_snapshot(snap_at(sig_date), snap_exec),
                     venue=venue,
                     neutral_styles=neutral_styles,
                     no_trade=dead,
@@ -494,6 +595,11 @@ class DailyBarSimulator:
                         "expected_cost": res.expected_cost,
                         "notes": res.notes,
                         "n_out_of_model": getattr(res, "n_out_of_model", 0),
+                        # sizing (risk_aversion_mode); absent on optimizers without them
+                        "risk_aversion": float(getattr(res, "risk_aversion", float("nan"))),
+                        "vol_target_binding": str(getattr(res, "vol_target_binding", "") or ""),
+                        "n_solves": int(getattr(res, "n_solves", 0) or 0),
+                        "n_excluded_alpha": int(getattr(res, "n_excluded_alpha", 0) or 0),
                     }
                 )
             x = w_post - w_pre
@@ -503,14 +609,15 @@ class DailyBarSimulator:
             # ---- costs in USD on the execution date's liquidity, at the requested venue;
             # same-direction streak per name drives multi-day impact persistence
             sgn = np.sign(x)
-            streak = np.where(sgn != 0, np.where(sgn == last_sign, streak + 1.0, 1.0), 0.0)
+            same = (sgn != 0) & (sgn == last_sign)
+            streak = np.where(sgn != 0, np.where(same, streak + 1.0, 1.0), 0.0)
+            prior_usd = np.where(same, streak_usd, 0.0)  # Q_{k-1}: earlier days of this streak
+            streak_usd = np.where(sgn != 0, prior_usd + np.abs(x) * nav, 0.0)
             last_sign = sgn
-            est = self._cm.estimate(
-                pd.Series(x * nav, index=tickers),
-                snap_exec,
-                venue=venue,
-                streak=pd.Series(streak, index=tickers),
-            )
+            est_kw: dict[str, Any] = {"venue": venue, "streak": pd.Series(streak, index=tickers)}
+            if self._pass_prior_streak:
+                est_kw["prior_streak_usd"] = pd.Series(prior_usd, index=tickers)
+            est = self._cm.estimate(pd.Series(x * nav, index=tickers), snap_exec, **est_kw)
             cf = cost_frame(est, tickers)
             borrow = self._cm.holding_cost_usd(pd.Series(w_post, index=tickers), nav, snap_exec)
             c_spread = float(cf["spread"].sum())
@@ -570,6 +677,7 @@ class DailyBarSimulator:
                 EXV[i] = float(last_risk.portfolio_variance(pd.Series(w_post, index=tickers)))
             gross[i] = g_ret
             net[i] = n_ret
+            borrow_ret[i] = c_borrow / nav
             navs[i + 1] = nav1
 
             # ---- drift to pre-trade weights of t+1 (cash absorbs costs)
@@ -582,6 +690,7 @@ class DailyBarSimulator:
                 T_eff = i + 1
                 W, X, C, EXV, TO, TC = W[:T_eff], X[:T_eff], C[:T_eff], EXV[:T_eff], TO[:T_eff], TC[:T_eff]
                 navs, gross, net = navs[: T_eff + 1], gross[:T_eff], net[:T_eff]
+                borrow_ret = borrow_ret[:T_eff]
                 dates = dates[: T_eff + 1]
                 T = T_eff
                 break
@@ -592,7 +701,9 @@ class DailyBarSimulator:
         real = dates[1 : T + 1]
         res_obj = BacktestResult(
             nav=pd.Series(navs, index=dates[: T + 1], name="nav"),
-            returns=pd.DataFrame({"gross": gross, "net": net}, index=real),
+            returns=pd.DataFrame(
+                {"gross": gross, "net": net, "gross_after_borrow": gross - borrow_ret}, index=real
+            ),
             weights=pd.DataFrame(W, index=dec, columns=tickers),
             trades=pd.DataFrame(X, index=dec, columns=tickers),
             costs=pd.DataFrame(C, index=dec, columns=COST_COLUMNS),
@@ -611,6 +722,9 @@ class DailyBarSimulator:
                 "n_no_signal_days": n_no_signal,
                 "forced_exits": forced_log,
                 "n_ineligible_name_days": n_ineligible_days,
+                # sum over solves of OptimizationResult.n_out_of_model: names outside the
+                # risk model still held *after* the solve (forced exits in progress); names
+                # with alpha but no position are excluded, not counted (n_excluded_alpha)
                 "n_out_of_model_name_days": n_out_of_model,
             },
         )

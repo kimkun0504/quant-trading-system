@@ -122,7 +122,11 @@ def test_pipeline_is_deterministic(md, cfg, result):
 
 
 @pytest.mark.slow
-def test_pipeline_ledger_dedupes_reruns(md, cfg, tmp_path):
+def test_pipeline_ledger_dedupes_reruns(md, cfg, tmp_path, monkeypatch):
+    import qts.core.manifest as manifest
+
+    # de-duplication needs a clean code version (a dirty tree always appends)
+    monkeypatch.setattr(manifest, "code_version", lambda info=None: "cleansha")
     path = str(tmp_path / "ledger.jsonl")
     r1 = ResearchPipeline(cfg, use_ml=False, ledger_path=path).run(md, max_days=60)
     r2 = ResearchPipeline(cfg, use_ml=False, ledger_path=path).run(md, max_days=60)
@@ -323,3 +327,98 @@ def test_planted_oracle_through_pipeline_is_flagged_suspect():
     assert res.hurdles.gate("suspect").status == "FAIL"
     assert not res.hurdles.overall
     assert res.ic_report.mean_ic > 0.5
+
+
+# --------------------------------------------------------------------------- audit 2 (#2, #4, #11, #16, #17)
+@pytest.mark.slow
+def test_pipeline_ledger_key_and_family(md, cfg, tmp_path, monkeypatch):
+    import qts.core.manifest as manifest
+    from qts.validation import TrialLedger
+
+    path = str(tmp_path / "ledger.jsonl")
+    monkeypatch.setattr(manifest, "code_version", lambda info=None: "sha_A")
+    p1 = ResearchPipeline(cfg, use_ml=False, ledger_path=path)
+    r1 = p1.run(md, max_days=40)
+    assert p1.ledger_family() == f"pipeline_phase1:{r1.data_hash[:12]}"
+    # a knob outside SystemConfig (rebalance_every) is a new trial
+    ResearchPipeline(cfg, use_ml=False, ledger_path=path, rebalance_every=2).run(md, max_days=40)
+    # new code version with everything else identical: new trial
+    monkeypatch.setattr(manifest, "code_version", lambda info=None: "sha_B")
+    ResearchPipeline(cfg, use_ml=False, ledger_path=path).run(md, max_days=40)
+    # dirty tree: never de-duplicated
+    monkeypatch.setattr(manifest, "code_version", lambda info=None: "sha_B+dirty")
+    ResearchPipeline(cfg, use_ml=False, ledger_path=path).run(md, max_days=40)
+    r5 = ResearchPipeline(cfg, use_ml=False, ledger_path=path).run(md, max_days=40)
+    led = TrialLedger(path)
+    fam = p1.ledger_family()
+    assert led.n_trials(fam) == 5 and r5.dsr_inputs["n_trials_raw"] == 5
+    specs = [r["run_spec"] for r in led.records(fam)]
+    assert {s["rebalance_every"] for s in specs} == {1, 2}
+    assert all(s["signal_lag_days"] == cfg.execution.signal_lag_days for s in specs)
+    # other data -> other family
+    md2 = generate(SyntheticSpec(n_stocks=120, n_days=900, seed=8, ic_true=0.08))
+    p6 = ResearchPipeline(cfg, use_ml=False, ledger_path=path)
+    r6 = p6.run(md2, max_days=40)
+    assert p6.ledger_family() != fam and r6.dsr_inputs["n_trials_raw"] == 1
+
+
+@pytest.mark.slow
+def test_pbo_grid_configs_are_logged_as_trials(md, tmp_path):
+    c = SystemConfig()
+    c.universe.top_n_by_mcap = 100
+    c.pipeline_pbo_configs = [{"portfolio.risk_aversion": 5.0}, {"portfolio.risk_aversion": 40.0}]
+    path = str(tmp_path / "ledger.jsonl")
+    pipe = ResearchPipeline(c, use_ml=False, ledger_path=path)
+    res = pipe.run(md, max_days=60)
+    # base + 2 grid configurations, all in the same family, counted before the DSR
+    assert res.dsr_inputs["n_trials_raw"] == 3
+    from qts.validation import TrialLedger
+
+    assert TrialLedger(path).n_trials(pipe.ledger_family()) == 3
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("lag", [0, 1])
+def test_evaluate_scores_the_traded_signal(md, cfg, lag):
+    from qts.core import stats
+
+    c = cfg.with_overrides({"execution.signal_lag_days": lag})
+    pipe = ResearchPipeline(c, use_ml=False)
+    res = pipe.run(md, max_days=100)
+    assert pipe.alpha.signal_lag_days == lag
+    ic = res.ic_report.ic_series.dropna()
+    exec_dates = res.backtest.weights.index[:: c.alpha.horizon_days]
+    assert set(ic.index) <= set(exec_dates)
+    dates = pipe.md_u.dates
+    t = ic.index[0]
+    s = dates[dates.get_loc(t) - lag]
+    score = pipe.alpha.as_of(s).score
+    label = pipe.alpha.target_.loc[s].reindex(score.index)
+    idx = pd.DatetimeIndex([s])
+    want = stats.rank_ic_series(
+        pd.DataFrame([score.to_numpy()], index=idx, columns=score.index),
+        pd.DataFrame([label.to_numpy()], index=idx, columns=score.index),
+    ).iloc[0]
+    assert ic.loc[t] == pytest.approx(want, rel=1e-10)
+    # decile Sharpe annualised at the IC report's inferred frequency (#15)
+    assert res.decile is not None and res.ic_report.periods_per_year == pytest.approx(
+        252 / c.alpha.horizon_days, rel=0.1
+    )
+    # ic_sign gate evaluated on the purged fold blocks (#16)
+    by_fold = ResearchPipeline._ic_by_fold(
+        res.ic_report.ic_series,
+        [
+            pd.DatetimeIndex(pipe.md_u.dates[(pipe.md_u.dates >= r.start) & (pipe.md_u.dates <= r.end)])
+            for r in res.folds.itertuples()
+        ],
+    )
+    assert len(by_fold) <= len(res.folds)
+
+
+def test_ic_by_fold_groups_sampled_ic_by_block():
+    d = pd.bdate_range("2024-01-01", periods=100)
+    ic = pd.Series([0.1, -0.2, 0.3, 0.05, np.nan], index=d[[0, 10, 40, 60, 90]])
+    blocks = [d[0:30], d[30:70], d[70:100]]
+    out = ResearchPipeline._ic_by_fold(ic, blocks)
+    assert list(out.index) == [d[0], d[30]]  # last block has no finite IC -> dropped
+    assert out.iloc[0] == pytest.approx(-0.05) and out.iloc[1] == pytest.approx(0.175)

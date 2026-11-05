@@ -9,8 +9,9 @@ exactly produced these numbers?":
   (required *and* optional, the ``extra`` dict, the industry map) plus the
   eligibility panel — handbook fix #37 (the old hash covered ``close`` only);
 * ``git_sha`` / ``git_dirty`` — code version (``git rev-parse HEAD``;
-  ``"unknown"`` outside a git checkout); a dirty tree means the sha alone does
-  not reproduce the run;
+  ``"unknown"`` outside a git checkout); a dirty tree (modified tracked files
+  *or* untracked, non-ignored files) means the sha alone does not reproduce
+  the run;
 * library versions (numerics change across numpy / pandas / scipy / sklearn /
   LightGBM / cvxpy / Clarabel releases), python version, platform;
 * ``timings`` (seconds per stage) and ``seeds``.
@@ -54,6 +55,12 @@ TRACKED_LIBRARIES = (
 
 
 # ----------------------------------------------------------------------------- hashing
+#: Optional fields added after the hash format was fixed: when ``None`` they
+#: contribute nothing, so data hashes of existing ``MarketData`` (and the trial
+#: ledger keys built on them) do not change; when present they are hashed.
+_SKIP_IF_NONE = frozenset({"delisting_dates"})
+
+
 def _hash_frame(h: Any, name: str, obj: Any) -> None:
     h.update(f"<{name}:{type(obj).__name__}:{obj.shape}>".encode())
     h.update("|".join(map(str, obj.index)).encode())
@@ -85,6 +92,8 @@ def hash_market_data(md: MarketData, n_chars: int = 16) -> str:
         if f.name == "extra":
             continue
         if v is None:
+            if f.name in _SKIP_IF_NONE:
+                continue
             h.update(f"<{f.name}:None>".encode())
         elif isinstance(v, (pd.DataFrame, pd.Series)):
             _hash_frame(h, f.name, v)
@@ -114,7 +123,9 @@ def git_info(cwd: str | Path | None = None) -> dict[str, Any]:
             ["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True, timeout=10, check=True
         ).stdout.strip()
         st = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=no"],
+            # untracked files count (a new module the run imports changes the code);
+            # ``--untracked-files=normal`` respects .gitignore (runs/, data, caches)
+            ["git", "status", "--porcelain", "--untracked-files=normal"],
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -124,6 +135,18 @@ def git_info(cwd: str | Path | None = None) -> dict[str, Any]:
         return {"git_sha": sha or "unknown", "git_dirty": bool(st.strip())}
     except (OSError, subprocess.SubprocessError):
         return {"git_sha": "unknown", "git_dirty": None}
+
+
+def code_version(info: dict[str, Any] | None = None) -> str:
+    """Code identity for the trial ledger: ``<sha>`` for a clean checkout,
+    ``<sha>+dirty`` when ``git_dirty`` is True or unknown (``None``), and
+    ``"unknown"`` outside a git checkout.  The ledger never de-duplicates a
+    record whose code version is dirty or unknown."""
+    g = git_info() if info is None else info
+    sha = str(g.get("git_sha") or "unknown")
+    if sha == "unknown":
+        return "unknown"
+    return sha if g.get("git_dirty") is False else f"{sha}+dirty"
 
 
 def library_versions() -> dict[str, str]:

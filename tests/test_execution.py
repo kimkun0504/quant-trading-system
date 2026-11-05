@@ -55,14 +55,20 @@ def test_router_tactics(snapshot):
     orders = [
         Order("SMALL", "BUY", 1_000),  # 1.1% of auction -> LOC
         Order("SMALL", "SELL", 1_000, order_id="small-sell"),
-        Order("BIG", "SELL", 10_000),  # 11% of auction -> ALGO
+        Order("BIG", "SELL", 10_000),  # 11% of auction -> split: LOC cap + ALGO rest
         Order("FAST", "BUY", 1_000, meta={"half_life_days": 2.0}),  # fast -> ArrivalPx
         Order("REV", "BUY", 1_000, meta={"sleeve": "reversal"}),  # reversal -> passive LMT
-        Order("HUGE", "BUY", 100_000),  # 10% ADV -> ALGO flagged
+        Order("HUGE", "BUY", 100_000),  # 10% ADV -> split, ALGO child flagged
     ]
     routed = r.route(orders, snapshot, signal_half_life_days=20.0)
-    assert len(routed) == 6
-    small_b, small_s, big, fast, rev, huge = routed
+    assert len(routed) == 8
+    small_b, small_s, big_auc, big, fast, rev, huge_auc, huge = routed
+    # split (audit 2 #6): K = floor(2% x 90,000) = 1,800 shares to the auction, the rest to the algo
+    assert big_auc.order_type == "LOC" and big_auc.qty == 1_800 and big_auc.limit_px < 100.0
+    assert (
+        big.qty == 10_000 - 1_800 and big_auc.meta["split"] == "auction" and big.meta["split"] == "continuous"
+    )
+    assert huge_auc.qty == 1_800 and huge.qty == 98_200 and huge_auc.side == huge.side == "BUY"
     assert small_b.order_type == "LOC" and small_b.limit_px > 100.0
     exp_imp_bps = 1e4 * CostConfig().impact_b_auction * 0.02 * np.sqrt(1_000 / 90_000)
     assert small_b.meta["loc_offset_bps"] == pytest.approx(max(3.0, 1.5 * exp_imp_bps))
@@ -79,7 +85,7 @@ def test_router_tactics(snapshot):
     assert huge.order_type == "ALGO" and huge.meta.get("multi_day") is True
     assert "WARNING" in huge.meta["routing_reason"]
     # medium urgency -> Vwap rather than ClosePx (Vwap documents noTakeLiq; ClosePx does not)
-    routed2 = r.route([Order("BIG", "SELL", 10_000)], snapshot, signal_half_life_days=6.0)
+    routed2 = r.route([Order("BIG", "SELL", 10_000)], snapshot, signal_half_life_days=6.0)[1:]  # algo child
     assert routed2[0].algo == "Vwap" and routed2[0].algo_params["noTakeLiq"] is False
     assert "noTakeLiq" not in big.algo_params
     # participation: urgency_from_half_life clipped to [1%, algo_max_pct_adv]
@@ -90,7 +96,45 @@ def test_router_tactics(snapshot):
     # all orders carry a reason string
     assert all(isinstance(o.meta.get("routing_reason"), str) and o.meta["routing_reason"] for o in routed)
     tbl = r.routing_table(routed)
-    assert len(tbl) == 6 and "reason" in tbl
+    assert len(tbl) == 8 and "reason" in tbl
+    # the old all-or-nothing routing is still available
+    unsplit = ExecutionRouter(cfg, split_auction=False).route([Order("BIG", "SELL", 10_000)], snapshot, 20.0)
+    assert len(unsplit) == 1 and unsplit[0].order_type == "ALGO" and unsplit[0].qty == 10_000
+
+
+def test_router_split_matches_routed_cost_model():
+    """The routed cost venue prices q_a = min(q, K) in the auction and the rest in the
+    continuous session; the router's children carry exactly those quantities."""
+    from qts.core.costs import LiquiditySnapshot
+    from qts.tcost.model import TransactionCostModel
+
+    px, adv_sh = 50.0, 2_000_000.0
+    share = 0.09
+    snap_r = {
+        "adv_shares": pd.Series({"X": adv_sh}),
+        "auction_volume_est": pd.Series({"X": adv_sh * share}),
+        "sigma_daily": pd.Series({"X": 0.02}),
+        "half_spread_bps": pd.Series({"X": 2.0}),
+        "indicative_close_px": pd.Series({"X": px}),
+    }
+    q_sh = 20_000.0  # 11% of the auction
+    kids = ExecutionRouter().route([Order("X", "BUY", q_sh, order_id="p")], snap_r, 20.0, date="2026-11-03")
+    assert [k.order_id for k in kids] == ["p-auc", "p-algo"]
+    assert sum(k.qty for k in kids) == q_sh and all(k.meta["parent_order_id"] == "p" for k in kids)
+    tcm = TransactionCostModel()
+    snap_c = LiquiditySnapshot(
+        date=pd.Timestamp("2026-11-03"),
+        tickers=pd.Index(["X"]),
+        price=pd.Series({"X": px}),
+        adv_usd=pd.Series({"X": adv_sh * px}),
+        adv_shares=pd.Series({"X": adv_sh}),
+        sigma_daily=pd.Series({"X": 0.02}),
+        half_spread=pd.Series({"X": 2e-4}),
+        borrow_fee=pd.Series({"X": 0.005}),
+        auction_share=share,
+    )
+    est = tcm.estimate(pd.Series({"X": q_sh * px}), snap_c, venue="routed")
+    assert est.auction_fraction["X"] * q_sh == pytest.approx(kids[0].qty, abs=1.0)  # whole shares
 
 
 def test_loc_limit_rounds_to_tick_in_favourable_direction():
@@ -160,6 +204,9 @@ def test_ib_payloads(snapshot):
         snapshot,
         signal_half_life_days=20.0,
     )
+    assert [o.order_id for o in routed] == ["o1", "o2-auc", "o2-algo", "o3"]
+    assert to_ib_order_dict(routed[1])["orderType"] == "LOC"
+    routed = [routed[0], routed[2], routed[3]]
     loc = to_ib_order_dict(routed[0])
     assert loc["orderType"] == "LOC" and loc["action"] == "BUY" and loc["totalQuantity"] == 1000
     assert loc["lmtPrice"] == routed[0].limit_px and loc["tif"] == "DAY" and loc["orderRef"] == "o1"
@@ -246,24 +293,26 @@ def test_fill_simulator_roundtrip_with_ledger(snapshot):
     led = TCALedger()
     sim = FillSimulator(CostConfig())
     fills = sim.simulate(routed, realized, date="2026-11-03", ledger=led)
-    assert len(fills) == 5
+    assert len(fills) == 7  # BIG and HUGE are split into auction + algo children
     f = fills.set_index("order_id")
+    assert f.loc["b1-auc", "status"] == "filled" and f.loc["b1-auc", "filled_qty"] == 1_800
     assert f.loc["s1", "status"] == "filled" and f.loc["s1", "fill_px"] > 100.02  # auction impact on buy
     assert f.loc["s1", "fill_px"] <= routed[0].limit_px
-    assert f.loc["b1", "status"] == "filled" and f.loc["b1", "fill_px"] < 100.1
-    assert f.loc["r1", "status"] == "filled" and f.loc["r1", "fill_px"] == routed[3].limit_px
-    # HUGE (10% ADV, half-life 20d) is capped at urgency_from_half_life(20) ~1.3% of the day's volume
-    assert f.loc["h1", "status"] == "partial"
-    assert f.loc["h1", "filled_qty"] == pytest.approx(urgency_from_half_life(20.0) * 1_000_000)
+    assert f.loc["b1-algo", "status"] == "filled" and f.loc["b1-algo", "fill_px"] < 100.1
+    rev = next(o for o in routed if o.order_id == "r1")
+    assert f.loc["r1", "status"] == "filled" and f.loc["r1", "fill_px"] == rev.limit_px
+    # HUGE's algo child (10% ADV, half-life 20d) is capped at urgency_from_half_life(20) ~1.3% of volume
+    assert f.loc["h1-algo", "status"] == "partial"
+    assert f.loc["h1-algo", "filled_qty"] == pytest.approx(urgency_from_half_life(20.0) * 1_000_000)
     assert (f["fees_usd"] >= 0).all() and f.loc["s1", "fees_usd"] > 0
     d = led.decompose()
-    assert len(d) == 5
+    assert len(d) == 7
     cols = ["delay_bps", "impact_bps", "opportunity_bps", "fees_bps", "total_is_bps", "reversion_bps"]
     assert np.isfinite(d[cols].values).all()
     assert np.allclose(
         d["total_is_bps"], d[["delay_bps", "impact_bps", "opportunity_bps", "fees_bps"]].sum(axis=1)
     )
-    assert d.loc["h1", "opportunity_bps"] > 0  # unfilled half, price rose
+    assert d.loc["h1-algo", "opportunity_bps"] > 0  # unfilled half, price rose
     b, diag = led.calibrate_b(prior_b=1.0, prior_weight=20)
     assert np.isfinite(b) and diag["n"] >= 1
     summ = led.summary()

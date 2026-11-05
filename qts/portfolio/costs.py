@@ -151,10 +151,13 @@ class SimpleCostModel:
         snapshot: SnapshotLike,
         venue: str | None = VENUE_ROUTED,
         streak: pd.Series | None = None,
+        prior_streak_usd: pd.Series | None = None,
     ) -> CostEstimate:
         if self.zero:
             return CostEstimate.zero(trades_usd.index, venue or VENUE_ROUTED)
-        return self._tcm.estimate(trades_usd, snapshot, venue=venue, streak=streak)
+        return self._tcm.estimate(
+            trades_usd, snapshot, venue=venue, streak=streak, prior_streak_usd=prior_streak_usd
+        )
 
     def holding_cost_usd(self, w_post: pd.Series, nav: float, snapshot: SnapshotLike) -> pd.Series:
         if self.zero:

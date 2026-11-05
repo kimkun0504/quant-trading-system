@@ -120,3 +120,123 @@ Unchanged (exactly or within rtol 1e-6): `summary.start`, `summary.end`, `summar
   step, but it is an intended Wave 2 change (look-ahead fix, `docs/notes/doc_review_findings.md` #46).
 * Reproduce the attribution with the throwaway scripts described above: run
   `ResearchPipeline(golden_config(), use_ml=False, venue=...)` with the config reverts listed per step.
+
+---
+
+# Audit-2 fix wave (second-pass audit, three fix agents + integration)
+
+Same golden run (`ResearchPipeline(golden_config(), use_ml=False).run(md, max_days=60)`, 100 x 700
+synthetic market, seed 11, top-80 universe). The synthetic market is unchanged (`data_hash` identical),
+so every move below comes from the model code / defaults. Two summary keys were added to the golden
+file (`vol_target_caps_share`, `mean_risk_aversion`, from the simulator's `solve_log`).
+
+## Attribution chain
+
+The config-switchable changes were reverted one at a time on the current code (throwaway script that
+runs the golden pipeline with the overrides below; nothing committed):
+
+| step | reverted relative to the current code | change introduced by the next step |
+|---|---|---|
+| before | stored golden file (pre-wave code) | -- |
+| R3 | `risk_aversion_mode="fixed"`, `risk_aversion=10`, `risk.alignment_nu_scale=0.25`, `universe.refresh_anchor="panel_start"` | -- (R3 vs before = all *code-only* changes, see below) |
+| R2 | as R3 but current refresh anchor | **month-start universe refresh** (`refresh_anchor="month_start"`) |
+| R1 | `risk_aversion_mode="fixed"`, `risk_aversion=10` | **alignment nu 0.25 -> 0.05** |
+| after | nothing (current defaults) | **target-vol gamma search** (finding 1) |
+
+*before -> R3* bundles the changes that have no config switch: alpha/data (lag-1 label alignment,
+full pre-entry feature history, purged-fold `ic_sign`, inferred IC periods-per-year, point-in-time
+future-industry fix), costs/backtest (breakeven on gross-after-borrow returns, exact cumulative impact
+persistence, execution-date auction share, borrow source), and the risk/portfolio code (out-of-model
+names excluded from the variable set, one 90th-percentile out-of-model specific variance fill in
+`qts.core.risk_fill`, also used by `RiskModelOutput.covariance` / `portfolio_variance`).
+
+## Before / after (all fields that moved; rtol 1e-6)
+
+| metric | before (golden) | R3 | R2 | R1 | after |
+|---|---|---|---|---|---|
+| `summary.final_nav` | 987,902 | 1,006,829 | 1,004,907 | 1,006,154 | 1,035,510 |
+| `summary.cagr_gross` | -0.02727 | 0.0524 | 0.0441 | 0.04974 | 0.1834 |
+| `summary.cagr_net` | -0.04984 | 0.029 | 0.02077 | 0.0261 | 0.1578 |
+| `summary.ann_vol_gross` | 0.05283 | 0.05849 | 0.06043 | 0.06051 | 0.06909 |
+| `summary.ann_vol_net` | 0.05268 | 0.05837 | 0.06032 | 0.06041 | 0.06892 |
+| `summary.sharpe_gross` | -0.4973 | 0.902 | 0.744 | 0.832 | 2.472 |
+| `summary.sharpe_net` | -0.9443 | 0.5184 | 0.3705 | 0.4563 | 2.161 |
+| `summary.sharpe_net_lo` | -1.753 | 1.54 | 1.357 | 0.4563 | 8.33 |
+| `summary.sharpe_t_stat_net` | -0.4604 | 0.2529 | 0.1808 | 0.2226 | 1.05 |
+| `summary.newey_west_t_net` | -0.4872 | 0.276 | 0.1976 | 0.2451 | 1.183 |
+| `summary.max_drawdown_net` | -0.03386 | -0.03002 | -0.02914 | -0.02751 | -0.01873 |
+| `summary.calmar_net` | -1.472 | 0.9659 | 0.713 | 0.9487 | 8.427 |
+| `summary.sortino_net` | -1.234 | 0.7569 | 0.5317 | 0.6604 | 3.34 |
+| `summary.hit_rate_net` | 0.5167 | 0.5 | 0.5333 | 0.5167 | 0.6 |
+| `summary.avg_gross_exposure` | 1.101 | 1.223 | 1.217 | 1.215 | 1.263 |
+| `summary.avg_net_exposure` | 0.04387 | 0.04172 | 0.04122 | 0.04109 | 0.05 |
+| `summary.avg_daily_turnover` | 0.1128 | 0.11 | 0.1115 | 0.1121 | 0.1056 |
+| `summary.effective_holding_days` | 19.53 | 22.24 | 21.84 | 21.68 | 23.91 |
+| `summary.avg_cost_bps_per_side` | 7.35 | 6.508 | 6.428 | 6.413 | 6.807 |
+| `summary.avg_daily_cost_bps_of_nav` | 0.9316 | 0.8927 | 0.897 | 0.904 | 0.8686 |
+| `summary.total_costs_usd` | 5605 | 5406 | 5420 | 5460 | 5298 |
+| `summary.transfer_coefficient_mean` | 0.8264 | 0.8483 | 0.8562 | 0.8378 | 0.7933 |
+| `summary.realized_vs_exante_vol_ratio` | 0.9714 | 0.9109 | 0.925 | 0.9327 | 0.971 |
+| `summary.breakeven_cost_bps` | -9.247 | 17.43 | 14.38 | 16.17 | 62.77 |
+| `summary.vol_target_caps_share` | (new) | nan | nan | nan | 1 |
+| `summary.mean_risk_aversion` | (new) | 10 | 10 | 10 | 0.2994 |
+| `ic_report.mean_ic` | 0.06313 | 0.05289 | 0.05063 | 0.05063 | 0.05063 |
+| `ic_report.ic_sd` | 0.1491 | 0.137 | 0.1348 | 0.1348 | 0.1348 |
+| `ic_report.icir` | 1.503 | 1.37 | 1.333 | 1.333 | 1.333 |
+| `ic_report.t_stat` | 0.7334 | 0.6686 | 0.6505 | 0.6505 | 0.6505 |
+| `ic_report.hit_rate` | 0.6667 | 0.6667 | 0.3333 | 0.3333 | 0.3333 |
+| `decile.mean` | 0.03071 | 0.0299 | 0.0321 | 0.0321 | 0.0321 |
+| `decile.sharpe` | 2.104 | 1.847 | 1.869 | 1.869 | 1.869 |
+| `decile.t_stat` | 1.245 | 1.108 | 1.124 | 1.124 | 1.124 |
+| `dsr` | 0.3227 | 0.5991 | 0.5711 | 0.5873 | 0.8495 |
+| `hurdles.status.breakeven_cost` | FAIL | PASS | PASS | PASS | PASS |
+| `hurdles.status.ic_sign` | PASS | FAIL | FAIL | FAIL | FAIL |
+| `hurdles.status.phase_sharpe` | FAIL | PASS | PASS | PASS | PASS |
+| `hurdles.status.suspect` | PASS | PASS | PASS | PASS | FAIL |
+| `backtest.nav_quartiles[0]` | 1,003,866 | 1,005,809 | 1,002,811 | 1,002,830 | 1,001,193 |
+| `backtest.nav_quartiles[1]` | 1,001,975 | 1,008,809 | 1,006,185 | 1,004,657 | 1,017,636 |
+| `backtest.nav_quartiles[2]` | 1,006,358 | 1,017,541 | 1,015,242 | 1,014,420 | 1,025,854 |
+| `backtest.sum_abs_weights` | 66.07 | 73.36 | 73.03 | 72.91 | 75.76 |
+| `backtest.sum_costs_by_kind.spread` | 0 | 6.433 | 9.834 | 9.596 | 14.58 |
+| `backtest.sum_costs_by_kind.impact` | 3249 | 2632 | 2626 | 2637 | 2728 |
+| `backtest.sum_costs_by_kind.fees` | 1737 | 1692 | 1693 | 1694 | 1640 |
+| `backtest.sum_costs_by_kind.borrow` | 619.4 | 1075 | 1091 | 1120 | 916 |
+
+## Explanation
+
+* **Code-only changes (before -> R3)**: net Sharpe -0.94 -> 0.52, gross exposure 1.10 -> 1.22.
+  * `sum_costs_by_kind.spread` 0 -> 6.4 USD: the auction share is now measured on the *execution*
+    date's auction volume, so a few trades spill into the continuous session.
+  * `impact` 3,249 -> 2,632 USD and cost/side 7.35 -> 6.51 bp: exact cumulative impact persistence
+    (prior-streak USD instead of the streak-count approximation) plus the different book.
+  * `borrow` 619 -> 1,075 USD: borrow-source fix (second pass #8: names with NaN short interest now
+    get the small-cap borrow multiplier too, and `borrow_fee_source` reports the real source) on a
+    larger short book.
+  * `breakeven_cost_bps` -9.2 -> 17.4 and the `breakeven_cost` gate FAIL -> PASS: breakeven is now
+    computed from gross-after-borrow returns (borrow is not a per-side trading cost) and the return path
+    changed.
+  * IC (`mean_ic` 0.063 -> 0.053, `icir` 1.50 -> 1.37): lag-1 label alignment and the full pre-entry
+    history change the scored panel; the IC is measured on 3 non-overlapping 20-day periods in this
+    window, so these numbers are noise-dominated.
+  * `ic_sign` PASS -> FAIL: the gate's folds are now the purged walk-forward test blocks (as for
+    `net_sharpe_delta`) instead of calendar years (second pass #16); with 3 IC observations in 60 days
+    most blocks hold 0-1 of them.
+* **Month-start refresh (R3 -> R2)**: different universe refresh dates -> different eligible set:
+  `ic_report.hit_rate` 0.67 -> 0.33 (1 of 3 periods flips), net Sharpe 0.52 -> 0.37.
+* **nu 0.25 -> 0.05 (R2 -> R1)**: smaller alignment variance (calibrated in
+  `docs/notes/alignment_nu_calibration.md`); small book changes, net Sharpe 0.37 -> 0.46.
+  `sharpe_net_lo` falls back to the plain Sharpe on this path (negative autocorrelation denominator).
+* **Target-vol gamma search (R1 -> after)**: gamma 10 (fixed) -> mean 0.30 searched per solve. The book
+  is sized on the alpha-aware objective instead of a 10x-risk-averse book levered by projection:
+  realised vol 6.0 % -> 6.9 %, gross 1.22 -> 1.26, turnover 0.112 -> 0.106/day, holding 21.7 -> 23.9 d.
+  `vol_target_caps_share` = 1.0: on every solve the per-name / ADV caps bind before the 10 % target
+  (80-name universe, 2 % position cap), so the search stops at the capped book; that is why gamma
+  ends far below the closed form. Net Sharpe 0.46 -> 2.16, DSR 0.59 -> 0.85.
+* **`suspect` PASS -> FAIL**: net Sharpe 2.16 > 2 trips the suspect gate. Over 60 days the annualised
+  Sharpe has a standard error of about sqrt(252/60) ~ 2 (t-stat 1.05, NW t 1.18), so this is a property
+  of the window, not evidence of leakage. Checked: the planted-oracle tests
+  (`tests/test_validation.py::test_planted_oracle_is_flagged`,
+  `tests/test_pipeline.py::test_planted_oracle_through_pipeline_is_flagged_suspect`),
+  `tests/test_synthetic_oracle.py`, `tests/test_pit_properties.py` and `tests/test_label_halts.py` all
+  pass; the full-length demo (300 x 1512) is the meaningful check (see the integration report).
+* `test_golden_run_is_not_degenerate` still holds (60 days, 0 failed solves, gross 1.26, costs > 0).

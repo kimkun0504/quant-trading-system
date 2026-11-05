@@ -8,8 +8,10 @@ Point-in-time guarantees in ``as_of(date)``:
 * composite and ML scores at ``date`` are functions of features ``<= date``
   (features are PIT by construction; ML predictions are out-of-sample from the
   walk-forward trainer with embargo);
-* the trailing OOS IC used for Grinold scaling only uses labels whose forward
-  window ended on or before ``date``;
+* the trailing OOS IC used for Grinold scaling only uses label rows that are
+  decided by ``date``: forward window ``(s + L, s + L + h]`` ended
+  (``L = signal_lag_days``, the execution lag the labels are aligned to) *and*
+  every halt/delisting in the row resolved (``targets.label_realisation``);
 * the half-life is estimated from scores ``<= date`` (recomputed once per
   ``refit_frequency_days`` block, from scores up to the block's first date, and
   cached — so it is PIT regardless of the order in which ``as_of`` is called);
@@ -55,7 +57,7 @@ from .composite import ThemeComposite, theme_portfolio_returns
 from .evaluation import rank_ic_series, signal_half_life
 from .features import FeatureBuilder
 from .models import EnsembleModel, LGBMModel, MLPModel, RidgeModel
-from .targets import ExposuresFn, residualize_forward_returns
+from .targets import ExposuresFn, label_realisation, residualize_forward_returns
 from .trainer import WalkForwardTrainer
 
 
@@ -103,8 +105,13 @@ class AlphaModel:
         dynamic_weights: bool | None = None,
         ic_window: int | None = None,
         delisting_return: float | None = None,
+        signal_lag_days: int = 0,
     ):
         self.cfg = cfg or AlphaConfig()
+        #: execution lag L (``ExecutionConfig.signal_lag_days``): the label of
+        #: decision date s is the return close_{s+L} -> close_{s+L+h} (what the
+        #: book trading the signal earns); purge and IC windows grow by L.
+        self.signal_lag_days = int(signal_lag_days)
         #: label haircut for names delisting inside the forward window; ``None`` ->
         #: ``CostConfig().delisting_haircut`` (single source; pass 0.0 to disable)
         self.delisting_return = float(
@@ -119,7 +126,7 @@ class AlphaModel:
         self.ic_window = int(self.cfg.ic_window if ic_window is None else ic_window)
         self.features = FeatureBuilder(self.cfg)
         self.composite = ThemeComposite(self.cfg)
-        self.trainer = WalkForwardTrainer(self.cfg)
+        self.trainer = WalkForwardTrainer(self.cfg, label_lag_days=self.signal_lag_days)
         self.fitted_ = False
         self._half_life_cache: dict[tuple, float] = {}
 
@@ -131,12 +138,20 @@ class AlphaModel:
         self.raw_features_ = self.features.build(md)
         self.X_: Long = self.features.process(self.raw_features_, md, valid=self.eligible_)
         # labels: used ONLY as training targets / for OOS evaluation
+        L = self.signal_lag_days
+        G = int(self.cfg.delisting_gap_days)
         self.target_: Wide = residualize_forward_returns(
             md,
             h,
             exposures_fn=risk_exposures_fn,
             features=self.raw_features_,
             delisting_return=self.delisting_return,
+            label_lag_days=L,
+            delisting_gap_days=G,
+        )
+        # date at which each label row is fully decided (NaT: not within the data)
+        self.label_ready_: pd.Series = label_realisation(
+            md, h, label_lag_days=L, delisting_gap_days=G, valid=self.eligible_
         )
         self.theme_returns_ = theme_portfolio_returns(self.X_, md)
         self.composite_score_, self.theme_scores_ = self.composite.score_all(
@@ -152,7 +167,7 @@ class AlphaModel:
             y_long.index.names = ["date", "ticker"]
             y_long = y_long.reindex(self.X_.index)
             factory = self.ml_factory or default_ml_factory(self.cfg)
-            ml = self.trainer.run(self.X_, y_long, factory)
+            ml = self.trainer.run(self.X_, y_long, factory, label_ready=self.label_ready_)
             self.ml_score_ = zscore(ml) if ml.notna().any().any() else None
         self.combined_score_ = self._combine_history().where(
             self.eligible_.reindex_like(self.composite_score_)
@@ -179,14 +194,18 @@ class AlphaModel:
     # ------------------------------------------------------------------ as_of
     def trailing_ic(self, date: pd.Timestamp) -> float:
         """Mean OOS rank IC over the trailing ``ic_window`` dates whose labels are
-        fully realised by ``date`` (label at s needs s + h <= date)."""
-        h = self.cfg.horizon_days
+        fully realised by ``date``: label at s needs ``s + h + L <= date`` and
+        its row decided (``label_ready_[s] <= date``; halts / delistings)."""
+        h = self.cfg.horizon_days + self.signal_lag_days
         dates = self.combined_score_.index
         pos = dates.searchsorted(date, side="right") - 1
         end = pos - h
         if end < 0:
             return float("nan")
-        ic = self.oos_ic_.iloc[max(0, end - self.ic_window + 1) : end + 1].dropna()
+        win = self.oos_ic_.iloc[max(0, end - self.ic_window + 1) : end + 1]
+        ready = self.label_ready_.reindex(win.index)
+        cutoff = dates[pos]
+        ic = win[(ready.notna() & (ready <= cutoff)).to_numpy()].dropna()
         return float(ic.mean()) if len(ic) >= int(self.cfg.ic_min_obs) else float("nan")
 
     def ic_used(self, date: pd.Timestamp) -> float:

@@ -92,9 +92,16 @@ def probabilistic_sharpe(
     return float(norm.cdf((sr - sr_benchmark) / se))
 
 
-def expected_max_sharpe(n_trials: int, var_sr: float) -> float:
-    """E[max of N trial Sharpes] under the zero-SR null with cross-trial variance ``var_sr``."""
-    n_trials = int(n_trials)
+def expected_max_sharpe(n_trials: float, var_sr: float) -> float:
+    """E[max of N trial Sharpes] under the zero-SR null with cross-trial variance ``var_sr``
+    (Bailey & Lopez de Prado 2014, eq. 8)::
+
+        E[max SR] = sqrt(V) * ((1 - g) * Phi^-1(1 - 1/N) + g * Phi^-1(1 - 1/(N e)))
+
+    ``N`` may be fractional (a Nyholt effective number of trials): it is used as
+    is, never truncated (rounding 2.4 down to 2 under-deflates; audit 2 #17).
+    """
+    n_trials = float(n_trials)
     if n_trials <= 1:
         return 0.0
     sd = math.sqrt(max(var_sr, 0.0))
@@ -104,7 +111,12 @@ def expected_max_sharpe(n_trials: int, var_sr: float) -> float:
 
 
 def deflated_sharpe_ratio(
-    sr_observed: float, n_trials: int, var_trials_sr: float, n_obs: int, skew: float = 0.0, kurt: float = 3.0
+    sr_observed: float,
+    n_trials: float,
+    var_trials_sr: float,
+    n_obs: int,
+    skew: float = 0.0,
+    kurt: float = 3.0,
 ) -> float:
     """Deflated Sharpe ratio: PSR of the selected trial against E[max SR] of the search.
 
@@ -118,7 +130,7 @@ def deflated_sharpe_ratio(
 
 def deflated_sharpe_ratio_annual(
     sr_observed_annual: float,
-    n_trials: int,
+    n_trials: float,
     var_trials_sr_annual: float,
     n_obs: int,
     skew: float = 0.0,

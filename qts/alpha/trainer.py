@@ -5,11 +5,15 @@ Protocol
 * Expanding window, refit every ``cfg.refit_frequency_days`` trading days,
   first fit once ``cfg.train_min_days`` usable training dates exist.
 * **Embargo / purge** (exact): a label at date ``s`` is realised over
-  ``(s, s+h]`` (``h`` = embargo = ``cfg.embargo_days or cfg.horizon_days``).
-  For a prediction block starting at ``t``, only labels with
-  ``pos(s) + h < pos(t)`` are allowed, i.e. the label's last return day is
-  strictly before the first prediction date.  In index positions this is
-  ``pos(s) <= pos(t) - h - 1``.
+  ``(s + L, s + L + h]`` (``h = cfg.embargo_days or cfg.horizon_days``, ``L`` =
+  ``label_lag_days`` = the execution lag the labels were built with; see
+  ``targets.py``), so the embargo is ``h + L``.  For a prediction block
+  starting at ``t``, only labels with ``pos(s) + h + L < pos(t)`` are allowed,
+  i.e. the label's last return day is strictly before the first prediction
+  date.  When the caller passes ``label_ready`` (per-date realisation date from
+  :func:`qts.alpha.targets.label_realisation`: later than ``s + L + h`` while a
+  halt/delisting is undecided) the row must also be ready strictly before
+  ``t``.
 * Inside the training window the trailing ``cfg.valid_days`` (252) dates are
   the validation block used for early stopping / hyper-parameter choice.  The
   same purge is applied between the fit rows and the validation rows.
@@ -55,8 +59,16 @@ def embargoed_train_mask(label_pos: np.ndarray, pred_start_pos: int, horizon: in
 
 
 class WalkForwardTrainer:
-    def __init__(self, cfg: AlphaConfig, valid_days: int | None = None, verbose: bool = False):
+    def __init__(
+        self,
+        cfg: AlphaConfig,
+        valid_days: int | None = None,
+        verbose: bool = False,
+        label_lag_days: int = 0,
+    ):
         self.cfg = cfg
+        #: execution lag the labels were built with (embargo grows by it)
+        self.label_lag_days = int(label_lag_days)
         #: trailing validation block length; ``None`` -> ``cfg.valid_days`` (252)
         self.valid_days = int(cfg.valid_days if valid_days is None else valid_days)
         self.verbose = verbose
@@ -65,7 +77,7 @@ class WalkForwardTrainer:
 
     @property
     def embargo(self) -> int:
-        return int(self.cfg.embargo_days or self.cfg.horizon_days)
+        return int(self.cfg.embargo_days or self.cfg.horizon_days) + self.label_lag_days
 
     def schedule(self, dates: pd.DatetimeIndex) -> list[int]:
         """Positions (into ``dates``) at which a refit happens."""
@@ -81,8 +93,13 @@ class WalkForwardTrainer:
         y: pd.Series,
         model_factory: Callable[[], object],
         dates: pd.DatetimeIndex | None = None,
+        label_ready: pd.Series | None = None,
     ) -> Wide:
         """Return a wide (date x ticker) panel of strictly out-of-sample predictions.
+
+        ``label_ready`` (date -> date the label row is decided, ``NaT`` = never;
+        :func:`qts.alpha.targets.label_realisation`) additionally restricts the
+        training rows of a fold starting at ``t`` to rows ready before ``t``.
 
         Rows with any NaN feature are dropped up front (``FeatureBuilder.process``
         emits eligible rows only, so this is a guard against hand-built frames);
@@ -99,12 +116,21 @@ class WalkForwardTrainer:
         pos_of = pd.Series(np.arange(len(uniq)), index=uniq)
         row_pos = pos_of.reindex(all_dates).to_numpy()
         h = self.embargo
+        # per-row position (into uniq) at which its label row is decided
+        if label_ready is not None:
+            rd = pd.to_datetime(label_ready).reindex(uniq)
+            rpos = np.full(len(uniq), np.inf)
+            ok = rd.notna().to_numpy()
+            rpos[ok] = uniq.searchsorted(pd.DatetimeIndex(rd[ok]), side="left")
+            ready_row = rpos[row_pos]
+        else:
+            ready_row = np.full(len(row_pos), -np.inf)
         preds: list[pd.Series] = []
         self.folds_, self.models_ = [], []
         sched = self.schedule(uniq)
         for k, p0 in enumerate(sched):
             p1 = sched[k + 1] if k + 1 < len(sched) else len(uniq)
-            train_rows = embargoed_train_mask(row_pos, p0, h) & y.notna().to_numpy()
+            train_rows = embargoed_train_mask(row_pos, p0, h) & (ready_row < p0) & y.notna().to_numpy()
             if train_rows.sum() == 0:
                 continue
             train_pos = row_pos[train_rows]
@@ -112,7 +138,9 @@ class WalkForwardTrainer:
             valid_start_pos = last_train_pos - self.valid_days + 1
             # fit rows must also be purged w.r.t. the validation block
             valid_mask_arr = train_rows & (row_pos >= valid_start_pos)
-            fit_ok = train_rows & embargoed_train_mask(row_pos, valid_start_pos, h)
+            fit_ok = (
+                train_rows & embargoed_train_mask(row_pos, valid_start_pos, h) & (ready_row < valid_start_pos)
+            )
             use = valid_mask_arr | fit_ok
             if valid_mask_arr.sum() == 0 or fit_ok.sum() == 0:
                 use, valid_mask_arr = train_rows, np.zeros(len(X), bool)
