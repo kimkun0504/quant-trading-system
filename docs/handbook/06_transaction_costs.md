@@ -513,7 +513,7 @@ The only other approximation is in fees: the auction exchange fee is charged on 
 **Why the kink is allowed.** A "kink" at $k$ means the marginal cost jumps when the trade outgrows the auction cap: below $k$ you pay auction impact and no spread, above it you also pay the spread and the continuous impact rate. A cost whose marginal *rises* at a kink is still convex (think of a tax bracket). A cost whose marginal *falls* would not be, which is the $\beta_a > b_c$ case. Convexity is exactly "the next dollar never costs less than the previous one".
 </callout>
 
-The optimizer caches one compiled problem and re-solves it with new coefficients each day (disciplined parametrised programming, DPP). A term `C * pos(A - K)` with both `C` and `K` as parameters is not DPP, so the optimizer rewrites it as `pos(C * A - C K)` with `C K` a parameter of its own (`qts/portfolio/optimizer.py::_Parametrizer`; second-pass risk/portfolio finding 6).
+The optimizer caches one compiled problem and re-solves it with new coefficients each day (disciplined parametrised programming, DPP). A term `C * pos(A - K)` with both `C` and `K` as parameters is not DPP, so the optimizer rewrites it as `pos(C * A - C K)` with `C K` a parameter of its own (`qts/portfolio/optimizer/dpp.py::_Parametrizer`; second-pass risk/portfolio finding 6).
 
 ### Why this choice
 - **Auction volume as V.** BUILD_PLAN §4 is explicit: use closing-auction volume, not full-day ADV. Full ADV would claim the auction can absorb 11× more than it does.

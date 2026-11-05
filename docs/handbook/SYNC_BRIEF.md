@@ -34,6 +34,6 @@ Notion page ids:
 - 10 Validation & statistics 40f8262e-79e0-81a3-9129-e966f8fa7c2b
 - 11 Glossary 40f8262e-79e0-81c1-a4b7-d4cf357f3d33
 - 13 Audit history & known limitations 40f8262e-79e0-81e7-aefa-eddf31cf8570
-- 12 Operating guide: create as a new child page of the hub (title "12 · Operating guide", icon 🛠️).
+- 12 Operating guide 40f8262e-79e0-810a-92de-cd8568ffee80
 
 Load the Notion tools with ToolSearch: "select:mcp__Notion__notion-update-page,mcp__Notion__notion-create-pages,mcp__Notion__notion-fetch".
