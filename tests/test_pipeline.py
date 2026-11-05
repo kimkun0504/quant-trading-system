@@ -263,6 +263,38 @@ def test_signal_lag_is_forwarded_when_supported(md, cfg):
     assert "lag 0" in rep and "sharpe_net" in rep
 
 
+@pytest.mark.slow
+def test_backtest_dates_leave_room_for_the_signal_lag(result, md):
+    """Lag investigation 2026-11-05: with signal_lag_days = L the first decision
+    date reads risk/alpha L trading days earlier, which must be out of the risk
+    warm-up.  Before the fix ``risk.as_of`` raised for L >= 2 on the first date."""
+    from qts.backtest import DailyBarSimulator
+
+    pipe, _ = result
+    old = pipe.cfg.execution.signal_lag_days
+    try:
+        pipe.cfg.execution.signal_lag_days = 0
+        d0 = pipe.backtest_dates()
+        pipe.cfg.execution.signal_lag_days = 2
+        d2 = pipe.backtest_dates()
+        assert d2[0] == d0[2] and d2[-1] == d0[-1]
+        risk = pipe.risk
+        bt = DailyBarSimulator(pipe.cfg, pipe.cost).run(
+            pipe.md_u,
+            d2[:4],
+            pipe._eligible_alpha_fn(),
+            lambda d, a: risk.as_of(d, alpha=a),
+            pipe.optimizer,
+            nav0=pipe.nav0,
+            neutral_styles=pipe.neutral_styles(),
+            signal_lag_days=2,
+        )
+        assert bt.diagnostics["n_no_signal_days"] == 0
+        assert [c["signal_date"] for c in bt.diagnostics["solve_log"]] == list(d0[:3])
+    finally:
+        pipe.cfg.execution.signal_lag_days = old
+
+
 # --------------------------------------------------------------------------- planted oracle through the pipeline (#45)
 @pytest.mark.slow
 def test_planted_oracle_through_pipeline_is_flagged_suspect():

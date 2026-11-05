@@ -384,7 +384,11 @@ class ResearchPipeline:
             if valid.any():
                 start_alpha = valid[valid].index[0]
         start = max(start_risk, start_alpha) if start_alpha is not None else start_risk
-        return dates[dates >= start][:-1]
+        # D4: with signal_lag_days = L the decision at t reads alpha/risk as of the
+        # trading day L days earlier, which must itself be an out-of-sample date
+        # (otherwise risk.as_of raises for L >= 2 -- lag investigation 2026-11-05).
+        lag = self.signal_lag_days()
+        return dates[dates >= start][lag:][:-1]
 
     def _eligible_alpha_fn(self) -> Callable[[pd.Timestamp], AlphaOutput]:
         """``alpha_fn`` for the simulator that emits scores / expected returns for
@@ -500,6 +504,7 @@ class ResearchPipeline:
         res.git_sha = res.manifest.git_sha
         if self.runs_root:
             res.run_dir = str(save_run(res, self.cfg, self.runs_root))
+            __import__("qts.runs.artifacts", fromlist=["_"]).write_extra_artifacts(res.run_dir, res, self)
         return res
 
     def _seeds(self) -> dict[str, int]:

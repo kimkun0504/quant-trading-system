@@ -95,8 +95,13 @@ def raw_style_panels(md: MarketData, styles: Iterable[str]) -> dict[str, pd.Data
     beta_hat: pd.DataFrame | None = None
     resid_var: pd.DataFrame | None = None
     if need_reg:
-        # regression on the equal-weighted market return (qts.core.stats.rolling_beta)
-        reg = stats.rolling_beta(returns, returns.mean(axis=1), BETA_WINDOW, min_periods=BETA_WINDOW // 4)
+        # regression on the equal-weighted market return over the names eligible
+        # at each date (md.eligibility(): universe member with a price).  An
+        # all-columns mean would include names whose *only* reason to be in the
+        # panel is that apply_mask kept them for entering the universe later --
+        # a future-membership look-ahead (lag investigation 2026-11-05).
+        market = returns.where(md.eligibility()).mean(axis=1)
+        reg = stats.rolling_beta(returns, market, BETA_WINDOW, min_periods=BETA_WINDOW // 4)
         beta_hat, resid_var = reg.beta, reg.resid_var
     for s in styles:
         if s == "beta":
@@ -157,8 +162,16 @@ def standardize_style(raw: pd.DataFrame, market_cap: pd.DataFrame) -> pd.DataFra
 
 
 def standardized_style_panels(md: MarketData, styles: Iterable[str]) -> dict[str, pd.DataFrame]:
+    """Standardised style panels; the per-date cross-section (cap-weighted mean,
+    equal-weighted sd) is restricted to ``md.eligibility()`` at that date, so a
+    name kept in the column set only because it enters the universe later never
+    moves today's standardisation (PIT; lag investigation 2026-11-05)."""
     raw = raw_style_panels(md, styles)
-    return {k: standardize_style(v, md.market_cap) for k, v in raw.items()}
+    elig = md.eligibility()
+    return {
+        k: standardize_style(v.where(elig.reindex_like(v).fillna(False).astype(bool)), md.market_cap)
+        for k, v in raw.items()
+    }
 
 
 # --------------------------------------------------------------------------- assembly

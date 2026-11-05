@@ -409,3 +409,29 @@ def test_exposures_follow_dated_industry_classification(cfg):
     assert h[md0.dates[300]]["NEWIND"].sum() == 5 and h[md0.dates[350]]["NEWIND"].sum() == 3
     # the dated path also fits end to end
     BarraStyleRiskModel(cfg).fit(md_h).as_of(md0.dates[-1])
+
+
+def test_style_exposures_ignore_future_universe_members():
+    """Lag investigation 2026-11-05: ``apply_mask`` keeps a ticker's prices for the
+    whole sample if it is *ever* in the universe, so an all-columns market proxy
+    (beta / residual vol) and an all-columns standardisation cross-section moved
+    today's exposures with names that only enter the universe later.  Exposures at
+    ``t`` must be identical whether the input is cut at ``t`` or not."""
+    from qts.core.config import UniverseConfig
+    from qts.data.synthetic import SyntheticSpec, generate
+    from qts.data.universe import apply_mask, build_universe_mask
+    from qts.risk.exposures import exposure_history
+
+    md = generate(SyntheticSpec(n_stocks=60, n_days=420, seed=5))
+    ucfg = UniverseConfig(
+        top_n_by_mcap=25, min_adv_usd=0.0, exclude_bottom_size_quantile=0.0, exit_after_n_fails=1
+    )
+    full = apply_mask(md, build_universe_mask(md, ucfg))
+    t = md.dates[150]
+    cut_md = md.slice_until(t)
+    cut = apply_mask(cut_md, build_universe_mask(cut_md, ucfg))
+    assert len(full.tickers) > len(cut.tickers)  # some names only join after t
+    a = exposure_history(full, [t])[t]
+    b = exposure_history(cut, [t])[t]
+    assert list(a.index) == list(b.index)
+    pd.testing.assert_frame_equal(a, b.reindex(columns=a.columns), check_exact=False, atol=1e-12, rtol=0)

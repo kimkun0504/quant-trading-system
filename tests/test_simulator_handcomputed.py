@@ -60,6 +60,12 @@ ATOL = 1e-10  # weights, returns, turnover (fractions of NAV)
 NAV_RTOL = 1e-12  # NAV / USD (1e6 scale: 1e-12 rel = 1e-6 USD)
 
 
+def _lag0_config() -> SystemConfig:
+    cfg = SystemConfig()
+    cfg.execution.signal_lag_days = 0
+    return cfg
+
+
 def make_md(close: dict | None = None) -> MarketData:
     close_df = pd.DataFrame(close or CLOSE, index=DATES)[list(TICKERS)]
     close_df.columns = TICKERS
@@ -152,6 +158,7 @@ def alpha_fn(t) -> AlphaOutput:
 def run(cost, targets, md=None):
     md = md or make_md()
     cfg = SystemConfig()
+    cfg.execution.signal_lag_days = 0  # mechanics test: trade on the signal date's close
     opt = PresetOptimizer(targets)
     res = DailyBarSimulator(cfg, cost).run(md, DATES, alpha_fn, risk_fn, opt, nav0=NAV0)
     return res, opt, cfg
@@ -405,7 +412,7 @@ class HalfLifeAwareOptimizer(PresetOptimizer):
 
 def test_half_life_forwarded_only_when_solve_accepts_it():
     md = make_md()
-    sim = DailyBarSimulator(SystemConfig(), ConstantBpsCost())
+    sim = DailyBarSimulator(_lag0_config(), ConstantBpsCost())
     aware = HalfLifeAwareOptimizer(TARGETS)
     sim.run(md, DATES, alpha_fn, risk_fn, aware, nav0=NAV0)
     assert aware.calls and all(c["alpha_half_life_days"] == 60.0 for c in aware.calls)

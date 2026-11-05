@@ -166,7 +166,7 @@ execution:
   algo_max_pct_adv: 0.05
   loc_offset_bps: 3.0
   urgency_half_life_days_threshold: 5.0
-  signal_lag_days: 0
+  signal_lag_days: 1
 validation:
   n_splits: 6
   embargo_days: 20

@@ -442,9 +442,12 @@ class ExecutionConfig(_ConfigBase):
     # Execution delay (design decision D4): signals, risk and the optimizer's cost
     # snapshot use data as of the trading day `signal_lag_days` before the
     # execution date t; trades still execute at the close of t and are charged
-    # costs on t's liquidity.  0 = close-as-signal (default); 1 = research setting
+    # costs on t's liquidity.  0 = close-as-signal (optimistic bound); 1 = default
     # that bounds the close-as-signal bias.  DailyBarSimulator.run(signal_lag_days=) overrides.
-    signal_lag_days: int = 0
+    # Default 1 (decision D4, docs/notes/lag_investigation_2026-11-05.md): real MOC/LOC
+    # orders must be submitted before the 15:50 ET cutoff, so a strategy cannot use the
+    # official close it trades at.  Lag 0 remains available as an optimistic bound.
+    signal_lag_days: int = 1
 
 
 @dataclass
