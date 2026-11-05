@@ -4,6 +4,17 @@
 The risk model forecasts how much any portfolio of our ~1,000 stocks can move tomorrow. It writes the stock covariance matrix as $\Sigma = BFB^\top + D$: a small number of common factors (market, industries, ten styles) with exposures $B$ and factor covariance $F$, plus a diagonal of stock-specific variances $D$. Factor returns come from a daily weighted cross-sectional regression. $F$ is an exponentially weighted, Newey–West-corrected covariance with an eigenfactor adjustment and a volatility-regime adjustment. $D$ is per-stock EWMA risk, blended with a structural model for stocks with short histories and shrunk toward size-decile means. On top of that sit a statistical (APCA) companion fitted on the residuals, which prices common moves the fundamental model cannot see, and a Saxena–Stubbs alpha-alignment term that stops the optimizer from piling into directions the model is blind to. Everything is point-in-time, in daily units, and lives in `qts/risk/`.
 </callout>
 
+<callout icon="🆕" color="green_bg">
+**What changed (Nov 2026)**
+- **Future-universe look-ahead fixed.** The beta/residual-vol market proxy and the standardisation of every style used names that join the universe only *after* $t$; both are now restricted to names eligible at $t$ (found by the signal-lag investigation, §3).
+- **Industry columns as of the date.** With a dated classification a label first used after $t$ no longer appears (as an all-zero column) in $B_t$, which had leaked the future label into the eigen adjustment (§3).
+- **Eigenfactor adjustment completed and made PIT:** USE4 inflation $a = 1.2$ (clip after inflation), and the bias cache is keyed on the refresh bucket and estimated from history up to the bucket start only (§5).
+- **Specific risk follows USE4 more closely:** Bayesian $\Delta$ about the cap-weighted mean; specific VRA weighted by the previous day's caps (§6).
+- **`use_nonlinear_shrinkage` removed** (it never affected `specific_var`; QIS lost to the structural model out of sample, QLIKE 0.07 vs 0.15–0.45) (§7).
+- **Statistical factor count chosen per refit** (Bai–Ng on each refit's window) with fixed `stat_01..stat_05` slots (§8); exposures stored as an `ExposureHistory` tensor (§3).
+- **Alignment $\nu$ recalibrated to `alignment_nu_scale = 0.05`** with production settings; the optimised book's risk is already slightly over-forecast at $\nu = 0$ (§9). Out-of-model names get the 90th-percentile specific variance everywhere (§6).
+</callout>
+
 ## The risk model at a glance
 
 The optimizer (→ see **Portfolio construction**) trades alpha (→ see **Alpha model**) against risk from this layer. The contract is `qts/core/types.py::RiskModelOutput`, one object per date:
@@ -129,7 +140,9 @@ $BFB^\top + D$ is positive definite whenever $F \succeq 0$ and every $\sigma^2_{
 2. **Industry dummies**: one 0/1 column per industry label in `MarketData.industry`, and each row sums to 1. On real data the labels are the Fama–French 48 industries mapped from SIC codes (`qts/data/loaders.py`). The synthetic generator uses 12 (`IND00`–`IND11`).
 3. **Style factors**: the names in `RiskConfig.styles`, each standardised as described below.
 
-A stock enters $B_t$ on date $t$ if it has a finite close and a positive market cap on $t$.
+A stock enters $B_t$ on date $t$ if it is **eligible** on $t$ (`md.eligibility()`: a member of the point-in-time universe with a close on $t$) and has a positive market cap. Since the second-pass audit `apply_mask` no longer blanks prices, volumes or caps outside the universe (→ see **Data & universe**), so "has a close" alone would admit names that are only in the panel because they join the universe later.
+
+**Dated industries.** With `MarketData.industry_history` (a dated classification, e.g. a stock moving from Banks to Insurance), row $t$ uses `md.industry_as_of(t)`. The industry **column set is as of the date too**: a label is a column of $B_t$ only from the first date on which an eligible name carries it (`ExposureHistory.industry_first_row`). Before this fix the column set was the union of every label in the whole sample, so a label introduced after $t$ appeared at $t$ as an all-zero column. That column changed the eigenfactor simulation's dimension, so $F$ at $t$ moved by up to 1.1–1.2% (relative) depending on data after $t$, and the column set itself revealed the future label (second-pass audits: risk/portfolio finding 4, alpha/data finding 5). Test: `tests/test_risk.py::test_future_industry_label_is_point_in_time`.
 
 **Why we need it here.** Exposures are the "observed" half of a fundamental model. If they are wrong or contain look-ahead, the factor returns, the covariance and every residual-based alpha label inherit the error.
 
@@ -137,7 +150,7 @@ A stock enters $B_t$ on date $t$ if it has a finite close and a positive market 
 
 | Style | Raw descriptor | Window / constants | Intuition |
 |---|---|---|---|
-| `beta` | slope of a rolling regression of the stock's return on the **equal-weighted** market return, shrunk toward 1: $\beta = 1 + (1 - \tfrac13)(\hat\beta - 1)$ | 252 days (`BETA_WINDOW`), min 63 obs, `BETA_SHRINK = 1/3` | sensitivity to the market. The shrinkage (Blume/Vasicek style) pulls noisy extremes toward the cross-sectional norm |
+| `beta` | slope of a rolling regression of the stock's return on the **equal-weighted return of the names eligible that day**, shrunk toward 1: $\beta = 1 + (1 - \tfrac13)(\hat\beta - 1)$ | 252 days (`BETA_WINDOW`), min 63 obs, `BETA_SHRINK = 1/3` | sensitivity to the market. The shrinkage (Blume/Vasicek style) pulls noisy extremes toward the cross-sectional norm |
 | `size` | $\log(\text{market cap})$ | — | large vs small companies |
 | `momentum` | $P_{t-21}/P_{t-252} - 1$ (12-1 month return) | `MOMENTUM_LONG = 252`, `MOMENTUM_SKIP = 21` | past-year winners vs losers, skipping the last month, which belongs to reversal |
 | `value` | $\log(\text{book-to-price})$, or earnings yield if B/P is missing | — | cheap vs expensive |
@@ -162,7 +175,11 @@ where:
 - $s^{\text{eq}}$ is the **equal-weighted** standard deviation around the cap-weighted mean (`qts/core/crosssection.py::zscore`);
 - $n$ is the number of stocks with a valid descriptor.
 
-The steps are: z-score, then clip to $[-3, 3]$ (`WINSOR_SD`), then z-score again so the sd is about 1 after trimming, then set missing values to 0.
+The steps are: z-score, then clip to $[-3, 3]$ (`WINSOR_SD`), then z-score again so the sd is about 1 after trimming, then set missing values to 0. The cross-section on each date ($n$, $\mu^{\text{cap}}$, $s^{\text{eq}}$) is **only the names eligible on that date**: raw descriptors are masked to `md.eligibility()` before `standardize_style` (`standardized_style_panels`).
+
+<callout icon="⚠️" color="yellow_bg">
+The future-universe look-ahead (found 2026-11-05 by the signal-lag investigation, `docs/notes/lag_investigation_2026-11-05.md` §7). `apply_mask` keeps a ticker's whole price history in the panel if the ticker is *ever* in the universe. Two things then read names that were not yet members at $t$: the market return for the beta/residual-vol regression was `returns.mean(axis=1)` over **all** columns, and the standardisation's mean and sd used every name with a raw descriptor. So the beta and residual-vol exposures at $t$, and the scaling of momentum and short-term reversal, depended on *which names would enter the universe later*. Refitting the pipeline on data truncated at $t$ moved $B$ by up to 0.065 and the Grinold IC estimate from 0.013337 to 0.013357 on 2019-12-24; after the fix every input matches to $\le 3\times10^{-15}$. The leak moved lag-0 and lag-1 backtests alike, so it was not the cause of the lag gap the investigation was chasing. The alpha layer already used the eligible-names market proxy; alpha labels inherited the leak only through the risk exposures they are residualised on. Fix: market proxy `returns.where(md.eligibility()).mean(axis=1)` and descriptors masked to eligibility before standardisation. On raw `MarketData` (no universe) nothing changes, because `eligibility()` is then just "has a close". Regression test: `tests/test_risk.py::test_style_exposures_ignore_future_universe_members` (fails on the old code).
+</callout>
 
 <callout icon="💡" color="blue_bg">
 Why a cap-weighted mean? Because then the cap-weighted market portfolio $w^m_i = c_i/\sum_j c_j$ has zero exposure to every style: $\sum_i w^m_i x_i = 0$ by construction. "The market" is style-neutral, so a long-only index fund's risk sits in the `market` factor and not spread across ten styles. A "+1 momentum" exposure then means "momentum relative to the market". Why an equal-weighted sd? A cap-weighted sd would be dominated by a handful of mega-caps. Equal weighting makes one unit of exposure equal to one cross-sectional standard deviation for a typical stock. This is the USE4 convention.
@@ -175,18 +192,18 @@ Setting a missing style to 0 treats the stock as average (cap-weighted mean) on 
 Differences from the plan, all noted in the code or the audit:
 - Non-linear beta, non-linear size, growth, leverage and dividend yield are not implemented.
 - The plan's 1-day reversal is not implemented (→ Roadmap).
-- Beta is regressed on the equal-weighted market. USE4 uses the cap-weighted market (`docs/audit/risk_portfolio.md` finding 9). Either is defensible. Equal weighting stops two mega-caps from defining "the market" in a concentrated universe.
+- Beta is regressed on the equal-weighted market of eligible names. USE4 uses the cap-weighted market (`docs/audit/risk_portfolio.md` finding 9). Either is defensible. Equal weighting stops two mega-caps from defining "the market" in a concentrated universe.
 
 **In the code.**
-- `qts/risk/exposures.py::exposure_history(md, dates, cfg)` computes every rolling statistic once on the wide panels, stacks them, and slices per date. This is the fast path `BarraStyleRiskModel.fit` uses.
+- `qts/risk/exposures.py::exposure_history(md, dates, cfg, dtype)` computes every rolling statistic once on the wide panels and returns an **`ExposureHistory`**: a `(T, N, S)` array of standardised styles, a static `(N, 1+I)` market/industry block (or a `(T, N)` array of industry codes when the classification is dated), a `(T, N)` validity mask and the per-label first rows. `hist[date]` / `hist.as_of(date)` rebuild the per-date tickers × factors frame on demand (O(log T) lookup). At 1,500 names × 3,780 days × 59 factors the arrays take about 0.5 GB (float64) or 0.25 GB (`RiskConfig.exposure_dtype = "float32"`, ~1e-7 relative error) against about 2.7 GB for one DataFrame per date (`memory_report()`); the integration notes record about 6× less memory. It still subclasses `dict` so older `isinstance(x, dict)` / `.items()` consumers work.
 - `build_exposures(md, date, cfg)` gives one date by truncating `md` at `date` first.
 - `split_factor_columns(columns, cfg)` returns `(market, industries, styles)`.
 - To add a style, implement it in `raw_style_panels`, add the name to `SUPPORTED_STYLES`, and add it to `RiskConfig.styles`.
 - Window lengths are module constants, not config fields.
 
 **Pitfalls & checks.**
-- *Look-ahead.* Fundamentals (`book_to_price`, `asset_growth`, …) must be point-in-time at the data layer. A restated value joined by report period leaks the future. An audit caught this for Sharadar asset growth (`docs/audit/RESOLUTION.md`, HIGH row "`merge_asof` on filing date").
-  - Checks: `tests/test_risk.py::test_exposure_history_matches_single_date_and_is_point_in_time` rebuilds exposures on data truncated at $t$ and requires identical output. `test_point_in_time_as_of` does the same for the whole model.
+- *Look-ahead.* Fundamentals (`book_to_price`, `asset_growth`, …) must be point-in-time at the data layer. A restated value joined by report period leaks the future. An audit caught this for Sharadar asset growth (`docs/audit/RESOLUTION.md`, HIGH row "`merge_asof` on filing date"). The universe is a second source of look-ahead (callout above): any cross-sectional statistic must use `md.eligibility()` at $t$, never "every column of the panel".
+  - Checks: `tests/test_risk.py::test_exposure_history_matches_single_date_and_is_point_in_time` rebuilds exposures on data truncated at $t$ and requires identical output. `test_point_in_time_as_of` does the same for the whole model; `tests/test_pit_properties.py::test_risk_as_of_pit` does it property-based; `test_style_exposures_ignore_future_universe_members`, `test_future_industry_label_is_point_in_time` and `test_exposures_follow_dated_industry_classification` cover the two fixes above.
 - *Standardisation drift.* `test_exposures_shapes_and_standardization` checks that on a test date every style has a cap-weighted mean within 0.05 of 0, an equal-weighted sd in $(0.85, 1.1)$ and $|x| \le 3.5$, that the market column is all ones, and that industry rows sum to 1.
 - *Signal sanity.* `test_beta_exposure_tracks_true_beta` requires correlation > 0.6 with the synthetic generator's true betas.
 - *Signs don't matter for risk.* Flipping a style's sign flips its factor return, and $BFB^\top$ is unchanged. Signs matter only for interpretation and constraints.
@@ -248,7 +265,7 @@ def restricted_wls(y: np.ndarray, X: np.ndarray, w: np.ndarray, c: np.ndarray) -
 
 $c$ is non-zero only on industry columns, so the market and style returns are unconstrained. Industries with no members on the day are dropped before the solve so that $X$ keeps full rank, and their return is reported as 0.0.
 
-**Interpretation of the market factor.** The module docstring says the market factor "equals the cap-weighted market return". That is exact only when the regression weights, the constraint weights and the style-standardisation weights coincide. Here they are √cap, cap and cap. The audit measured 0.00492 for the market factor against 0.00461 for the cap-weighted market on a test day (`docs/audit/risk_portfolio.md` finding 9). The test requires correlation > 0.98, not equality. Fitted systematic returns $Bf$ do not depend on the identification, so risk forecasts are unaffected.
+**Interpretation of the market factor.** The market factor is, to a close approximation, the cap-weighted market return; it is exact only when the regression weights, the constraint weights and the style-standardisation weights coincide. Here they are √cap, cap and cap. (The module docstring used to say "equals"; it now says "close approximation", finding #14.) The first audit measured 0.00492 for the market factor against 0.00461 for the cap-weighted market on a test day (`docs/audit/risk_portfolio.md` finding 9); the second-pass audit measured a correlation of 0.9996 and a mean absolute difference of 2.3 bp. The test requires correlation > 0.98, not equality. Fitted systematic returns $Bf$ do not depend on the identification, so risk forecasts are unaffected.
 
 **Why this choice.** WLS with √cap weights and a cap-weighted sum-to-zero constraint is the USE4 recipe (`docs/BUILD_PLAN.md` §3 table, "Regression weights"). The plan notes this layer is "a solved engineering problem" (open-source toraniko reproduces Barra-like factor returns). Alternatives exposed as options:
 - `constraint_weights="regression"` makes industries sum to zero under the √cap weights instead, so the market factor tracks a √cap-weighted market. It is less dominated by mega-caps in a concentrated universe.
@@ -358,20 +375,29 @@ return nearest_psd(S) if ensure_psd else S
    - diagonalise $F_m = U_m D_m U_m^\top$;
    - compute the *true* variance of each simulated eigenfactor, $\tilde d_{mk} = (U_m^\top F_0 U_m)_{kk}$.
 3. The bias of eigenfactor $k$ is $v_k^2 = \frac{1}{M}\sum_m \tilde d_{mk} / D_{mk}$. This is the ratio of true to estimated variance, and it is greater than 1 for the small eigenvalues.
-4. Adjust: $F_{\text{eig}} = U \operatorname{diag}(v_k^2 D_k) U^\top$.
+4. Post-process $v$ (USE4 smoothing and inflation, below) to $v_S$, then adjust: $F_{\text{eig}} = U \operatorname{diag}(v_{S,k}^2 D_k) U^\top$.
 
 where:
 - $T_{\text{sim}} = \min(T, 4 h_{\text{corr}}) = \min(T, 2016)$ days;
-- $v_k$ is clipped to $[0.5, 2]$;
+- the clip of $v$ to $[0.5, 2]$ is applied once, after the inflation;
 - the simulation estimator uses no Newey–West lags and no demeaning, for speed.
 
 <callout icon="🤔" color="purple_bg">
 Why not shrink $F$ with Ledoit–Wolf instead? Shrinkage pulls every eigenvalue toward a common target based on a statistical loss function. The eigenfactor adjustment measures the bias of *our own* estimator (EWMA with these half-lives on this spectrum) and undoes exactly that. It is also the documented USE4 step, with published evidence that it fixes optimised-portfolio bias. Shrinkage is used where there is no structure to exploit (§7).
 </callout>
 
-**Simplifications versus USE4.** USE4 also fits a parabola to $v_k$ across $k$ and inflates the result by an empirical factor $a = 1.2$, because the simulation under-corrects. Our code returns the raw simulated $v_k$. On a 20-factor test the audit found the raw bias of the five smallest eigenvariances was 1.1–1.4, while the estimated $v$ was 1.02–1.05. The adjustment points in the right direction but corrects too little (`docs/audit/risk_portfolio.md` finding 11). Adding $v \leftarrow 1 + a(v-1)$ with $a = 1.2$ is on the Roadmap.
+**USE4 post-processing: smoothing and inflation** (`scale_eigen_bias`). The simulation under-corrects: it draws Gaussian, stationary returns, while real factor returns are fat-tailed and non-stationary. On a 20-factor test the first audit found the true bias of the five smallest eigenvariances was 1.1–1.4 while the simulated $v$ was only 1.02–1.05 (`docs/audit/risk_portfolio.md` finding 11). USE4 therefore post-processes the raw $v_k$:
+1. optional **parabola smoothing** $v_P(k) = c_0 + c_1 k + c_2 k^2$ fitted by least squares across $k = 0, \dots, K-1$, which removes Monte-Carlo noise from individual ratios (`eigen_parabola_smoothing`, default **off**);
+2. **empirical inflation** $v_S(k) = a\,(v_P(k) - 1) + 1$ with $a$ = `eigen_inflation_a` = **1.2** (USE4's calibrated value; $a = 1$ reproduces the raw bias);
+3. the safety **clip** to $[0.5, 2]$, applied **after** the inflation. `eigenfactor_bias` returns the raw, unclipped $v$; clipping first would change what the inflation acts on (second-pass finding 9; test `test_eigen_bias_clip_after_inflation`).
 
-**Speed.** The Monte-Carlo is the only expensive step in `as_of`. `BarraStyleRiskModel._eigen_bias` caches $v$, keyed on `len(history) // eigen_refresh_days` (default 21 observations). It is recomputed about once a month, because the bias ratios depend on the estimator and the slowly drifting spectrum, not on daily noise.
+The eigenvariances are then scaled by $v_S^2$: $F_{\text{eig}} = U\operatorname{diag}(v_{S,k}^2 D_k)U^\top$. With $v = 1.05$, inflation gives $1.2 \times 0.05 + 1 = 1.06$, so that eigenvariance is scaled by $1.06^2 = 1.124$ instead of $1.05^2 = 1.103$. `FactorCovarianceResult` reports both `eigen_bias` (raw) and `eigen_bias_scaled` (applied).
+
+<callout icon="💡" color="blue_bg">
+On the 60-day golden backtest, switching $a$ from 1.0 to 1.2 moved gross Sharpe from 0.77 to −0.01 (`docs/notes/golden_changes_2026-11-05.md`, step S3 → S4). That is not evidence against $a = 1.2$: a 60-day annualised Sharpe has a standard error of about $\sqrt{252/60} \approx 2$, and any change to the risk model changes the whole path of books. Judge the inflation on bias statistics of optimised and eigenfactor portfolios, not on a short backtest.
+</callout>
+
+**Speed and point-in-time caching.** The Monte-Carlo is the only expensive step in `as_of`. `BarraStyleRiskModel._eigen_bias` caches the raw $v$ per **refresh bucket**: the factor-return history is cut into buckets of `eigen_refresh_days` = 21 *observations* (rows with an estimated factor return, not calendar days; finding #18). Every date in a bucket uses a bias estimated on the history **up to the bucket's first row only** (`_eigen_bucket_length`; floored at `min_history_days`), and the cache key is (bucket start length, factor columns). Before the fix (finding #46) the cache was filled by whichever `as_of` call reached a bucket first, often a mid-bucket date, so the bias used data after the bucket start and `as_of(t)` depended on the order in which dates were queried: a look-ahead and a reproducibility bug at once. Tests: `tests/test_determinism.py::test_risk_as_of_independent_of_call_order_within_bucket` and `..._across_buckets`. Because the industry columns are now as of the date, the factor columns are part of the key, so a new industry starts a fresh cache entry. On the golden backtest this fix alone moved net Sharpe from 0.139 to 0.200 over 60 days (path effect, same caveat as above).
 
 ### Volatility regime adjustment (VRA)
 
@@ -396,13 +422,13 @@ The VRA half-life (42) is shorter than the vol half-life (84). The point is to r
 
 **Why this choice (factor covariance overall).** Every parameter here is the USE4 short-horizon recipe in `docs/BUILD_PLAN.md` §3. The plan's long-horizon variant (252-day vol, 168-day VRA) is not a preset; set the fields by hand. DCC-GARCH is on the Roadmap.
 
-**In the code.** `factor_covariance(factor_returns, cfg, eigen_bias=None, seed=0, return_details=False)`. With `return_details=True` it returns a `FactorCovarianceResult(cov, vra_multiplier, eigen_bias, raw_cov)`, which is useful for monitoring $\lambda_F$ and $v$. Building blocks: `ewma_cov`, `combine_vol_corr`, `eigenfactor_bias`, `apply_eigen_adjustment`, `factor_vra_multiplier`, `half_life_to_lambda`.
+**In the code.** `factor_covariance(factor_returns, cfg, eigen_bias=None, seed=0, return_details=False)`. With `return_details=True` it returns a `FactorCovarianceResult(cov, vra_multiplier, eigen_bias, raw_cov, eigen_bias_scaled)`, which is useful for monitoring $\lambda_F$, the raw $v$ and the applied $v_S$. Building blocks: `ewma_cov`, `combine_vol_corr`, `eigenfactor_bias`, `scale_eigen_bias`, `apply_eigen_adjustment`, `factor_vra_multiplier`, `half_life_to_lambda`.
 
 **Pitfalls & checks.**
 - *Units.* Everything is daily. An annual vol of the market factor in $(5\%, 50\%)$ is asserted in `tests/test_risk.py::test_factor_covariance_psd`, which also checks that $F$ is PSD with and without the eigen adjustment.
 - `test_ewma_cov_psd_and_scale` checks that with an effectively infinite half-life and no lags `ewma_cov` reproduces `np.cov`.
 - The audit verified `ewma_cov` against a brute-force loop to $2 \times 10^{-16}$.
-- *Look-ahead.* `as_of(date)` uses factor returns `.loc[:date]`: the return realised at the close of `date`, which is known by then.
+- *Look-ahead.* `as_of(date)` uses factor returns `.loc[:date]`: the return realised at the close of `date`, which is known by then. The eigen bias uses only rows up to its bucket start (above).
 - *VRA overreaction.* A single extreme day moves $\lambda_F$ through a 42-day EWMA of $B_t^2$. Watch `vra_multiplier` in `FactorCovarianceResult`. Persistent values far from 1 mean the base half-life is wrong for the regime.
 - `test_vra_ignores_identically_zero_and_empty_industry_days` guards the empty-industry fix.
 
@@ -442,7 +468,7 @@ $$
 where:
 - $s(i)$ is stock $i$'s size decile;
 - $\bar\sigma_s$ is the **cap-weighted** mean of $\sigma$ in the decile;
-- $\Delta_s$ is the **equal-weighted** standard deviation of $\sigma$ in the decile;
+- $\Delta_s = \sqrt{\frac{1}{n_s}\sum_{j \in s}(\sigma_j - \bar\sigma_s)^2}$ is the dispersion of $\sigma$ in the decile **about that cap-weighted mean** (equal-weighted average of squared deviations). Before the second-pass audit it was the plain sd, i.e. about the equal-weighted mean (finding 9; test `test_bayesian_shrink_delta_about_cap_weighted_mean`);
 - $q = 0.1$ (`specific_shrink_q`) sets the shrinkage strength;
 - $v_i \in [0, 1)$ is the shrinkage intensity.
 
@@ -456,16 +482,20 @@ $$
 \left(B_t^S\right)^2 = \sum_i \frac{c_i}{\sum_j c_j}\left(\frac{u_{i,t}}{\sigma_{i,t-1}}\right)^2, \qquad \lambda_S = \sqrt{\text{EWMA}_{42}\left((B_t^S)^2\right)}
 $$
 
-$\sigma_{i,t-1}$ is an 84-day EWMA of $u_i^2$ shifted one day. USE4 uses the structural forecasts there, and we use the EWMA forecast. The final output is the daily variance $D_{ii} = (\lambda_S\, \sigma_i^{\text{SH}})^2$.
+where:
+- $c_i$ is stock $i$'s market cap on the **previous** trading day $t-1$ (`market_cap_history` panel shifted by one day, falling back to the latest cap where missing). USE4 weights each day's statistic by that day's caps; using $t-1$ keeps it point-in-time and matches the regression convention of §4. Before the audit fix, today's cap weighted every historical day (finding 9; test `test_specific_vra_uses_lagged_daily_caps`);
+- $\sigma_{i,t-1}$ is an 84-day EWMA of $u_i^2$ shifted one day.
+
+One documented deviation from USE4 remains: USE4 standardises by the *final* specific forecast (structural blend, Bayesian shrink), we by the EWMA time-series forecast. Re-running the whole specific pipeline for every historical day would multiply the cost of `as_of` by the VRA window, and the EWMA forecast is the time-series core of the final one, so the statistic measures the same regime shift. The final output is the daily variance $D_{ii} = (\lambda_S\, \sigma_i^{\text{SH}})^2$.
 
 **Why this choice.** Every step and constant is the USE4 specific-risk recipe listed in `docs/BUILD_PLAN.md` §3. The plan's alternative, a **full** residual covariance by nonlinear shrinkage (§7), is not used for $D$. A diagonal keeps the optimizer's factor-form risk $\|L^\top B^\top w\|^2 + \sum_i d_i w_i^2$ fast, and the statistical companion (§8) picks up the residual co-movement that matters.
 
-**In the code.** `specific_risk(specific_returns, exposures_latest, market_cap, cfg, return_details=False)`. With `return_details=True` it also returns `sigma_ts`, `sigma_str`, `gamma`, `sigma_shrunk`, `vra_multiplier` and `n_obs`, which are useful to see why a particular name's risk looks odd. Tuning: `specific_half_life` (shorter reacts faster but is noisier) and `specific_shrink_q` (larger means more shrinkage). The `min(1, e^{1-Z})` blend and the 60/120 constants are not configurable.
+**In the code.** `specific_risk(specific_returns, exposures_latest, market_cap, cfg, return_details=False, market_cap_history=None)`; `BarraStyleRiskModel.as_of` passes the cap panel up to `date` as `market_cap_history`. With `return_details=True` it also returns `sigma_ts`, `sigma_str`, `gamma`, `sigma_shrunk`, `vra_multiplier` and `n_obs`, which are useful to see why a particular name's risk looks odd. Tuning: `specific_half_life` (shorter reacts faster but is noisier) and `specific_shrink_q` (larger means more shrinkage). The `min(1, e^{1-Z})` blend and the 60/120 constants are not configurable.
 
 **Pitfalls & checks.**
 - *The audit bug.* The original blend used $1.35 \times$IQR and $Z = \sigma^{\text{eq}}/\sigma^{\text{rob}}$. The two errors partly cancelled, and fat-tailed names got about half the structural weight they should have. Both are fixed (`docs/audit/RESOLUTION.md`, MEDIUM row). `tests/test_risk.py::test_thin_history_blend_use4_formula` plants a 100σ outlier and checks $\gamma = \min(1, e^{1-Z})$ exactly and $\gamma < 0.6$, while a Gaussian name gets $\gamma \approx 1$.
 - `test_specific_risk_pipeline` checks positivity, a median annualised specific vol in $(5\%, 80\%)$, $\lambda_S \in (0.5, 2)$, and that more than 90% of names get full time-series weight on a long synthetic history.
-- *Out-of-model tickers.* `RiskModelOutput.covariance()` gives a ticker absent from the model zero exposure and the **median** specific variance, so it looks purely idiosyncratic to the optimizer. Callers should intersect universes first (`docs/audit/risk_portfolio.md` finding 7).
+- *Out-of-model tickers.* A ticker absent from the model gets zero factor exposure and the **90th percentile** of the modelled specific variances (`1e-4`, i.e. 1% daily vol squared, if none is known). The rule lives in one place, `qts/core/risk_fill.py` (`OUT_OF_MODEL_SPECIFIC_VAR_PCTL = 90`), and is used by `RiskModelOutput.covariance`, `portfolio_variance` (the simulator's ex-ante variance) and the optimizer. The 90th percentile is conservative on purpose: a name the model does not cover (typically a held name being exited) is more likely small and volatile than median. Before the second-pass audit the optimizer used the 90th percentile and `RiskModelOutput` the median (finding 8; test `test_out_of_model_specific_var_rule_is_shared`). The optimizer no longer opens such names at all (→ see **Portfolio construction**).
 
 **References**
 - [Menchero, Orr & Wang (2011), USE4 Methodology Notes](https://www.top1000funds.com/wp-content/uploads/2011/09/USE4_Methodology_Notes_August_2011.pdf)
@@ -478,7 +508,11 @@ $\sigma_{i,t-1}$ is an 84-day EWMA of $u_i^2$ shifted one day. USE4 uses the str
 1. Estimating a **full residual covariance** (`shrunk_residual_covariance`, `BarraStyleRiskModel.residual_covariance_as_of`). After removing the factors, the residuals still form an $N \times N$ problem with $N$ comparable to $T$. This is exactly the regime of §1.
 2. Baselines in the **out-of-sample minimum-variance test** (§10), the benchmark any covariance estimator must beat.
 
-`RiskModelOutput` itself keeps only the diagonal $D$. The shrunk residual matrix is used for evaluation and is a candidate for a future residual block (→ Roadmap).
+`RiskModelOutput` itself keeps only the diagonal $D$, from the USE4 pipeline of §6. The shrunk residual matrix is used for evaluation and is a candidate for a future residual block (→ Roadmap).
+
+<callout icon="🤔" color="purple_bg">
+Why not use QIS for the specific variances? The config used to carry `use_nonlinear_shrinkage = True`, which suggested it did. It never touched `specific_var`: it only chose QIS or Ledoit–Wolf inside the evaluation-only `shrunk_residual_covariance` (finding #16). Before deleting it the obvious wiring was tested: use the diagonal of the QIS residual covariance as the prior for thin-history names instead of the USE4 structural model. Out of sample it lost clearly: QLIKE (§10, lower is better) 0.07 for the structural model against 0.15 for QIS with a coverage correction and about 0.45 without, on synthetic seeds 0–2 (recorded in the `qts/risk/covariance.py::shrunk_residual_covariance` docstring; the `RiskConfig` comment gives the range as 0.15–0.47). QIS is designed for a full matrix whose *eigenvalues* are mis-dispersed; a per-stock variance for a three-week-old listing is a different problem, and characteristics (the structural model) carry more information about it than a shrunk sample does. The flag was removed; `method="qis" | "lw"` chooses the estimator for evaluation.
+</callout>
 
 **How it works: Ledoit–Wolf linear shrinkage.**
 
@@ -518,7 +552,7 @@ For a rotation-equivariant estimator $\sum_i \delta_i u_i u_i^\top$, the best po
 **In the code.**
 - `nonlinear_shrinkage(X, assume_centered=False)` takes a **data matrix** ($T \times N$), not a covariance.
 - `linear_shrinkage(X)`.
-- `shrunk_residual_covariance(specific_returns, cfg, window=None)` uses the last $\max(4 \times 84, 252) = 336$ days, sets missing residuals to 0, and picks QIS when `RiskConfig.use_nonlinear_shrinkage = True` (default) or Ledoit–Wolf otherwise.
+- `shrunk_residual_covariance(specific_returns, cfg, window=None, method="qis")` uses the last $\max(4 \times 84, 252) = 336$ days, sets missing residuals to 0, and applies QIS (`method="qis"`, default) or Ledoit–Wolf (`"lw"`). `BarraStyleRiskModel.residual_covariance_as_of(date, window, method)` wraps it.
 
 **Pitfalls & checks.**
 - *Passing a covariance instead of data* silently gives nonsense. Both functions expect observations × variables.
@@ -578,7 +612,13 @@ where $V(k)$ is the average residual variance after removing $k$ factors and the
 
 **Marchenko–Pastur edge** (`marchenko_pastur_edge`) counts eigenvalues above the noise edge $\lambda_+ = \sigma^2(1 + \sqrt{N/T})^2$ from §1. Here $\sigma^2$ starts as the average eigenvalue and is re-estimated from the bulk (the eigenvalues below the edge) until the count is stable. The dimension is the number of non-zero eigenvalues, because residuals of a $p$-factor regression live in an $(N-p)$-dimensional subspace.
 
-In the hybrid, $k$ is chosen **once** in `fit` by Bai–Ng on the last `statistical_window` (252) days of residuals, then floored at 1 and capped at `max_statistical_factors` (5). Setting `statistical_n_factors` fixes $k$ instead.
+In the hybrid, $k$ is chosen **at every refit date** by Bai–Ng $IC_{p2}$ on that refit's own trailing `statistical_window` (252) days of residuals, then floored at 1 and capped at `max_statistical_factors` (5) (`StatisticalRiskModel(select_k="bai_ng")`). Setting `statistical_n_factors` fixes $k$ instead.
+
+**Fixed slots.** The output always has `max_statistical_factors` columns `stat_01..stat_05`. A refit that selects $k < 5$ fills slots $k+1, \dots$ with zero factor returns, zero loadings and zero factor variance, so `RiskModelOutput` keeps a stable shape (and the optimiser's compiled problem a stable structure) across refits. Procrustes alignment rotates only the $k$ active slots. `HybridRiskModel.statistical.n_factors_by_refit()` and `.n_active_factors(date)` report the counts.
+
+<callout icon="⚠️" color="yellow_bg">
+Why per refit (finding #19). The first version picked one $k$ in `fit` from the **last** 252 days of the whole sample and used it for every date: a one-integer look-ahead. A latent factor that appears in 2023 would raise $k$ for 2019 too. Per-refit selection makes $k$ point-in-time. The second-pass audit checked it on a panel whose true factor count goes from 2 to 4: $k$ matched $IC_{p2}$ on each refit's window at 31/31 refits (2, …, 2, 3, 4, …, 4), inactive slots were exactly zero, and $FB^\top$ was unchanged by the rotation to $2.5\times10^{-16}$. Test: `tests/test_risk_statistical.py::test_hybrid_factor_count_is_point_in_time`.
+</callout>
 
 ### Sign and rotation alignment (Procrustes)
 
@@ -671,14 +711,14 @@ The fundamental model understates the aligned book's volatility by a factor of 3
 **Why this choice.** APCA over plain PCA because of heteroskedasticity. Residuals over total returns so the statistical factors add to the named ones instead of duplicating the market. Total-return loadings because of the leak. Bai–Ng because it picks 0 on pure noise and 3 ± 1 on a planted 3-factor panel (`test_apca_recovers_planted_factor_structure`).
 
 **In the code.**
-- `StatisticalRiskModel(n_factors, window, half_life, min_obs, method, apca_iters, refit_every, min_stock_obs)`.
+- `StatisticalRiskModel(n_factors, window, half_life, min_obs, method, apca_iters, refit_every, min_stock_obs, select_k)`.
 - `apca`, `select_n_factors`, `bai_ng_ic2`, `marchenko_pastur_edge`.
 - `HybridRiskModel(fundamental, cfg, half_life=None, loadings="total", cross_block=False)`.
 - `missing_factor_monitor`.
 - Config: `statistical_companion`, `max_statistical_factors`, `statistical_n_factors`, `statistical_window`, `statistical_refit_every`, `missing_factor_alarm_share`.
 
 **Pitfalls & checks.**
-- *End-of-sample factor count.* In a backtest, `fit` picks $k$ from the **last** 252 days, which is a mild look-ahead in one integer. Set `statistical_n_factors` for a fully point-in-time backtest, or refit periodically in production.
+- *Factor count changes.* $k$ can change at any refit. The slots keep the shape stable, but a slot's meaning can change when $k$ changes; read `n_active_factors(date)` before interpreting `stat_0k` exposures.
 - *Rotation instability.* `test_factor_sign_and_rotation_stability` requires every factor's returns to correlate positively across consecutive refits, and the real-time chain to correlate > 0.5 with the refit solution.
 - *Missing data.* `test_apca_handles_missing_returns` drops 5% of entries at random and gives one stock a short history.
 - *Over-fitting noise.* The MP edge check in the monitor prevents alarms on eigenvalues that pure noise would produce.
@@ -728,7 +768,7 @@ $$
 \nu = \text{nu\_scale} \times N \times \operatorname{median}_k F_{kk}^{\text{style}}
 $$
 
-If no factor covariance is passed, the fallback is $\nu = \text{nu\_scale} \times \operatorname{median}(D)$.
+If no factor covariance is passed, the fallback is $\nu = \text{nu\_scale} \times \operatorname{median}(D)$. `nu_scale=None` (the default of `alpha_alignment` and `as_of`) means `RiskConfig.alignment_nu_scale`, currently **0.05**.
 
 ```python
 y = pd.Series(resid / norm, index=idx)
@@ -749,23 +789,41 @@ else:
 
    A larger `nu_scale` both raises the forecast and pushes the optimizer off $y$, so in expectation the bias falls monotonically in `nu_scale`. The function bisects on $\log(\text{nu\_scale})$ in $[0.05, 50]$ until the bias is within 0.02 of 1. `model.as_of` is evaluated once per date, because $\nu$ is linear in `nu_scale` and is rescaled in place. The default book is a dollar-neutral $\Sigma_{\text{aug}}^{-1}\alpha$ scaled to gross 2. Pass `solve_fn` wrapping the production optimizer to calibrate on the real constraint set. The result dict reports `nu_scale`, `bias`, `bias_unaligned`, the band, `in_band`, `converged` and the search history.
 
-The `nu_scale` used day to day is the `as_of(date, alpha, nu_scale=...)` argument. The pipeline's `risk_fn` (`qts/pipeline.py`) relies on its default. Calibration is deliberately **not** on the default `as_of` path, because it costs one optimisation per date per bisection step. Run it offline on the warm-up window once optimised-book bias statistics exist. Record the calibrated value, and the procedure used, in `docs/notes/alignment_nu_calibration.md`. Until that note exists, treat the default as the heuristic above. The open item is tracked in `docs/audit/RESOLUTION.md`, "Still open".
+The `nu_scale` used day to day is `RiskConfig.alignment_nu_scale`, unless `as_of(date, alpha, nu_scale=...)` overrides it; the pipeline's `risk_fn` uses the config value. Calibration is deliberately **not** on the default `as_of` path, because it costs one optimisation per date per bisection step. It runs offline: `scripts/calibrate_alignment_nu.py`, results in `docs/notes/alignment_nu_calibration.md`.
+
+**The calibration and what it found.** Two runs, both on the synthetic market (300 names, 1,512 days), each with the production `ResearchPipeline` path (hybrid risk model, composite alpha, real cost model and optimiser, the simulator's sequential book):
+
+| run | sizing | lag | out-of-model names | bias at $\nu = 0$ (seeds 0/1/2) | calibrated `nu_scale` | default set |
+|---|---|---|---|---|---|---|
+| 2026-11-04 (superseded) | fixed $\gamma = 10$ + alpha-blind projection | 0 | could be held | 1.115 / 1.017 / 1.079 | 1.58 / 0.05 / 0.28 | 0.25 (median) |
+| 2026-11-05 (current) | $\gamma$ search to 10% vol | 1 | never held | 0.870 / 0.861 / 0.897 | 0.05 / 0.05 / 0.05 (search floor) | **0.05** |
+
+The current run used the last 120 out-of-sample dates (band $1 \pm 2/\sqrt{240} = [0.870, 1.130]$), a grid 0 / 0.25 / 0.5 / 1 / 2 plus the search ends 0.05 and 50. The bias fell monotonically in $\nu$ on every seed (seed 1: 0.861 at 0, 0.846 at 0.05, 0.796 at 1, 0.784 at 2), so the bisection stopped at the floor 0.05.
+
+**What "bias already < 1 at $\nu = 0$" means.** The bias statistic $b = \operatorname{sd}(r_{t+1}/\sigma_t)$ of the optimised book (§10) is below 1 when the model **over**-forecasts that book's risk: realised moves are smaller than predicted. At $\nu = 0$ the current book shows $b \approx 0.86\text{–}0.90$, at or just below the lower band edge. The alignment term can only *add* forecast variance ($\nu(y^\top w)^2 \ge 0$), so any $\nu > 0$ pushes $b$ further below 1. There is no under-forecast left for it to correct. The term is kept on at the floor value, where it carries about 1% of ex-ante variance and still discourages the book from piling into $\alpha_\perp$.
+
+Why the first run saw $b > 1$: its book was optimised at 1/3–1/5 of its traded size and then levered by a projection that ignored $\alpha_\perp$, at lag 0, and it could hold "phantom hedges" outside the risk model whose market moves the forecast did not see (second-pass audit, findings 1, 3 and 10). Each of those inflates realised risk relative to forecast for the optimised book. With the sizing and universe fixes the under-forecast disappeared.
+
+<callout icon="⚠️" color="yellow_bg">
+The remaining ~12% over-forecast is a risk-model calibration question (eigen inflation $a = 1.2$, VRA), not an alignment one, and it is on the conservative side for the vol target: the book runs a little below its target vol. All of this is synthetic, where the only unobserved common factor is the planted alpha itself. On real data the unexplained part of the alpha can carry real unpriced risk (crowding, missing industries) and the right $\nu$ may be much larger. **Re-run `scripts/calibrate_alignment_nu.py` on the real-data `MarketData`** before relying on 0.05, and again after changing the alpha (especially enabling the ML sleeve), the factor set or the portfolio constraints. A bias over 120 days has a band of about ±0.13.
+</callout>
 
 **Misalignment gauge.** `misalignment_gauge(alpha, exposures)` returns $1 - R^2$ of alpha regressed on the exposures: the fraction of alpha variance the risk model can't see. The plan asks for it as a standing monitor.
 
 **Numbers from the audit** (`docs/audit/risk_portfolio.md` finding 5; synthetic market):
 - *Mechanism.* Orthogonality is exact ($\max|B^\top y| = 3 \times 10^{-14}$, $\|y\| = 1$). With a random alpha (fully orthogonal to the factors), the un-aligned optimum had model variance $1.58 \times 10^{-5}$ and augmented variance $7.46 \times 10^{-5}$, i.e. $4.7\times$. The aligned solve cut $y^\top w$ from 0.215 to 0.071 and $\alpha^\top w$ by 65%. The term works as designed: the optimizer backs off the invisible direction.
-- *On the pipeline's real composite alpha*, $1 - R^2 = 0.097$ and the alignment share of the optimised book's variance was about 0%. Today the term is nearly inert. That is fine, but it also means it hasn't been tested on the book it is meant to protect, which is why calibration is the first follow-up once live bias statistics accumulate.
+- *On the pipeline's real composite alpha*, $1 - R^2 = 0.097$ and the alignment share of the optimised book's variance was about 0% at the time. The second-pass audit re-verified the mechanism at `nu_scale = 0.25` ($\nu = 0.25\,N\,\text{median}(F_{\text{style}})$ exactly, alignment share 4.7%, and the augmented variance identical in the optimizer, `portfolio_variance` and the vol-target norm). At the calibrated 0.05 the share is about 1%.
 
 **Why this choice.** The plan calls the alignment fix "non-negotiable because the problem is created by the optimizer, not the estimator". The alternatives are to add alpha factors as risk factors (done in part: momentum, value, quality, investment and short interest are styles, §3) or to cap exposure to the alpha direction with a hard constraint, which is cruder and non-adaptive. The alignment factor handles whatever part of the alpha remains orthogonal, day by day. OLS projection (`weighted=False`) is the default because it matches the paper and makes $B^\top y = 0$ exact. `weighted=True` uses $1/D$ weights instead.
 
 **In the code.**
-- `alpha_alignment(alpha, exposures, specific_var, nu_scale=1.0, factor_cov=None, cfg=None, weighted=False)` returns `(y, nu)`.
+- `alpha_alignment(alpha, exposures, specific_var, nu_scale=None, factor_cov=None, cfg=None, weighted=False)` returns `(y, nu)`; `nu_scale=None` → `cfg.alignment_nu_scale` (0.05).
+- `calibrate_alignment_nu(model, md, alphas_by_date, dates, solve_fn=None, lo=0.05, hi=50, n_iter=10, tol=0.02, grid=None, signal_lag_days=0)`: with `signal_lag_days=1` the book built from data as of $t$ is paired with the return of $t+2$, as the simulator does at the default lag. Offline driver: `python scripts/calibrate_alignment_nu.py --seeds 0 1 2 --n-dates 120 --burn-in 20 --n-iter 5 --grid 0 0.25 0.5 1 2` (the current run).
 - `BarraStyleRiskModel.as_of` and `HybridRiskModel.as_of` call it when `alpha` is given and `RiskConfig.alignment` is on.
 - `RiskModelOutput.covariance(include_alignment=True)` and `portfolio_variance(w, include_alignment=True)` include the term by default, so it also enters `expected_risk` and the vol target.
 
 **Pitfalls & checks.**
-- *Uncalibrated $\nu$ feeds the vol target.* An oversized $\nu$ inflates `expected_risk` and shrinks the book. Log the alignment share of ex-ante variance.
+- *$\nu$ feeds the vol target.* An oversized $\nu$ inflates `expected_risk` and shrinks the book. Log the alignment share of ex-ante variance (`OptimizationResult.alignment_share`).
 - *Alpha mismatch.* $y$ must be built from exactly the alpha the optimizer receives. The audit verified that the simulator passes the same `exp_ret` to `risk_fn` and to `solve`.
 - `tests/test_risk.py::test_alignment_orthogonal_unit_norm` checks $\|y\| = 1$, $|B^\top y| < 10^{-8}$, $\nu > 0$, and that the augmented variance of $y$ exceeds the un-augmented.
 - `test_calibrate_alignment_nu_smoke` checks the search stays in bounds, that bias at `nu_scale=100` < bias at 0.01, and that the unaligned bias is the largest.
@@ -886,16 +944,21 @@ All defaults from `qts/core/config.py::RiskConfig`.
 | `specific_shrink_q` | 0.1 | Bayesian shrinkage strength $q$ toward size-decile means (§6) |
 | `min_history_days` | 252 | warm-up before exposures are built (default `warmup_days`), and minimum factor-return history for `as_of` |
 | `styles` | `beta, size, momentum, value, residual_vol, liquidity, short_term_reversal, quality, investment, short_interest` | style factors (§3). Must be a subset of `SUPPORTED_STYLES` |
-| `use_nonlinear_shrinkage` | True | QIS (True) or Ledoit–Wolf (False) in `shrunk_residual_covariance`. Does **not** affect `specific_var` |
 | `alignment` | True | add the Saxena–Stubbs term when an alpha is passed to `as_of` |
+| `alignment_nu_scale` | 0.05 | $\nu = $ scale $\times N \times$ median style variance (§9); calibrated on the production optimiser, synthetic data. Was 0.25, implicitly 1.0 before that |
 | `eigenfactor_adjust` | True | run the eigenfactor risk adjustment |
 | `n_eigen_sims` | 200 | Monte-Carlo draws for the eigenfactor bias |
+| `eigen_inflation_a` | 1.2 | USE4 inflation $v_S = a(v-1)+1$ of the simulated eigen bias; 1.0 = raw bias (§5) |
+| `eigen_parabola_smoothing` | False | fit a parabola to $v_k$ across $k$ before the inflation |
 | `statistical_companion` | True | `build_risk_model` returns a `HybridRiskModel` |
 | `max_statistical_factors` | 5 | cap on the Bai–Ng residual factor count |
-| `statistical_n_factors` | None | fix $k$ (fully point-in-time). `None` selects by Bai–Ng in `fit` |
+| `statistical_n_factors` | None | fix $k$. `None` selects by Bai–Ng at every refit, capped at `max_statistical_factors` (point-in-time either way) |
 | `statistical_window` | 252 | trailing window for APCA, factor count and total-return loadings |
 | `statistical_refit_every` | 21 | APCA re-extraction frequency (trading days) |
 | `missing_factor_alarm_share` | 0.10 | PC1 share of residual variance that, together with the MP edge, raises the monitor flag |
+| `exposure_dtype` | `"float64"` | storage dtype of the `ExposureHistory` style tensor; `"float32"` halves memory at ~1e-7 relative error |
+
+Removed: `use_nonlinear_shrinkage` (never affected `specific_var`; §7). Old YAML files that still set it fail to load, because `from_dict` is strict about unknown keys.
 
 Constructor arguments that are not in `RiskConfig`:
 - `BarraStyleRiskModel(warmup_days=None, eigen_refresh_days=21, seed=0, constraint_weights="cap", weight_cap_quantile=None)`.
@@ -910,7 +973,8 @@ Exposure window lengths and `BETA_SHRINK` are module constants in `qts/risk/expo
 |---|---|---|
 | Rolling bias of factor portfolios swings above 1 in sell-offs and below 1 afterwards | factor vols react too slowly | shorten `vra_half_life` (e.g. 21) or `vol_half_life` (e.g. 63). For a slower book, use the plan's long-horizon variant (252 / 168) |
 | Optimised book's bias > 1 while random books are fine | alpha misalignment or unseen factor | run `calibrate_alignment_nu`. Check `misalignment_gauge` and `missing_factor_monitor`. Raise `max_statistical_factors` if the monitor flags persistently |
-| Random books' bias < 1 (risk overstated) | too much NW, too long half-lives after a calm spell, or alignment $\nu$ too large | check `vra_multiplier`. Reduce `nu_scale` |
+| Optimised book's bias < 1 already at $\nu = 0$ (the current synthetic result) | risk over-forecast for the book: eigen inflation, VRA or NW too strong for this market | keep `alignment_nu_scale` at the floor; compare $a = 1.0$ vs 1.2 on bias statistics (not Sharpe) |
+| Random books' bias < 1 (risk overstated) | too much NW, too long half-lives after a calm spell, or alignment $\nu$ too large | check `vra_multiplier`. Reduce `alignment_nu_scale` |
 | A few names carry huge specific risk | outliers, thin histories | inspect `specific_risk(..., return_details=True)`: `gamma`, `sigma_ts` vs `sigma_str`. Raise `specific_shrink_q` |
 | Factor returns noisy, $F$ ill-conditioned | collinear styles, empty industries | drop or merge styles. Merge tiny industries in the data layer |
 | `as_of` slow | eigen simulation | lower `n_eigen_sims` (e.g. 100) or raise `eigen_refresh_days`. Set `eigenfactor_adjust=False` for quick research |
@@ -920,7 +984,7 @@ Tune on bias statistics, not backtest Sharpe. Every parameter change is a new co
 ### Pitfalls (summary)
 
 <callout icon="⚠️" color="yellow_bg">
-Look-ahead in exposures. Every descriptor must use data ≤ t, fundamentals must be joined on filing date, and the regression for day t must use exposures from t−1. Guarded by `test_exposure_history_matches_single_date_and_is_point_in_time`, `test_point_in_time_as_of` and `test_statistical_model_is_point_in_time`. The audit verified all of them. One known end-of-sample choice remains: the hybrid's factor count. Fix it with `statistical_n_factors` for a strict backtest.
+Look-ahead in exposures. Every descriptor must use data ≤ t, fundamentals must be joined on filing date, the regression for day t must use exposures from t−1, and every cross-sectional statistic must use the names eligible at t (not every name in the panel). Guarded by `test_exposure_history_matches_single_date_and_is_point_in_time`, `test_point_in_time_as_of`, `test_statistical_model_is_point_in_time`, `test_style_exposures_ignore_future_universe_members`, `test_future_industry_label_is_point_in_time` and `test_hybrid_factor_count_is_point_in_time`. The second-pass audit re-verified the whole pipeline: on the synthetic market every decision input at t matches a refit on data truncated at t to ≤ 5e-14. Two cases the synthetic market cannot exercise remain to watch on real data: halts (handled in the labels, → see **Alpha model**) and the static industry fallback before a name's first dated classification.
 </callout>
 
 <callout icon="⚠️" color="yellow_bg">
@@ -928,7 +992,7 @@ Collinearity. Market + industries are exactly collinear, and the sum-to-zero con
 </callout>
 
 <callout icon="⚠️" color="yellow_bg">
-Thin histories. New listings get a structural specific risk until about 180 observations. APCA gives zero loadings below `min_stock_obs`. Tickers outside the model get the median specific variance and zero factor exposure, so they look idiosyncratic. Intersect universes before optimising.
+Thin histories. New listings get a structural specific risk until about 180 observations. APCA gives zero loadings below `min_stock_obs`. Tickers outside the model get the 90th-percentile specific variance and zero factor exposure, so they still look idiosyncratic; the optimiser therefore never opens them and forces held ones out.
 </callout>
 
 <callout icon="⚠️" color="yellow_bg">
@@ -1001,11 +1065,12 @@ The realised moves were about 47% larger than forecast, so on its face the model
 
 ## Roadmap
 
-Planned in `docs/BUILD_PLAN.md` §3 or the audit, not implemented:
-- **Eigenfactor inflation**: $v \leftarrow 1 + a(v - 1)$ with $a = 1.2$ and a parabola fit across $k$, to fix the measured under-correction (audit finding 11).
+Planned in `docs/BUILD_PLAN.md` §3 or the audits, not implemented:
 - **Residual block**: a full QIS-shrunk (optionally DCC-GARCH) residual covariance in `RiskModelOutput`, as in Ledoit–Wolf's AFM-DCC-NL. Today it is used only for evaluation.
 - **More styles**: 1-day reversal, industry momentum, non-linear beta/size, leverage, growth, dividend yield. Horizon-matched half-lives per alpha theme (plan §3, SEI evidence).
 - **Long-horizon preset** (252-day vol, 168-day VRA) as a named configuration.
-- **Alignment `nu` calibration on the optimised book**, once bias statistics from the production optimizer are collected (`docs/audit/RESOLUTION.md`, "Still open").
+- **Recalibrate `alignment_nu_scale`, `eigen_inflation_a` and the VRA half-life on real data** with optimised-book bias statistics.
 - **Factor-crowding monitor** (MSCI design) and an skfolio-based evaluation harness with Diebold–Mariano tests by regime.
 - **Realised-covariance (HAR) methods**, only if intraday TAQ-grade data is bought (Phase 2+).
+
+Done since the first draft: USE4 eigen inflation ($a = 1.2$) and optional parabola; point-in-time eigen cache; per-refit statistical factor count; eligibility-restricted exposures; dated industries with as-of-date columns; cap-weighted $\Delta$ and lagged-cap specific VRA; one out-of-model fill rule; alignment $\nu$ calibrated on the production optimiser.

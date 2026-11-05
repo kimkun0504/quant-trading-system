@@ -4,6 +4,17 @@
 This page covers everything that happens before a model sees a number: which data a long/short equity strategy needs and why, which vendors supply it and what they cost, the biases hidden in historical data (survivorship, delisting returns, restatements, filing dates) and how large they are, the point-in-time Parquet/DuckDB store, corporate actions and adjusted prices, and the rules that define the investable universe (price at least \$5, ADV at least \$2M, no bottom-20% size names, top 1,000 by market cap, refreshed monthly with three-strike hysteresis), with the reasoning behind each rule. It explains the eligibility panel and why an "ever in the universe" stock list leaks, the FINRA short-interest publication lag, Sharadar's filing-date key, Fama–French 48 industries from SIC codes, the Ken French factor files, and the synthetic market generator that the test suite is built on.
 </callout>
 
+<callout icon="🆕" color="green_bg">
+<b>What changed (Nov 2026)</b>
+- `MarketData` gained `close_raw` (as-traded close), `shares_outstanding`, `industry_history` with `industry_as_of(t)`, `delisting_dates`, and `trade_price()`; the \$5 screen, dollar volume and ADV now use as-traded prices.
+- The universe refreshes on the first trading day of each calendar month (`UniverseConfig.refresh_anchor = "month_start"`), so membership no longer depends on the load start date.
+- `apply_mask` no longer blanks volume, market cap and fundamentals outside the universe; membership acts only through `md.eligibility()`, and `masked_levels` gives the old view to the risk model.
+- `ParquetStore` writes are upserts by default (the old mode silently dropped the rest of each year), with per-dataset file locks and an explicit NaN policy.
+- FINRA's publication lag is counted in NYSE sessions (`qts/data/calendar.py`); the short-interest ratio uses shares as of the settlement date.
+- Sharadar defaults are now `dimension="ART"`, `lag_days=1`; B/P and E/P are split-consistent; late restatements of older periods no longer replace the current period.
+- Labels tell halts from delistings causally (`delisting_dates`, else a 63-day gap rule); the synthetic generator can plant splits, halts and delistings, and its alpha timing and realised IC band are documented.
+</callout>
+
 ## The data a strategy needs
 
 ### What it is
@@ -13,25 +24,29 @@ Every model in the system reads one object, `qts/core/types.py::MarketData`: a s
 | Panel (`MarketData` field) | Units | Why it is needed | Visible at $t$ when… |
 |---|---|---|---|
 | `close` (required) | USD, split- and dividend-adjusted | Returns, momentum, volatility, beta, labels | the close of $t$ prints |
-| `volume` (required) | shares | ADV screen, liquidity features, impact | the close of $t$ |
+| `close_raw` | USD, as traded | Price screen, dollar volume, per-share fees and fundamentals (via `trade_price()`) | the close of $t$ |
+| `volume` (required) | actual shares traded | ADV screen, liquidity features, impact | the close of $t$ |
+| `shares_outstanding` | actual share count | Short-interest ratio; split-consistent B/P and E/P | the date the count is effective |
 | `market_cap` (required) | USD | Size screen, size factor, cap weights | shares known at $t$ × close of $t$ |
-| `industry` (required) | Fama–French 48 label | Industry demeaning, factors, bands | quasi-static (see pitfalls) |
+| `industry` (required) | Fama–French 48 label | Static fallback label | not dated (see pitfalls) |
+| `industry_history` | dated labels | Industry demeaning, factors, bands via `industry_as_of(t)` | the reclassification date |
+| `delisting_dates` | ticker → last trading date | Telling delistings from halts in labels | the delisting date |
 | `spread_bps` | half-spread, bp | Spread cost; liquidity feature | the close of $t$ |
-| `short_interest_ratio` | short interest ÷ shares | Short-interest theme and style; borrow proxy | settlement + 8 business days |
+| `short_interest_ratio` | short interest ÷ shares | Short-interest theme and style; borrow proxy | settlement + 8 NYSE sessions |
 | `borrow_fee` | annual fraction | Cost of shorts; loan-fee signal | the day the rate is logged |
-| `book_to_price`, `earnings_yield` | ratio | Value theme and style | the report's filing date |
-| `gross_profitability` | gross profit ÷ assets | Quality theme | the filing date |
-| `asset_growth` | year-over-year fraction | Investment theme | the later report's filing date |
+| `book_to_price`, `earnings_yield` | ratio | Value theme and style | the report's filing date + 1 day |
+| `gross_profitability` | gross profit ÷ assets | Quality theme | the filing date + 1 day |
+| `asset_growth` | year-over-year fraction | Investment theme | the later report's filing date + 1 day |
 | `eligible` | boolean | The point-in-time universe | built PIT from the above |
 | `extra` | any wide panel | Additional data; synthetic ground truth | per panel |
 
 ### Why each kind is needed
 
-Three points the table compresses. Prices must be adjusted, or a 2-for-1 split looks like a 50% crash. Fundamentals must be dated by when they became public, not by the period they describe. Short interest and borrow fees serve both the cost model (hard-to-borrow shorts are expensive) and the alpha model (equity loan fees were the most persistent non-text predictor in the build plan's evidence).
+Four points the table compresses. Prices must be adjusted for anything compared across time, or a 2-for-1 split looks like a 50% crash, but *unadjusted* for anything that is a level on one date, or a stock that later split looks like a penny stock in its past (→ see **Corporate actions and adjusted prices**). Fundamentals must be dated by when they became public, not by the period they describe. Short interest and borrow fees serve both the cost model (hard-to-borrow shorts are expensive) and the alpha model (equity loan fees were the most persistent non-text predictor in the build plan's evidence).
 
 ### In the code
 
-`ParquetStore.as_market_data` assembles a `MarketData` from stored datasets (`REQUIRED = ("prices_close", "prices_volume", "market_cap", "industry")`, plus `OPTIONAL_PANELS`); `qts/data/synthetic.py::generate` builds one from the synthetic model; `qts/data/loaders.py::yfinance_to_market_data` builds a prototyping one from Yahoo Finance. `MarketData.validate()` checks alignment and industry coverage. `scripts/run_real.py --store PATH` runs the full pipeline on a store.
+`ParquetStore.as_market_data` assembles a `MarketData` from stored datasets (`REQUIRED = ("prices_close", "prices_volume", "market_cap", "industry")`, plus `OPTIONAL_PANELS`, the raw-price panels `prices_close_raw` and `shares_outstanding`, `industry_history` and `delisting_dates`); `qts/data/synthetic.py::generate` builds one from the synthetic model; `qts/data/loaders.py::yfinance_to_market_data` builds a prototyping one from Yahoo Finance. `MarketData.validate()` checks that `volume`, `market_cap`, `close_raw` and `shares_outstanding` align with `close`, that dates ascend and that every ticker has an industry label. `qts run --store PATH` (or `scripts/run_real.py --store PATH`) runs the full pipeline on a store. → see **Operating guide › Loading real data into the ParquetStore**.
 
 ## Vendors and costs
 
@@ -96,10 +111,21 @@ A **bias** is a systematic difference between what a backtest saw and what a tra
 
 **The numbers.** Shumway (1997) showed that CRSP's missing performance-related delisting returns bias returns upward and proposed substituting −30% for NYSE/AMEX stocks; Shumway & Warther (1999) found the corresponding figure for Nasdaq stocks to be about −55%. In this code base, the 2026-11-04 audit found that the label builder dropped every delisting outcome: **0 of 630** pre-delisting labels survived on a constructed test, so ML training, IC and decile statistics never saw a single delisting.
 
-**Guards in the code.** Two knobs, both defaulting to −30%:
+**Guards in the code.** One knob, `CostConfig.delisting_haircut = -0.30`, is the single source of the delisting assumption for both labels and the backtest (the former `AlphaConfig.delisting_return` was removed; the pipeline passes the cost setting to the alpha model):
 
-- `AlphaConfig.delisting_return = -0.30` in `qts/alpha/targets.py::forward_returns`: if a name's last ever close falls inside the label window $(t, t+h]$, the label is the return to that last close, compounded with a −30% haircut. A temporary gap (a halt followed by more prices) is not a delisting.
-- `CostConfig.delisting_haircut = -0.30` in the simulator: a held name with no close on $t+1$ earns −30% against the position's sign (a loss for longs and shorts alike, conservatively) and is liquidated at spread plus fees.
+- In the labels (`qts/alpha/targets.py::forward_returns`): if a name has no close at the label window's end, the label is the return to its last close before the end, compounded with the −30% haircut **if that is a delisting**, and without it if it is a temporary halt.
+- In the simulator: a held name with no close on $t+1$ earns −30% against the position's sign (a loss for longs and shorts alike, conservatively) and is liquidated at spread plus fees.
+
+**Halts versus delistings, without looking ahead.** A trading halt (pending news, a regulatory halt, a long suspension) also produces missing closes, then prices resume. Deciding "halt or delisting" by peeking at whether prices come back later is a look-ahead: the second audit found that the earlier rule (a backward fill over the whole panel) made labels "realised" at $t$ depend on prices after $t$, verified on 4,228 label cells (HIGH finding 1). The rule is now causal:
+
+1. If `MarketData.delisting_dates` covers the name, it is a delisting if and only if its last trading date is on or before the window end; decided at the window end.
+2. Otherwise, with $G$ = `AlphaConfig.delisting_gap_days = 63` trading days after the last close: it is a halt if a close reappears within $G$ days (decided on the day it reappears), and a delisting if none does (decided $G$ days after the last close). Until one of those happens the label is NaN and the row is not used for training or IC.
+
+`qts/alpha/targets.py::label_realisation` gives, per decision date, the first date at which every label of that row is decided, so training and the trailing IC use a row only from then on. Without a delisting table, a delisting delays its rows by up to 63 days; supply `delisting_dates` for real data.
+
+<callout icon="⚠️" color="yellow_bg">
+The simulator does not apply this rule. On the day a held name has no close, the backtest cannot know whether prices will return, so it haircuts and liquidates every such position. A long halt therefore costs the backtest a −30% haircut even if the stock later resumes at the same price. That is conservative, and consistent with what a live book could do on the day.
+</callout>
 
 <callout icon="💡" color="blue_bg">
 Why charge −30% to shorts too? A short in a company delisted for cause would profit, but one in a company acquired at a premium would lose, and price data cannot tell them apart, so the haircut goes against the position in both cases. Replace it with real delisting returns when the source has them.
@@ -115,7 +141,7 @@ Why charge −30% to shorts too? A short in a company delisted for cause would p
 
 **What it is.** A quarterly report describes a period (say, the quarter ending 31 March) but becomes public on its filing date: US companies have about 40–45 days after quarter end to file a 10-Q and 60–90 days after year end for a 10-K, depending on size. A database keyed on the period end shows the numbers 30–90 days early, which is worth a lot in a backtest, since prices react to earnings, and nothing live.
 
-**Guards in the code.** Sharadar's `datekey` is the filing date; the loader keys every panel on `datekey + lag_days`. For sources that carry only period dates, the build plan prescribes a conservative 90-day lag (`lag_days ≈ 90`).
+**Guards in the code.** Sharadar's `datekey` is the filing date; the loader keys every panel on `datekey + lag_days`, with `lag_days = 1` by default because a filing dated $d$ may be released after that day's close. For sources that carry only period dates, the build plan prescribes a conservative 90-day lag (`lag_days ≈ 90`).
 
 A fifth bias, universe-membership look-ahead, was the audit's most severe finding; → see **The eligibility panel and the "ever in universe" leak** below.
 
@@ -152,12 +178,14 @@ All but the first row are out-of-sample or live. The universe rules below act on
 
 ```text
 root/
+  .locks/prices_close.lock             one advisory lock file per dataset
   prices_close/_meta.json              {"kind": "wide", "columns": [...], "partitioned": true}
   prices_close/year=2006/data.parquet  long rows: date, ticker, value   (zstd)
   prices_close/year=2007/data.parquet
   ...
   industry/_meta.json
   industry/all.parquet                 long table without a date: ticker, industry
+  delisting_dates/all.parquet          long table: ticker, delisting_date
 ```
 
 ### Why we need it here
@@ -166,11 +194,21 @@ Research reads the same panels thousands of times and must read the same bytes e
 
 ### How it works
 
-1. **Wide panels are stored long.** `write_wide(name, df)` stacks a date × ticker frame into `(date, ticker, value)` rows and **drops NaNs**. The ticker set can then change between writes, delisted names are simply missing rows, and every dataset shares one three-column schema.
-2. **Partitioned by calendar year** into `year=YYYY/data.parquet` (zstd); reads with `start`/`end` open only partitions in range. Tables without dates (the industry map) go to `all.parquet`; `_meta.json` records kind, columns and partitioning.
-3. **Reading.** `read_wide(name, start, end, tickers)` reads the partitions, filters and pivots back to the wide convention. `as_market_data(universe_tickers, start, end, extra_names)` reads the four required datasets and any optional panels, reindexes every panel to the close panel's dates and tickers, maps industry (missing → `"UNKNOWN"`) and validates the result. `write_market_data(md)` is the inverse.
-4. **SQL.** `duckdb_query(sql)` opens an in-memory DuckDB connection with one view per dataset (`read_parquet` over the partition glob) and returns a DataFrame.
-5. **Hashing.** `snapshot_hash(name)` is a SHA-256 over the relative paths and bytes of a dataset's files; `snapshot_hash_all()` combines them. These are the data identities for the trial ledger (→ see **Architecture & data flow › Reproducibility**).
+1. **Wide panels are stored long.** `write_wide(name, df)` stacks a date × ticker frame into `(date, ticker, value)` rows and stores no NaN cells. The ticker set can then change between writes, delisted names are simply missing rows, and every dataset shares one three-column schema.
+2. **Partitioned by calendar year** into `year=YYYY/data.parquet` (zstd); reads with `start`/`end` open only partitions in range. Tables without dates (the industry map, delisting dates) go to `all.parquet`; `_meta.json` records kind, columns and partitioning.
+3. **Writes merge by default.** Three modes (`mode=` on `write_long` / `write_wide`):
+
+| Mode | What happens to a year partition the new data touches | Use it for |
+|---|---|---|
+| `"upsert"` (default) | stored rows whose key (`date, ticker`) appears in the new data are replaced; every other stored row is kept | nightly appends, vendor corrections |
+| `"replace_partition"` | rewritten with only the new rows | an intentional full rewrite of those years |
+| `"replace"` | the whole dataset is dropped and rewritten | rebuilding a derived panel from raw drops |
+
+For wide panels under upsert, `nan_policy` decides what a NaN cell means: `"keep_existing"` (default) treats it as "no information" and leaves any stored value in place, so a partial re-delivery of a sparse panel (short interest, fundamentals) cannot delete data; `"delete"` makes a NaN cell delete the stored value. Tables without a date column are upserted on `ticker` if present, otherwise replaced.
+4. **Atomic, locked writes.** Every Parquet file is written to a temporary file in the same directory and moved into place with `os.replace`, so a crash never leaves a truncated partition. Every write of a dataset holds an exclusive `fcntl.flock` on `<root>/.locks/<dataset>.lock` and every read the shared lock, so a reader never sees a half-rewritten dataset and concurrent upserts from several processes never lose rows (`tests/test_store_concurrency.py`).
+5. **Reading.** `read_wide(name, start, end, tickers)` reads the partitions, filters and pivots back to the wide convention. `as_market_data(universe_tickers, start, end, extra_names)` reads the four required datasets and any optional panels, reindexes every panel to the close panel's dates and tickers, maps the static industry (missing → `"UNKNOWN"`), attaches `industry_history` (with an `"UNKNOWN"` row for every ticker not yet classified at the panel start, never the static map) and `delisting_dates`, and validates the result. `write_market_data(md)` is the inverse.
+6. **SQL.** `duckdb_query(sql)` opens an in-memory DuckDB connection with one view per dataset (`read_parquet` over the partition glob) and returns a DataFrame.
+7. **Hashing.** `snapshot_hash(name)` is a SHA-256 over the relative paths and bytes of a dataset's files; `snapshot_hash_all()` combines them. The pipeline's own data identity is the in-memory hash of the assembled `MarketData` (→ see **Architecture & data flow › Reproducibility**).
 
 ### Why this choice
 
@@ -178,14 +216,15 @@ The build plan recommends Polars and DuckDB over local Parquet as the PIT store.
 
 ### In the code
 
-Dataset names understood by `as_market_data`: `prices_close`, `prices_volume`, `market_cap`, `industry` (required); `spread_bps`, `short_interest_ratio`, `borrow_fee`, `book_to_price`, `earnings_yield`, `gross_profitability`, `asset_growth` (optional); any further wide dataset can be loaded into `MarketData.extra` via `extra_names`.
+Dataset names understood by `as_market_data`: `prices_close`, `prices_volume`, `market_cap`, `industry` (required); `prices_close_raw`, `shares_outstanding`, `industry_history` (wide, string labels), `delisting_dates` (long: `ticker, delisting_date`), `spread_bps`, `short_interest_ratio`, `borrow_fee`, `book_to_price`, `earnings_yield`, `gross_profitability`, `asset_growth` (optional); any further wide dataset can be loaded into `MarketData.extra` via `extra_names`. The full ingest recipe is in **Operating guide › Loading real data into the ParquetStore**.
 
 ### Pitfalls & checks
 
 <callout icon="⚠️" color="yellow_bg">
-In the default mode `"overwrite_partitions"`, `write_long` / `write_wide` replace **every year partition the new data touches**. Writing one new day of 2026 prices overwrites the whole `year=2026` file with that single day. A nightly ingest must read the current year, append and write the full year back.
+The old default mode `"overwrite_partitions"` replaced **every year partition the new data touched**, so writing one new day of 2026 prices left the `year=2026` file holding that single day. The mode is deprecated: it still works, maps to `"replace_partition"` and warns. Use the default `"upsert"` for appends.
 </callout>
 
+- **Locks are local.** `flock` is advisory and not reliable on NFS; keep the store on a local disk.
 - **The store is not bitemporal.** It holds one value per `(date, ticker)`; point-in-time correctness comes from writing panels already keyed on availability date (the loaders below do this). Keep raw vendor drops immutable and rebuild derived panels from them, or a vendor revision will silently change history.
 - **Sparse panels are not forward-filled on read.** `as_market_data` reindexes without filling, so write `pit_forward_fill` output (already on the trading calendar), not raw filing-date rows. `pit_forward_fill` has no staleness cap: a company that stops filing keeps its last value (audit finding 16).
 
@@ -227,15 +266,18 @@ Total-return adjustment makes simple returns on `close` equal to holder returns.
 
 The code assumes the price source has already adjusted `close`; there is no adjustment logic in `qts`. `yfinance_to_market_data` downloads with `auto_adjust=True`. `MarketData.returns` is `close.pct_change(fill_method=None)`, so gaps stay NaN instead of being bridged.
 
+The source should also supply the **as-traded** close as `close_raw` (store dataset `prices_close_raw`) and the actual share count as `shares_outstanding`. Then `MarketData.trade_price()` returns `close_raw` and `MarketData.dollar_volume` is `close_raw × volume`, with `volume` in actual shares traded that day. Everything that is a *level* on one date reads these: the \$5 screen and the ADV screen in `qts/data/universe.py::raw_eligibility`, the cost model's ADV and per-share fees (`TransactionCostModel.snapshot`), the liquidity features, and the risk model's turnover descriptor. When `close_raw` is missing, `trade_price()` falls back to the adjusted close, which is historically wrong across splits.
+
 ### Pitfalls & checks
 
 <callout icon="⚠️" color="yellow_bg">
-Adjusted prices are right for returns and wrong for levels. The \$5 screen (`qts/data/universe.py::raw_eligibility` compares `md.close` with `min_price`) and dollar volume (`MarketData.dollar_volume = close × volume`) both use the adjusted close, which lies below the prices that actually traded because every later split and dividend is divided out. A stock that traded at \$40 in 2006 and has since split 2-for-1 three times shows an adjusted 2006 price of \$5 or less, and can fail the price and ADV screens in a year when it was a liquid mid-cap. On real data, add an unadjusted close panel (for example in `MarketData.extra`) and use it for the price screen and for dollar volume.
+Adjusted prices are right for returns and wrong for levels. A stock that traded at \$40 in 2006 and has since split 2-for-1 three times shows an adjusted 2006 price of \$5, and on the adjusted close it fails the price screen (and, with share volume left unadjusted, understates its dollar volume eightfold) in a year when it was a liquid mid-cap. The code now screens on `trade_price()`, so this only bites when a source provides no `close_raw`. Load one for real data.
 </callout>
 
-- **Per-share fundamentals need the matching price.** As-reported book value per share and EPS are not split-adjusted; dividing them by a split-adjusted close inflates book-to-price and earnings yield before every later split. Pass the unadjusted close to `sharadar_sf1_to_pit_fundamentals(close=...)`.
+- **Per-share fundamentals need one share basis.** As-reported book value per share and EPS are on the share count *of the filing*. Dividing them by a split-adjusted close inflates the ratio before every later split; dividing them by today's raw close is still wrong by the split factor between a split and the next filing (second audit, finding 7: B/P read 0.8 instead of 0.4 after a 2:1 split). `sharadar_sf1_to_pit_fundamentals` now forms totals: book value = BVPS × shares as of the filing date, divided by today's market cap, so a split leaves the ratio unchanged (→ see **Fundamentals: Sharadar SF1 and the datekey**).
 - **Retroactive revision.** Every new dividend rescales the adjusted history before it; never mix series downloaded on different days.
-- **Shares outstanding from market cap.** `to_short_interest_ratio` needs shares outstanding. Deriving it as `market_cap / close` is only correct with the unadjusted close.
+- **Shares outstanding from market cap.** `qts/data/loaders.py::shares_outstanding_panel(md)` returns `md.shares_outstanding`, else `market_cap / close_raw`, and raises if neither exists rather than dividing by the split-adjusted close.
+- **The synthetic market can plant splits.** `SyntheticSpec(n_splits=k)` plants $k$ forward splits in `close_raw`, `shares_outstanding` and `volume` while leaving `close`, `market_cap` and dollar volume bit-identical, so tests can check that nothing level-based reads the adjusted close.
 
 ## Universe rules
 
@@ -245,12 +287,12 @@ The **universe** is the set of stocks the strategy may trade on a given date. `q
 
 | Rule | Default | Parameter |
 |---|---|---|
-| Price at least | \$5 | `min_price = 5.0` |
-| Average daily dollar volume at least | \$2,000,000 over 63 trading days | `min_adv_usd = 2_000_000.0`, `adv_window = 63` |
+| As-traded price at least | \$5 | `min_price = 5.0` |
+| Average daily dollar volume (as-traded price × shares) at least | \$2,000,000 over 63 trading days | `min_adv_usd = 2_000_000.0`, `adv_window = 63` |
 | Not in the bottom size quantile of names passing the screens above | bottom 20% excluded | `exclude_bottom_size_quantile = 0.20` |
 | Within the top N by market cap among the survivors | N = 1,000 | `top_n_by_mcap = 1000` |
-| Refresh frequency | every 21 trading days (≈ monthly) | `build_universe_mask(refresh_days=21)` |
-| Hysteresis | a member leaves only after failing at 3 consecutive refreshes; a non-member enters as soon as it passes | `build_universe_mask(exit_after_n_fails=3)` |
+| Refresh dates | the first trading day of each calendar month, plus the panel's first date | `refresh_anchor = "month_start"` (`"panel_start"`: every `refresh_days = 21` from the first date) |
+| Hysteresis | a member leaves only after failing at 3 consecutive refreshes; a non-member enters as soon as it passes | `exit_after_n_fails = 3` |
 | Must be priced | a name with no close at $t$ is never in the universe | always |
 
 ### Why we need it here
@@ -259,15 +301,15 @@ The universe is the first and cheapest risk control: it decides whether the stra
 
 ### How it works, rule by rule
 
-**1. Price at least \$5.** Low-priced stocks are expensive per dollar traded. The \$0.01 tick is 0.2% of a \$5 stock but 1% of a \$1 stock, so percentage spreads are mechanically wider, and a \$0.0035 per-share commission is 7 bp of a \$5 trade but 0.35 bp of a \$100 trade. Many brokers restrict margin and shorting below \$5, and sub-\$5 stocks are disproportionately distressed.
+**1. Price at least \$5.** The price is the as-traded close (`md.trade_price()`), the price a trader actually saw that day. Low-priced stocks are expensive per dollar traded. The \$0.01 tick is 0.2% of a \$5 stock but 1% of a \$1 stock, so percentage spreads are mechanically wider, and a \$0.0035 per-share commission is 7 bp of a \$5 trade but 0.35 bp of a \$100 trade. Many brokers restrict margin and shorting below \$5, and sub-\$5 stocks are disproportionately distressed.
 
-**2. ADV at least \$2M.** A capacity screen. Trades are capped at 5% of ADV (`PortfolioConfig.max_adv_participation = 0.05`), so a \$2M ADV name allows \$100,000 of trading a day. With positions capped at 2% of NAV, a \$5M book (cap \$100,000) can build a full position in a day; a \$50M book (cap \$1M) needs ten days, while the forecast decays and impact accumulates. ADV is the trailing 63-day mean of `close × volume` with at least 31 observations (`min_periods = max(5, adv_window // 2)`), so a new listing becomes eligible after about six weeks at the earliest.
+**2. ADV at least \$2M.** A capacity screen. Trades are capped at 5% of ADV (`PortfolioConfig.max_adv_participation = 0.05`), so a \$2M ADV name allows \$100,000 of trading a day. With positions capped at 2% of NAV, a \$5M book (cap \$100,000) can build a full position in a day; a \$50M book (cap \$1M) needs ten days, while the forecast decays and impact accumulates. ADV is the trailing 63-day mean of `md.dollar_volume` (as-traded price × actual shares traded) with at least 31 observations (`min_periods = max(5, adv_window // 2)`), so a new listing becomes eligible after about six weeks at the earliest.
 
 **3. Exclude the bottom 20% by size.** Among names passing the price and ADV screens, those below the per-date 20th percentile of market cap are dropped. This proxies the academic convention of excluding stocks below the 20th percentile of **NYSE** market caps ("NYSE breakpoints"); the proxy uses the eligible cross-section because exchange history is not in `MarketData`. It backs up the liquidity screen: liquid microcaps still carry the anomalies that vanish net of costs.
 
 **4. Top N by market cap.** The 1,000 largest survivors are kept (ties broken by column order). This bounds problem size for the optimiser and the risk regressions, concentrates the book where data is best and costs lowest, and matches the build plan's 1,000–1,500.
 
-**5. Monthly refresh.** Membership is recomputed every 21 trading days (rows 0, 21, 42, … of the date index) and held in between, because every exit forces a sale.
+**5. Monthly refresh.** Membership is recomputed on the first trading day of every calendar month (and on the panel's first date, so the mask is defined from the start) and held in between, because every exit forces a sale. Anchoring the grid to the calendar matters for reproducibility: the old grid (rows 0, 21, 42, … of the date index, still available as `refresh_anchor = "panel_start"`) depended on where the data happened to start, so loading from 2006-01-03 or from 2006-01-10 gave different universes for the same date (second audit, finding 18). The hysteresis state still needs `exit_after_n_fails` refreshes to forget the start.
 
 **6. Three-strike hysteresis.** At each refresh, a name that passes all screens is in. A current member that fails is *not* removed immediately: a failure counter increments, and the name leaves only when the counter reaches 3, i.e. at the third consecutive failed refresh. Passing resets the counter. In code:
 
@@ -288,14 +330,15 @@ An index's constituent list (S&P 500, Russell 1000) would need a point-in-time h
 ### In the code
 
 - `raw_eligibility(md, cfg)`: per-day eligibility before refresh and hysteresis.
-- `build_universe_mask(md, cfg=None, refresh_days=21, exit_after_n_fails=3)`: the PIT mask. `refresh_days` and `exit_after_n_fails` are function arguments, not `UniverseConfig` fields, so `ResearchPipeline` always uses the defaults.
-- `apply_mask(md, mask)` sets `eligible` (next section); `universe_turnover(mask)` is the fraction of names entering or leaving per date.
+- `refresh_positions(dates, refresh_days, anchor)`: the refresh grid.
+- `build_universe_mask(md, cfg=None, refresh_days=None, exit_after_n_fails=None)`: the PIT mask. The two keyword arguments default to `UniverseConfig.refresh_days` (used only with the `"panel_start"` anchor) and `UniverseConfig.exit_after_n_fails`, so `ResearchPipeline` honours the config.
+- `apply_mask(md, mask)` sets `eligible` (next section); `masked_levels(md)` gives the risk model its "NaN outside the universe" view; `universe_turnover(mask)` is the fraction of names entering or leaving per date.
 
 To tune: scale `min_adv_usd` with NAV (the capacity arithmetic above); raise `exclude_bottom_size_quantile` for a more conservative book; lower `top_n_by_mcap` for faster research sweeps.
 
 ### Pitfalls & checks
 
-- **Adjusted prices in the screens** (see the warning under **Corporate actions and adjusted prices**).
+- **No `close_raw`, adjusted screens.** Without an as-traded close the screens fall back to the adjusted close (see the warning under **Corporate actions and adjusted prices**).
 - **The size quantile is relative to the eligible set,** not NYSE breakpoints. In a period when many small names pass the ADV screen, the cut-off is lower than the NYSE convention would give.
 - **Universe churn is a cost.** Check `universe_turnover` and the `forced_exits` diagnostics after any rule change.
 - **The default synthetic market never exercises the universe** (300 names, `top_n_by_mcap = 1000`). Test eligibility logic with `top_n_by_mcap` well below the number of names (the audit used 120 of 300).
@@ -324,7 +367,7 @@ Screens on day 5:
 
 Now suppose ten names pass the base screens on day 5, with market caps (in \$B) of 0.6, 0.7, 0.9, **1.2 (A)**, 1.5, 2, 3, 5, 8, 20. The 20% quantile (pandas linear interpolation at position $0.2 \times (10-1) = 1.8$ in the sorted list) is $0.7 + 0.8 \times (0.9 - 0.7) = \$0.86\text{B}$. The 0.6 and 0.7 names are dropped; A survives. With the default `top_n_by_mcap = 1000`, A is eligible. With `top_n_by_mcap = 5`, the five largest survivors are 20, 8, 5, 3 and 2; A ranks seventh and is not eligible.
 
-Hysteresis, from the constructed test `tests/test_data.py::test_universe_hysteresis_constructed` (refreshes on days 0, 21, 42, 63, 84, …; its stocks are unrelated to the three above). One stock falls below \$5 on days 42–83 and recovers: it fails at the refreshes on days 42 and 63 (counter 1, then 2), passes on day 84 (counter reset), and never leaves. A second falls below \$5 from day 42 for good: it fails on days 42, 63 and 84 and leaves on day 84, the third consecutive failure. A third stops trading on day 100 and leaves that day, whatever its counter.
+Hysteresis, from the constructed test `tests/test_data.py::test_universe_hysteresis_constructed`, which uses the legacy `refresh_anchor = "panel_start"` grid so that refreshes fall on days 0, 21, 42, 63, 84, … (its stocks are unrelated to the three above; with the default month-start grid the logic is identical, only the refresh dates differ). One stock falls below \$5 on days 42–83 and recovers: it fails at the refreshes on days 42 and 63 (counter 1, then 2), passes on day 84 (counter reset), and never leaves. A second falls below \$5 from day 42 for good: it fails on days 42, 63 and 84 and leaves on day 84, the third consecutive failure. A third stops trading on day 100 and leaves that day, whatever its counter.
 
 ### References
 
@@ -336,17 +379,19 @@ Hysteresis, from the constructed test `tests/test_data.py::test_universe_hystere
 
 ### What it is
 
-`qts/data/universe.py::apply_mask(md, mask)` returns a new `MarketData` whose `eligible` field holds the per-date membership (`mask & close.notna()`). Volume, market cap, short interest, borrow fee, fundamentals and `extra` panels are set to NaN wherever the name is out of the universe. `close` is kept intact, so returns and labels stay computable for names that have just left and for held names being unwound. Tickers that are never in the universe are dropped from the columns, purely to save space. Every cross-sectional operation downstream must go through `MarketData.eligibility()` (in the universe at $t$ **and** priced at $t$).
+`qts/data/universe.py::apply_mask(md, mask)` returns a new `MarketData` whose `eligible` field holds the per-date membership (`mask & close.notna()`). **No panel is masked**: prices, volume, market cap, shares outstanding, fundamentals, short interest and `extra` keep their full history. Tickers that are never in the universe are dropped from the columns, purely to save space (`industry_history` is column-restricted the same way; `extra` panels whose columns are not tickers pass through). Universe membership acts only through `MarketData.eligibility()` (in the universe at $t$ **and** priced at $t$), which every cross-sectional operation downstream must use.
+
+Why not blank the levels outside the universe, as an earlier version did? Because the history before a name enters the universe was knowable at the time. Blanking it gave every new entrant NaN 63-day turnover, Amihud illiquidity and dollar volume (and risk liquidity) for about 40 days, which were then filled with the cross-sectional median, and computed its cost-snapshot ADV from post-entry days only (second audit, finding 6; `tests/test_apply_mask_history.py`). A consumer that still wants the old view, such as the risk model whose estimation universe is "has a market cap", calls `masked_levels(md)`, which blanks `market_cap`, `volume` and `shares_outstanding` where the name is not eligible.
 
 ### Why "ever in universe" leaks
 
 After `apply_mask`, the column set is "every ticker that is ever in the universe during the sample", a list chosen with knowledge of the whole sample. Any cross-section computed over the column set, rather than over the names eligible at that date, contains stocks that are present *because of what they do later*. Names enter a cap-ranked universe by rising in price, so their pre-entry period is one of strong returns.
 
-The 2026-11-04 audit found exactly this. An earlier version zero-filled features of out-of-universe names instead of dropping them, and since `close` is unmasked, every ever-member had price features, a label, an ML training row and an emitted score on every date. On a synthetic market of 300 names with `top_n_by_mcap = 120`, 21% of feature rows were outside the universe at their date, and **future entrants earned +110% annualised in the 63 days before entry against −6% for the universe average**. Mean IC was 0.0137 over all kept names versus 0.0234 over in-universe names only, so the leak also distorted the measurement of skill. It was rated CRITICAL and fixed by the eligibility panel: features, labels, IC and scores are computed over eligible names only and ineligible rows are dropped, and the simulator refuses to open ineligible names and unwinds held ones over 5 days. → see **Architecture & data flow › Point-in-time discipline** for the full list of guards.
+The 2026-11-04 audit found exactly this. An earlier version zero-filled features of out-of-universe names instead of dropping them, and since `close` was unmasked, every ever-member had price features, a label, an ML training row and an emitted score on every date. On a synthetic market of 300 names with `top_n_by_mcap = 120`, 21% of feature rows were outside the universe at their date, and **future entrants earned +110% annualised in the 63 days before entry against −6% for the universe average**. Mean IC was 0.0137 over all kept names versus 0.0234 over in-universe names only, so the leak also distorted the measurement of skill. It was rated CRITICAL and fixed by the eligibility panel: features, labels, IC and scores are computed over eligible names only and ineligible rows are dropped, and the simulator refuses to open ineligible names and unwinds held ones over 5 days. → see **Architecture & data flow › Point-in-time discipline** for the full list of guards.
 
 ### Pitfalls & checks
 
-Any new cross-sectional computation must use `md.eligibility()` (or receive it as `valid`); `md.close.notna()` or the column set reintroduces the leak. `tests/test_pipeline.py::test_pipeline_held_names_are_eligible` checks the backtest's holdings. The leak is invisible whenever every name is always eligible, so test with a universe smaller than the ticker set.
+Any new cross-sectional computation must use `md.eligibility()` (or receive it as `valid`); `md.close.notna()`, `md.market_cap.notna()` or the column set reintroduces the leak, and since `apply_mask` no longer blanks levels, "has a market cap" no longer implies "in the universe". The lag investigation found exactly this kind of slip in the risk model: style exposures were standardised (and beta estimated against a market proxy) over names that join the universe later; they are now restricted to names eligible at each date. `tests/test_pipeline.py::test_pipeline_held_names_are_eligible` checks the backtest's holdings. The leak is invisible whenever every name is always eligible, so test with a universe smaller than the ticker set.
 
 ## Short interest: FINRA data and the publication lag
 
@@ -360,23 +405,27 @@ It stands in for borrow-fee history until the IBKR logger has a year of data (re
 
 ### How it works
 
-The value for settlement date $S$ is disseminated about 8 business days later, so a PIT panel reveals it only from then:
+The value for settlement date $S$ is disseminated about 8 trading sessions later, so a PIT panel reveals it only from then. The ratio is formed per report, with the share count *as of the settlement date* (the basis FINRA's short position is reported on), and the ratio is what is carried forward:
 
 $$
-\text{SIR}_{i,t} = \frac{\text{SI}_{i,S^*(t)}}{\text{SharesOut}_{i,t}}, \qquad S^*(t) = \max\{S : S + 8\ \text{business days} \le t\}
+\text{SIR}_{i,t} = \frac{\text{SI}_{i,S^*(t)}}{\text{SharesOut}_{i,S^*(t)}}, \qquad S^*(t) = \max\{S : S + 8\ \text{NYSE sessions} \le t\}
 $$
 
 where:
-- $\text{SI}_{i,S}$ is the short interest reported for settlement date $S$;
+- $\text{SI}_{i,S}$ is the short interest reported for settlement date $S$, in shares;
 - $S^*(t)$ is the latest settlement date already published at $t$;
-- $\text{SharesOut}_{i,t}$ is shares outstanding as of $t$.
+- $\text{SharesOut}_{i,S}$ is the actual share count on (or last before) $S$.
 
-`parse_finra_short_interest` reads FINRA's pipe-delimited files (column aliases accepted, delimiter sniffed) into a long table; `finra_publication_date(S, lag_business_days=8)` gives the availability date; `to_short_interest_ratio` applies the lag, forward-fills with `pit_forward_fill` and divides by shares outstanding as of each date; `short_interest_long_to_wide` does the same for the raw count.
+Forming the ratio at the settlement date keeps it split-consistent: if the stock splits 2-for-1 between two reports, the share count doubles but the reported short position does not until the next report, so dividing by today's shares would halve the ratio for up to a month (second audit, finding 8).
+
+**Why NYSE sessions and not business days.** `pandas.offsets.BDay` skips weekends but not exchange holidays, so it is early by one session for every holiday the lag spans. Settlement on 2024-12-31 plus `BDay(8)` gives 2025-01-10; on the NYSE calendar, which was closed on 1 January and 9 January 2025 (the national day of mourning for President Carter), it is 2025-01-14, two sessions later. `qts/data/calendar.py` is a dependency-free NYSE calendar for 2000–2035: the ten full-day holidays with their observed-day rules (New Year's Day on a Saturday is *not* observed on the Friday), Good Friday from the Easter computus, Juneteenth from 2022, and the unscheduled closures (11–14 September 2001, 11 June 2004, 2 January 2007, 29–30 October 2012, 5 December 2018, 9 January 2025). Early 13:00 closes count as sessions. `add_sessions(dates, n)` does the arithmetic; dates outside the range raise.
+
+`parse_finra_short_interest` reads FINRA's pipe-delimited files (column aliases accepted, delimiter sniffed) into a long table; `finra_publication_date(S, lag_business_days=8)` gives the availability date via `add_sessions`; `to_short_interest_ratio(long_df, shares_outstanding, lag_business_days=8)` forms the ratio per report, applies the lag and forward-fills with `pit_forward_fill`; `short_interest_long_to_wide` does the same for the raw count.
 
 ### Pitfalls & checks
 
-- The lag uses pandas business days (no exchange holidays), and FINRA publishes after the close; the audit (finding 14) recommends FINRA's dissemination calendar plus one trading day.
-- Shares outstanding must be the actual share count (see **Corporate actions and adjusted prices**).
+- FINRA publishes after the close; the first audit (finding 14) recommends FINRA's dissemination calendar plus one session. The 8-session default approximates it; raise `lag_business_days` to 9 to be conservative.
+- `shares_outstanding` must be a wide panel of actual share counts (`MarketData.shares_outstanding`, or `shares_outstanding_panel(md)`); the function refuses anything else.
 - Twice-monthly data is stale by up to three weeks plus the lag; do not read it as a daily signal.
 
 ### References
@@ -392,13 +441,27 @@ Sharadar's SF1 table has one row per company, reporting period and **dimension**
 
 ### How it works
 
-`qts/data/loaders.py::sharadar_sf1_to_pit_fundamentals` (defaults `dimension="ARQ"`, `lag_days=0`):
+`qts/data/loaders.py::sharadar_sf1_to_pit_fundamentals(sf1_df, dimension="ART", lag_days=1, dates=None, fields=None, close=None, close_raw=None, price_is_adjusted=True, shares_outstanding=None, market_cap=None)`:
 
 1. Filters to the dimension (warning on `MR*`), sorts by `(ticker, datekey, calendardate)` and keeps the latest period among same-day filings.
-2. Computes **asset growth** with a filing-date-aware join (below), so a restatement of last year's assets filed after the current report cannot leak into it.
-3. Computes gross profitability as `gp / assets`.
-4. Makes every field visible from `datekey + lag_days` via `pit_forward_fill` on the trading calendar.
-5. Derives `book_to_price = bvps / close` and `earnings_yield = eps / close` daily if `close` is passed, otherwise `1 / pb` and `1 / pe` as of the filing date.
+2. **Restatements of older periods.** Per ticker, a row whose `calendardate` is older than the latest period already filed (as of its `datekey`), such as a 10-K/A for last year filed after this year's first 10-Q, is dropped from the level panels: otherwise the older period would show as "current" from its filing date (second audit, finding 10: gross profitability fell back from 0.20 to the restated prior-year 0.11). It still feeds the prior-year lookup. A restatement of the *current* period replaces it.
+3. Computes **asset growth** with a filing-date-aware join (below), so a restatement of last year's assets filed after the current report cannot leak into it.
+4. Computes gross profitability as `gp / assets`.
+5. Makes every field visible from `datekey + lag_days` (calendar days, snapped to the next panel date) via `pit_forward_fill`.
+6. Derives the valuation ratios, preferring **totals on one share basis**:
+
+$$
+\text{B/P}_{i,t} = \frac{\text{BVPS}_{i,f} \times \text{Shares}_{i,f}}{\text{MarketCap}_{i,t}}, \qquad \text{E/P}_{i,t} = \frac{\text{EPS}_{i,f} \times \text{Shares}_{i,f}}{\text{MarketCap}_{i,t}}
+$$
+
+where:
+- $f$ is the latest filing visible at $t$, and $\text{BVPS}_{i,f}$, $\text{EPS}_{i,f}$ are its as-reported per-share values;
+- $\text{Shares}_{i,f}$ is the actual share count as of the filing's `datekey` (the `shares_outstanding` panel, else SF1's `sharesbas` of that row);
+- $\text{MarketCap}_{i,t}$ is the point-in-time market cap (the `market_cap` panel, else `close_raw` × `shares_outstanding`).
+
+BVPS × shares is the total book value the filing reports, and market cap is unaffected by splits, so a split after the filing leaves the ratio unchanged. Without share data the legacy path divides per-share values by the as-traded close (`close_raw`), still wrong by the split factor between a split and the next filing; passing an adjusted `close` raises unless you assert `price_is_adjusted=False`. With no price at all the ratios fall back to the vendor's `1 / pb` and `1 / pe`.
+
+**Worked example.** A filing on 5 May reports BVPS \$20 with 100M shares (book value \$2B). On 20 May the stock trades at \$50, so market cap is \$5B and B/P $= 2/5 = 0.40$. On 1 June a 2-for-1 split takes effect: price \$25, 200M shares, market cap still \$5B. The totals path still gives $20 \times 100\text{M} / \$5\text{B} = 0.40$. The legacy per-share path gives $20 / 25 = 0.80$ until the next filing reports BVPS \$10.
 
 ```python
 merged = pd.merge_asof(cur, prev, left_on="datekey", right_on="_prev_dk", by=["ticker", "_prev_cd"],
@@ -413,9 +476,9 @@ SF1's `datekey` is the only filing-date field at individual budgets (build plan 
 
 ### Pitfalls & checks
 
-- **After-hours filings.** With `lag_days = 0`, a filing dated $d$ is visible at the close of $d$, though many are filed after 16:00. Use `lag_days = 1` on real data.
-- **Quarterly EPS.** With `ARQ`, `eps / close` is a quarterly yield; use `ART` for trailing-twelve-month ratios.
-- **Unadjusted close for per-share ratios** (see **Corporate actions and adjusted prices**).
+- **After-hours filings.** The default `lag_days = 1` makes a filing dated $d$ usable at the close of $d+1$, because many 10-Qs and 8-Ks are filed after 16:00. `lag_days = 0` assumes every filing was public before the close of its date (optimistic).
+- **Dimension.** The default `ART` (as-reported trailing twelve months) makes `eps`-based earnings yield and `gp/assets` annual and free of seasonality. With `ARQ`, flow items are single quarters, so E/P is about a quarter of the annual figure and seasonal; use it only when you need quarter-on-quarter changes.
+- **Pass share data.** Supply `shares_outstanding` and `market_cap` (or `close_raw`) so the split-consistent path is used.
 
 ### References
 
@@ -437,7 +500,7 @@ Review amendment 3 chose FF48 from SIC over **GICS** (the S&P/MSCI classificatio
 
 ### Pitfalls & checks
 
-- **One label per ticker for all history** (`slice_until` keeps `industry` whole): today's SIC applied to 2006 is a mild look-ahead.
+- **Dated labels, if you have them.** `MarketData.industry` is one label per ticker for all history, so today's SIC applied to 2006 is a mild look-ahead. Supply `industry_history` (dated labels, store dataset `industry_history`) and every consumer reads `md.industry_as_of(t)`: the alpha layer's industry demeaning (`qts/alpha/features.py::industry_segments`), the label residualisation and the risk model's industry factors (`qts/risk/exposures.py::industry_panel`). The risk model also carries, at each date, only the industry columns already used by an eligible name by then, so a label introduced later cannot appear as an all-zero factor before it exists.
 - **"Other" is a catch-all;** check its size.
 - **Labels no longer start with `IND`,** which is why the optimiser uses `factor_groups` instead of name prefixes.
 
@@ -498,13 +561,23 @@ $$
 a_{i,t} = \frac{\text{IC}_{\text{true}}\; \sigma_i\; z_{i,t-L}}{\sqrt{H}}
 $$
 
-where $\text{IC}_{\text{true}} = 0.04$ (`ic_true`), $\sigma_i$ is the stock's daily idiosyncratic volatility, $L$ is `alpha_lag_days` and $H = 20$ (`alpha_horizon_days`). So $z_t$ predicts $r_{t+1}, \dots, r_{t+H}$ and not $r_t$: anything observed at $t$ predicts strictly after $t$, as in reality. Summed over $H$ days with a constant score, the planted component is $\text{IC}_{\text{true}} \cdot \sigma_i\sqrt{H} \cdot z_i$, which is Grinold's rule ($\alpha = \text{IC} \times \text{volatility} \times \text{score}$) at the 20-day horizon; since $H$-day idiosyncratic noise has standard deviation $\sigma_i\sqrt{H}$, the correlation of $z$ with the 20-day residual return is close to $\text{IC}_{\text{true}}$. Score decay within the window and factor noise bring the realised residual rank IC to about 0.85–0.9 × `ic_true` ($0.036 \pm 0.006$ over seeds 0–4, per the generator's docstring; synthetic, in-sample). `tests/test_synthetic_oracle.py` checks the timing and that IC lands in a band below 0.04. `alpha_lag_days = 0` reproduces the older same-month generator.
+where $\text{IC}_{\text{true}} = 0.04$ (`ic_true`), $\sigma_i$ is the stock's daily idiosyncratic volatility, $L$ is `alpha_lag_days` and $H = 20$ (`alpha_horizon_days`). So $z_t$ predicts $r_{t+1}, \dots, r_{t+H}$ and not $r_t$: anything observed at $t$ predicts strictly after $t$, as in reality (the return on $t$ loads on $z_{t-1}$, and $z_t$ correlates with it only through the score's persistence). Summed over $H$ days with a constant score, the planted component is $\text{IC}_{\text{true}} \cdot \sigma_i\sqrt{H} \cdot z_i$, which is Grinold's rule ($\alpha = \text{IC} \times \text{volatility} \times \text{score}$) at the 20-day horizon; since $H$-day idiosyncratic noise has standard deviation $\sigma_i\sqrt{H}$, the correlation of $z$ with the 20-day residual return is close to $\text{IC}_{\text{true}}$. `alpha_lag_days = 0` reproduces the older generator bit for bit (a monthly-step score driving the returns of the same month it is revealed in).
+
+**The realised IC band.** Score decay within the window (mean 20-day autocorrelation about 0.94) and the residualisation and factor noise mean that the realised Spearman IC of $z_t$ against the residualised 20-day forward return is about 0.85–0.9 × `ic_true`. The generator's docstring records the band on the default spec (300 names, 1,512 days, seeds 0–4; synthetic, full-sample):
+
+| `ic_true` | Residual rank IC, mean ± sd (range) | Raw forward rank IC |
+|---|---|---|
+| 0.04 | 0.036 ± 0.006 (0.029–0.044) | 0.037 |
+| 0.08 | 0.066 ± 0.007 (0.059–0.075) | 0.069 |
+
+`tests/test_synthetic_oracle.py` checks the timing and this band. The alpha model should recover at most this, never more: an estimated IC above the band is a leak until proven otherwise.
 
 **Observables.** The models never see $z$ directly; it leaks into characteristics with noise, as real alpha leaks into accounting ratios. For style $k$, the observable at $t$ is $o_{i,k,t} = x_{i,k,t} + 0.4\, z_{i,t} + 0.5\, \eta_{i,t}$ (the score revealed at $t$), with $\eta$ a persistent (monthly) measurement noise scaled by `characteristic_noise = 1.0`, and:
 
 | Panel | Built from | What it is for |
 |---|---|---|
 | `close` | $100 \times$ cumulative product of $(1 + r)$ | Returns, momentum, volatility, labels |
+| `close_raw`, `shares_outstanding` | equal to `close` and the fixed share count unless splits are planted | Level-based screens, split tests |
 | `market_cap` | close × fixed share count $e^{s_i + 17.2}$ (median ≈ \$3B) | Size screen, size factor, cap weights |
 | `volume` | turnover ≈ 0.8% of shares a day ($e^{-4.8}$) with log-normal noise | ADV, liquidity features, impact |
 | `spread_bps` | $(1 + 12(1 - \text{size rank})^2) \times$ noise: ≈ 1 bp (largest) to ≈ 13 bp (smallest) | Spread cost |
@@ -517,7 +590,9 @@ where $\text{IC}_{\text{true}} = 0.04$ (`ic_true`), $\sigma_i$ is the stock's da
 | `industry` | 12 random labels `IND00`–`IND11` | Industry demeaning and factors |
 | `extra["true_latent_score"]` | $z$ | Oracle for IC recovery and planted backtests |
 | `extra["true_beta"]`, `["true_market_return"]` | $\beta_i$, $m_t$ | Risk-model recovery tests |
-| `extra["true_style_returns"]` | the first style factor's return (size) | Factor-return recovery tests |
+| `extra["true_style_factor_returns"]` | all four style factor returns, date × factor (not a ticker panel) | Factor-return recovery tests |
+| `extra["true_style_returns"]` | legacy key: the size factor's return tiled across tickers | Older tests |
+| `extra["true_splits"]`, `["true_halts"]`; `delisting_dates` | planted events (when enabled) | Split, halt and delisting tests |
 
 ### Why this choice
 
@@ -525,18 +600,24 @@ Every latent style is observable through a characteristic: an earlier version wi
 
 ### In the code
 
-`SyntheticSpec` defaults: `n_stocks = 300`, `n_days = 1512` (six years), `start = "2018-01-02"`, `n_industries = 12`, `market_vol_annual = 0.16`, `style_vol_annual = 0.04`, `style_premium_annual = 0.02`, `idio_vol_annual_median = 0.30`, `ic_true = 0.04`, `alpha_horizon_days = 20`, `characteristic_noise = 1.0`, `seed = 0`, `alpha_lag_days = 1`. Dates are business days (`pd.bdate_range`). `STYLE_FACTORS = ["size", "value", "quality", "investment"]`.
+`SyntheticSpec` defaults: `n_stocks = 300`, `n_days = 1512` (six years), `start = "2018-01-02"`, `n_industries = 12`, `market_vol_annual = 0.16`, `style_vol_annual = 0.04`, `style_premium_annual = 0.02`, `idio_vol_annual_median = 0.30`, `ic_true = 0.04`, `alpha_horizon_days = 20`, `characteristic_noise = 1.0`, `seed = 0`, `alpha_lag_days = 1`, `n_splits = 0`, `n_halts = 0`, `halt_days = 10`, `n_delistings = 0`. Dates are business days (`pd.bdate_range`, no exchange holidays). `STYLE_FACTORS = ["size", "value", "quality", "investment"]`.
+
+**Planted corporate events** (each on its own random stream, so with all three at 0 the output is bit-identical to the generator without them):
+
+- `n_splits` forward splits (ratios cycling 2:1, 3:1) on random names and dates: before a $k$:1 split the as-traded price is $k \times$ `close` and the share count and shares traded are divided by $k$, so dollar volume and market cap do not move. Recorded in `extra["true_splits"]`.
+- `n_halts` names lose `halt_days` consecutive days of every price-level panel; the price path continues underneath, so the first close after the halt carries the whole halt-period return. Recorded in `extra["true_halts"]`.
+- `n_delistings` other names lose every price-level panel from a random day to the end, and `md.delisting_dates` is set (last trading date for those names, `NaT` for every other name).
 
 ### Pitfalls & checks: what the synthetic market cannot test
 
-- **No delistings or IPOs, and a static universe by default** (300 names, `top_n_by_mcap = 1000`). `survivorship_check` always warns on it, and the "ever in universe" leak was invisible for this reason. Delisting and eligibility paths need hand-built fixtures.
+- **No IPOs, and a static universe by default** (300 names, `top_n_by_mcap = 1000`). Without `n_delistings`, `survivorship_check` warns on it; the "ever in universe" leak was invisible for this reason. Eligibility paths need a universe smaller than the ticker set, and halts and delistings must be switched on explicitly.
 - **No reporting lags or restatements;** PIT loaders are tested separately on fixtures.
 - **Planted-score timing.** With the default `alpha_lag_days = 1` the score is lagged and fair. The legacy setting `alpha_lag_days = 0` lets a monthly score drive returns in the same month it is revealed: PIT-fair but optimistic (audit finding 8); use it only to reproduce old results.
 - **No industry return factor.** Industry labels are random, so industry risk factors have nothing to find.
-- **No corporate actions, constant share counts, volume unrelated to returns,** and no momentum, low-risk or short-interest premium beyond what the planted score's persistence induces.
+- **No dividends, constant share counts apart from planted splits, volume unrelated to returns,** characteristics that refresh daily with $z_t$ (optimistic against quarterly fundamentals), and no momentum, low-risk or short-interest premium beyond what the planted score's persistence induces.
 
 Results on the synthetic market are plumbing checks, not evidence about alpha.
 
 ## Roadmap
 
-Not yet in the code (from `README.md`, `docs/REVIEW_NOTES.md`, `docs/WORK_PLAN.md`): Phase 0 ingest of Norgate prices and Sharadar SF1 into a `ParquetStore` with a symbol-mapping layer; the daily IBKR borrow-rate logger, spliced into `borrow_fee` after 12 months; reproducing five `openassetpricing` factor series from own data as a PIT audit; property-based PIT tests over the universe mask and loaders (item 1.1).
+Not yet in the code (from `README.md`, `docs/REVIEW_NOTES.md`, `docs/WORK_PLAN.md`): Phase 0 ingest scripts that pull Norgate prices and Sharadar SF1 into a `ParquetStore` (there is no Norgate or Sharadar *downloader* in `qts`; `qts/data/loaders.py` has the Sharadar SF1 transform, FINRA, Ken French and SIC→FF48 parsers, and the Operating guide gives the dataset mapping); a symbol-mapping layer on permanent identifiers; the daily IBKR borrow-rate logger, spliced into `borrow_fee` after 12 months; real delisting returns from the vendor in place of the −30% haircut; reproducing five `openassetpricing` factor series from own data as a PIT audit.

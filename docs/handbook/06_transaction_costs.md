@@ -1,7 +1,18 @@
 # Transaction cost model
 
 <callout icon="🧭" color="gray_bg">
-This page explains how the system prices a trade before making it and measures what the trade really cost afterwards. Cost has three parts. **Explicit fees** are the broker, regulatory and exchange charges on the confirmation. **Implicit costs** never appear on a statement: the bid-ask spread, the price move your own order causes (market impact), and the price drift while you wait. **Holding costs** are mainly the fee for borrowing shares you are short. All of it lives in the cost model (`qts.tcost`). The optimizer gets one convex function of the weight change: a linear term (half-spread plus fees) plus a 3/2-power impact term, `a|x| + b·σ·|x|^{3/2}/√(V/nav)`. The backtester charges the same function in dollars. A transaction cost analysis (TCA) ledger breaks every real fill down into delay, impact, opportunity and fees, and recalibrates the impact prefactor `b` separately for each venue. Most published equity anomalies lose essentially all their net return once costs are counted honestly, so this layer decides whether an alpha is real. It is not a detail.
+This page explains how the system prices a trade before making it and measures what the trade really cost afterwards. Cost has three parts. **Explicit fees** are the broker, regulatory and exchange charges on the confirmation. **Implicit costs** never appear on a statement: the bid-ask spread, the price move your own order causes (market impact), and the price drift while you wait. **Holding costs** are mainly the fee for borrowing shares you are short. All of it lives behind one typed contract (`qts.core.costs`: a `LiquiditySnapshot` in, a `CostEstimate` out, a `CostModel` protocol), implemented by `qts.tcost.TransactionCostModel`. The optimizer gets a convex function of the weight change: a linear term (half-spread plus fees) plus a power-law impact term, `a|x| + b·σ·|x|^e/(V/nav)^{e−1}` with $e$ = 1.5 (the square-root law) by default. The backtester charges the same model in dollars. The default **routed** venue prices each trade the way the router executes it: the first slice in the closing auction, the rest in the continuous session. A transaction cost analysis (TCA) ledger breaks every real fill down into delay, impact, opportunity and fees, and recalibrates the impact prefactor `b` separately for each venue. Most published equity anomalies lose essentially all their net return once costs are counted honestly, so this layer decides whether an alpha is real. It is not a detail.
+</callout>
+
+<callout icon="🆕" color="green_bg">
+**What changed (Nov 2026)**
+- **Typed contract.** `LiquiditySnapshot`, `CostEstimate` and the `CostModel` protocol in `qts/core/costs.py` replace the dict-of-Series snapshot and free-form DataFrames (§10).
+- **Auction prior $b_{\text{auc}}$ = 0.3** (was 0.5). Its effective prefactor per $\sqrt{Q/\text{ADV}}$ is 0.3/√0.09 = 1.0, equal to the continuous session, so the auction saves the half-spread and never costs more impact. The old "auction is dearer than continuous" tension is gone (§6).
+- **Routed venue** (simulator and pipeline default): auction up to the router's cap, continuous remainder priced as the increment $C(q) - C(q_a)$, fees as two orders. The optimizer gets an exact convex surrogate whenever $\beta_a \le b_c$ (§6).
+- **Configurable impact exponent** `impact_exponent` (default 1.5, validated $1 < e \le 2$) is now read by the cost model, the optimizer terms, the router's LOC offset and the TCA regressor.
+- **Exact multi-day persistence:** day $k$ of a streak is charged $C(Q_k) - C(Q_{k-1})$ from the actual cumulative notional. The $k^{1.5} - (k-1)^{1.5}$ multiplier survives only as the equal-size fallback, and it is not a bound (§7).
+- **Borrow source per name**, and the small-cap multiplier now also applies to the GC default of data-poor small caps (§8). TCA regresses on $\sigma(F/V)^{e-1}$ with venue-aware $V$, and reversion defaults to the **next close** (§11).
+- **Config bounds** are validated on construction. The auction share has **one source** (`CostConfig.auction_volume_share_default`) and a date-aware calendar that includes the 11 December 2026 Russell reconstitution. Fees and ADV use **as-traded** prices, volatility uses adjusted prices (§3, §10, §12).
 </callout>
 
 ## 1. Why costs decide whether an alpha is real
@@ -30,8 +41,10 @@ The validation layer then requires breakeven to be at least **twice** the cost t
 
 ### In the code
 - `qts/backtest/metrics.py::breakeven_cost_bps(gross_returns, turnover_series)` implements the formula.
-- `BacktestResult.summary()["breakeven_cost_bps"]` and the pipeline both use turnover aligned *positionally* to return dates. An earlier date-join shifted turnover by one day and dropped the initial build; audit #4 found it and it is fixed.
+- **Which return series.** $\overline g$ must already carry every cost that is *not* a per-side trading cost. Borrow is a holding cost and does not scale with turnover, so starting from plain gross returns leaves it out of the gate entirely. The second-pass audit (finding 1) measured breakeven 26.2 bp from gross against 24.3 bp net of borrow on a real run. The simulator therefore records a third return column, `gross_after_borrow` = gross − (that day's borrow / pre-trade NAV), and `BacktestResult.summary()["breakeven_cost_bps"]`, `BacktestResult.cost_sensitivity` and the pipeline's gate all start from it (→ see **Backtesting › Metrics**).
+- Turnover is aligned *positionally* to return dates (`BacktestResult.turnover_on_return_dates()`). An earlier date-join shifted turnover by one day and dropped the initial build; audit #4 found it and it is fixed.
 - `qts/backtest/metrics.py::cost_sensitivity` re-computes net Sharpe at 0.5×, 1×, 2× and 3× a per-side cost, so you can see how quickly the strategy dies.
+- Tests: `tests/test_audit2_costs_backtest.py::test_gross_after_borrow_and_breakeven_net_of_borrow`, `tests/test_backtest.py::test_breakeven_and_sensitivity`.
 
 ### Worked example
 A 100/100 book (gross leverage 2.0) targets a 50-day effective holding period. Effective holding days = gross / (two-sided turnover / 2), so daily two-sided turnover is $\tau = 2 \times 2.0 / 50 = 0.08$. Suppose the gross return is 6% a year, or 0.06 / 252 = 2.38 bp a day. Then $c_{\text{BE}} = 2.38\text{ bp} / 0.08 = 29.8$ bp per side. If the cost model charged 12 bp per side, the gate needs $2 \times 12 = 24$ bp and the strategy passes, though not comfortably. Doubling turnover to $\tau = 0.16$ halves breakeven to 14.9 bp and fails the gate. **Turnover is the lever**, which is why the optimizer prices cost directly instead of trading to a target and hoping.
@@ -55,7 +68,7 @@ Every dollar lost between deciding to trade and holding the position falls into 
 | Explicit | CAT fee | Consolidated Audit Trail funding | CAT LLC | linear in shares |
 | Explicit | Closing-auction exchange fee | NYSE/Nasdaq fee for MOC/LOC executions | exchange | linear in shares, auction only |
 | Implicit | Spread | Paying the ask to buy / receiving the bid to sell | liquidity providers | linear in dollars (half-spread) |
-| Implicit | Market impact | Your order moves the price against you | other traders | concave in size, 3/2 power in the optimizer |
+| Implicit | Market impact | Your order moves the price against you | other traders | concave per share, total cost $\propto \lvert X\rvert^{e}$ ($e$ = 3/2 by default) |
 | Implicit | Delay | Price drift between decision and order arrival | nobody (market move) | measured in TCA only |
 | Implicit | Opportunity | Return missed on the part that did not fill | nobody | measured in TCA only |
 | Holding | Borrow fee | Rent paid to lenders of shares you are short | securities lenders | linear in short weight, per day |
@@ -137,7 +150,7 @@ where:
 
 The lookup takes the last row whose effective date is on or before the trade date. Dates before the first row use the first row's rate, never zero: the rate was never zero before FY2025. Audit #5 found that the earlier code charged zero SEC fee for every pre-2026 date. It is fixed.
 
-**FINRA TAF.** The current rate is **\$0.000195 per share sold, capped at \$9.79 per trade** (SR-FINRA-2024-019 schedule; SR-FINRA-2026-020 keeps it through 2028). There is a **fee holiday from 2026-10-01 to 2026-12-31 inclusive** (SR-FINRA-2026-021), during which TAF is zero. Today (2026-11-04) is inside the holiday. Table `FINRA_TAF_RATES`:
+**FINRA TAF.** The current rate is **\$0.000195 per share sold, capped at \$9.79 per trade** (SR-FINRA-2024-019 schedule; SR-FINRA-2026-020 keeps it through 2028). There is a **fee holiday from 2026-10-01 to 2026-12-31 inclusive** (SR-FINRA-2026-021), during which TAF is zero. November 2026 is inside the holiday. Table `FINRA_TAF_RATES`:
 
 | Effective date | \$ per share sold | Cap per trade | Status in code |
 |---|---|---|---|
@@ -152,13 +165,16 @@ The cap binds above \$9.79 / \$0.000195 ≈ 50,200 shares in one trade.
 
 ### Why this choice
 - **Dated tables rather than a single config number.** A backtest from 2018 must charge 2018's rates. A config constant would charge today's \$20.60 in years when the true rate was \$5.10 or \$27.80. With `date=None` (unknown date) the code falls back to the config values.
-- **Exchange add/remove-liquidity rebates are not modelled** in the continuous session. They are small and their sign depends on whether a child order adds or removes liquidity, which the daily model cannot know. The **closing-auction fee is modelled** because the system's default venue is the auction, and that fee (≈ \$0.0008–0.0015/share per audit #13) is 3–4× the clearing fee.
+- **Exchange add/remove-liquidity rebates are not modelled** in the continuous session. They are small and their sign depends on whether a child order adds or removes liquidity, which the daily model cannot know. The **closing-auction fee is modelled** because the system sends small orders, and the first slice of larger ones, to the auction, and that fee (≈ \$0.0008–0.0015/share per audit #13) is 3–4× the clearing fee.
 - **Volume tiers are not modelled.** The first tier is the worst case, and modelling the monthly share count would couple days together.
 
 ### In the code
 - `qts/tcost/fees.py::FeeSchedule.explicit_cost(shares, price, side, date, venue)` returns a dict `commission, clearing, sec, taf, cat, exchange, total` in dollars. `explicit_bps` and `round_trip_bps` are wrappers.
+- `FeeSchedule.explicit_cost_vec(shares, price, is_sell, date, is_auction)` is the vectorised form the cost model uses: same formulas, same dated rates, same per-order minimum and caps, but one numpy pass over all names instead of one Python call per name. `test_vectorised_fees_match_scalar` checks that the two agree.
 - `qts/tcost/fees.py::sec_section31_rate(date)` and `finra_taf_rate(date)` do the dated lookups. `FeeSchedule.fee_holiday(date)` returns the overrides active on a date.
-- `FeeSchedule.marginal_fraction(price, side, date, venue)` is the **linear coefficient per dollar traded** used by the optimizer. It ignores the \$0.35 minimum and the caps, because those make the function non-convex. The backtester uses the exact `explicit_cost`, so the two differ only for orders small enough to hit the minimum.
+- `FeeSchedule.marginal_fraction(price, side, date, venue)` (vectorised: `marginal_fraction_vec`) is the **linear coefficient per dollar traded** used by the optimizer. It ignores the \$0.35 minimum and the caps, because those make the function non-convex. The backtester uses the exact fees, so the two differ only for orders small enough to hit the minimum.
+- **Routed trades are two orders.** At the routed venue (§6) the auction slice and the continuous remainder are separate orders, so `estimate` charges `explicit_cost_vec` twice: once on the auction shares with the exchange fee, once on the continuous shares without it. Each order pays its own commission minimum. A zero-share leg costs nothing.
+- **Which price.** Fees are per share, so the share count must be the number of shares that actually trade that day. The snapshot's `price` is the **as-traded** close (`MarketData.trade_price()`, i.e. `close_raw` when the loader provides it), not the split-adjusted close. Shares = dollars / as-traded price (→ §10, "Raw vs adjusted prices").
 - Config: every fee is a `CostConfig` field (table in §12). To update for a new SEC rate, add a row to `SEC_SECTION31_RATES` **and** update `sec_fee_per_dollar_sold`, which is used when no date is passed.
 
 
@@ -184,7 +200,7 @@ Trade value $v = 1{,}000 \times 50 = \$50{,}000$. First on **2026-06-15** (SEC \
 
 Round trip: \$3.703 + \$4.928 = \$8.631, or **1.726 bp** of one-way notional. That is the "about 2 bp" in the plan.
 
-The same trade **today (2026-11-04)** falls inside the TAF holiday, so the sell is \$4.733 and the round trip is 1.687 bp. Routing both legs through the **closing auction** adds 1,000 × \$0.001 = \$1.00 per side: \$4.703 buy, \$5.928 sell, 2.13 bp round trip. The optimizer's linear coefficients for this stock are `marginal_fraction` = 0.741 bp (buy) and 0.986 bp (sell), identical to the exact numbers because nothing hits a minimum or cap.
+The same trade on **2026-11-04** falls inside the TAF holiday, so the sell is \$4.733 and the round trip is 1.687 bp. Routing both legs through the **closing auction** adds 1,000 × \$0.001 = \$1.00 per side: \$4.703 buy, \$5.928 sell, 2.13 bp round trip. The optimizer's linear coefficients for this stock are `marginal_fraction` = 0.741 bp (buy) and 0.986 bp (sell), identical to the exact numbers because nothing hits a minimum or cap.
 
 ### References
 - [SEC (2026), Fee rate advisory 2026-2](https://www.sec.gov/rules-regulations/fee-rate-advisories/2026-2)
@@ -208,7 +224,7 @@ where:
 - $h_i$ is the half-spread of name $i$ as a **fraction** (the snapshot carries both `half_spread_bps` and `half_spread` = bps / 10⁴);
 - $X_i$ is the trade in dollars.
 
-**Auction fills pay no spread.** The closing auction is a *call auction*: all buy and sell orders are collected and crossed at **one** price, the price that maximises executed volume. No one "crosses the spread" because there is no spread at the moment of execution, and every buyer and seller in the cross gets the same print. The model therefore sets the spread leg to zero for auction-venue fills (`estimate`: `spread_bps = hs_bps.where(vname != VENUE_AUCTION, 0.0)`; `cvx_terms` does the same). The auction still costs money. Your order adds to one side of the auction's imbalance and moves the clearing price, which is impact (§5–6), and the exchange charges an auction fee (§3).
+**Auction fills pay no spread.** The closing auction is a *call auction*: all buy and sell orders are collected and crossed at **one** price, the price that maximises executed volume. No one "crosses the spread" because there is no spread at the moment of execution, and every buyer and seller in the cross gets the same print. The model therefore sets the spread leg to zero for the auction venue, and at the routed venue it charges the spread only on the continuous remainder $q_c$ (`estimate`: `spread = h * qc`; `cvx_terms`: `spread * pos(|x| - k)`, §6). The auction still costs money. Your order adds to one side of the auction's imbalance and moves the clearing price, which is impact (§5–6), and the exchange charges an auction fee (§3).
 
 ### Why this choice
 - A **per-name** half-spread from quote data (`md.spread_bps`), falling back to `default_half_spread_bps` = 2 bp. A single constant would under-charge illiquid names exactly where the optimizer is most tempted to trade.
@@ -216,8 +232,8 @@ where:
 - The Citigroup study (Almgren et al. 2005) dropped spread from its impact regression for lack of a consistent effect. The system keeps it as a separate linear term and **subtracts** it from slippage before calibrating `b` (§11), so the two do not double-count.
 
 ### In the code
-- `qts/tcost/model.py::TransactionCostModel.snapshot_from_market` builds `half_spread_bps` from `md.spread_bps` as of the date (forward data never used), filling gaps with the default.
-- `_half_spread_bps` prefers `half_spread_bps`, then `half_spread` × 10⁴, then the default. This fallback chain was added after audit #3 found real spreads silently replaced by 2 bp in the simulator path.
+- `qts/tcost/model.py::TransactionCostModel.snapshot(md, date)` reads the last row of `md.spread_bps` on or before the date (forward data never used), fills gaps with `default_half_spread_bps`, and stores the result as `LiquiditySnapshot.half_spread`, a **fraction** of price. `half_spread_bps` is a derived property (×10⁴).
+- An old dict snapshot is converted by `LiquiditySnapshot.from_mapping`, which prefers `half_spread_bps`, then `half_spread`, then the default. This chain dates from audit #3, which found real spreads silently replaced by 2 bp in the simulator path.
 
 ### Pitfalls & checks
 - **Half vs full spread.** `MarketData.spread_bps` is documented as a *half*-spread proxy but named like a full spread (audit #20). Feed it a quoted full spread and every linear cost doubles. That is conservative, but it distorts the no-trade zone. Check your loader.
@@ -275,16 +291,17 @@ BUILD_PLAN §4 takes $b \in [0.3, 1.0]$, starting at **$b = 1.0$ for the continu
 The optimizer needs the **dollar cost of the whole trade**, not the impact in bp.
 
 $$
-C(X) = a\,\lvert X\rvert \;+\; b\,\sigma\,\frac{\lvert X\rvert^{3/2}}{\sqrt{V}}
+C(X) = a\,\lvert X\rvert \;+\; b\,\sigma\,\frac{\lvert X\rvert^{e}}{V^{\,e-1}}
 $$
 
 where:
 - $X$ is the trade in dollars, $V$ the venue's volume in dollars per day;
 - $a$ is the proportional cost per dollar: half-spread plus linear explicit fees;
 - $b, \sigma$ as above;
+- $e$ is `CostConfig.impact_exponent`, **1.5 by default**, which is the square-root law: $\lvert X\rvert^{3/2}/\sqrt{V}$. The average impact per dollar is $C/\lvert X\rvert - a = b\,\sigma\,(\lvert X\rvert/V)^{e-1}$, so $e - 1$ is the exponent on participation (0.5 for the square root, 0.6 for Almgren et al.'s fit);
 - $C$ is in **dollars**.
 
-This is cvxportfolio's form (with exponent 1.5 and default $b = 1$) and MOSEK's power-cone example.
+This is cvxportfolio's form (with exponent 1.5 and default $b = 1$) and MOSEK's power-cone example. The rest of this page writes the formulas with general $e$ and the numbers with $e$ = 1.5.
 
 <toggle heading="h3">
 Derivation: cost = trade size × average impact
@@ -306,53 +323,62 @@ Horizon invariance: over a $k$-day metaorder the relevant volatility is $\sigma\
 The optimizer's decision variable is not dollars but the **weight change** $x_i = w^{\text{post}}_i - w^{\text{pre}}_i$, a fraction of NAV. Its objective is also in fractions of NAV (return units). Substituting $X = x \cdot \text{nav}$ and dividing by nav:
 
 $$
-\frac{C(x\,\text{nav})}{\text{nav}} = a\,\lvert x\rvert + b\,\sigma\,\frac{\lvert x\rvert^{3/2}}{\sqrt{V/\text{nav}}}
+\frac{C(x\,\text{nav})}{\text{nav}} = a\,\lvert x\rvert + b\,\sigma\,\frac{\lvert x\rvert^{e}}{(V/\text{nav})^{e-1}}
 $$
 
 <toggle heading="h3">
-Derivation of the √(V/nav) term
+Derivation of the (V/nav)^(e−1) term
 
 $$
-\frac{b\,\sigma\,\lvert x\,\text{nav}\rvert^{3/2}}{\sqrt{V}\;\text{nav}} = b\,\sigma\,\lvert x\rvert^{3/2}\,\frac{\text{nav}^{3/2}}{\text{nav}\,\sqrt{V}} = b\,\sigma\,\lvert x\rvert^{3/2}\,\frac{\sqrt{\text{nav}}}{\sqrt{V}} = b\,\sigma\,\frac{\lvert x\rvert^{3/2}}{\sqrt{V/\text{nav}}}
+\frac{b\,\sigma\,\lvert x\,\text{nav}\rvert^{e}}{V^{e-1}\;\text{nav}} = b\,\sigma\,\lvert x\rvert^{e}\,\frac{\text{nav}^{e-1}}{V^{e-1}} = b\,\sigma\,\frac{\lvert x\rvert^{e}}{(V/\text{nav})^{e-1}}
 $$
 
-$V/\text{nav}$ is the stock's daily volume measured in units of your NAV. A \$5M fund trading a stock with \$50M ADV has $V/\text{nav} = 10$. The bigger the fund relative to the stock's volume, the smaller $V/\text{nav}$ and the larger the impact coefficient: **capacity is built into the cost function.** Doubling NAV multiplies the impact cost per unit weight by $\sqrt{2}$.
+At $e$ = 1.5 the denominator is $\sqrt{V/\text{nav}}$. $V/\text{nav}$ is the stock's daily volume measured in units of your NAV. A \$5M fund trading a stock with \$50M ADV has $V/\text{nav} = 10$. The bigger the fund relative to the stock's volume, the smaller $V/\text{nav}$ and the larger the impact coefficient: **capacity is built into the cost function.** Doubling NAV multiplies the impact cost per unit weight by $2^{e-1}$ ($\sqrt{2}$ at the default).
 </toggle>
 
-Per name the coefficient is `coef_i = b_i * sigma_i / sqrt(V_i / nav)`, computed once per rebalance (`qts/tcost/model.py::cvx_terms`):
+Per name the coefficient is `coef_i = b * sigma_i / (V_i / nav)^(e-1)`, computed once per rebalance by `qts/tcost/model.py::TransactionCostModel.cvx_coefficients` and assembled by `cvx_terms`:
 
 ```python
-vol = np.maximum(vol.fillna(vol.median() if vol.notna().any() else 1.0).values, 1e-9)
-coef = b.values * sigma / np.sqrt(vol / float(nav))
+# cvx_coefficients
+coef = float(b) * sig / (vol / nav) ** (e - 1.0)
+# cvx_terms
 ax = cp.abs(x)
-trade = cp.sum(cp.multiply(hs, ax)) + cp.sum(cp.multiply(coef, cp.power(ax, 1.5)))
+if c["venue"] == VENUE_ROUTED:
+    spread_term = cp.sum(cp.multiply(c["spread"], cp.pos(ax - c["spread_kink"])))
+else:
+    spread_term = cp.sum(cp.multiply(c["spread"], ax))
+pw = cp.power(ax, c["exponent"])
+trade = spread_term + cp.sum(cp.multiply(c["impact"], pw))
 ```
 
-Linear fees enter as `fee_buy · pos(x) + fee_sell · neg(x)`, with different coefficients on buys and sells because SEC and TAF apply only to sells.
+Linear fees enter as `fee_buy · pos(x) + fee_sell · neg(x)`, with different coefficients on buys and sells because SEC and TAF apply only to sells. `cvx_coefficients` returns the numpy arrays separately so the optimizer can turn them into cvxpy parameters and re-solve one compiled problem every day instead of rebuilding it (→ see **Portfolio construction › Solver**).
 
 ### How it works: convexity and DCP
 The optimizer is solved with cvxpy and Clarabel (→ see **Portfolio construction › Solver**). cvxpy accepts only problems it can **prove** convex using *disciplined convex programming* (DCP), a small set of composition rules. The cost expression passes:
 - $\lvert x\rvert$ is convex and non-negative;
-- $t \mapsto t^{3/2}$ is convex and **increasing** for $t \ge 0$, and an increasing convex function of a convex function is convex, so $\lvert x\rvert^{3/2}$ is convex;
-- `pos(x)` and `neg(x)` are convex; non-negative weighted sums of convex functions are convex.
+- $t \mapsto t^{e}$ is convex and **increasing** for $t \ge 0$ whenever $e \ge 1$, and an increasing convex function of a convex function is convex, so $\lvert x\rvert^{e}$ is convex. This is one reason the config rejects $e \le 1$;
+- `pos(x)` and `neg(x)` are convex; non-negative weighted sums of convex functions are convex;
+- the routed venue's kink terms `pos(|x| - k)` and `pos(|x|^e - k^e)` are `pos` (convex, non-decreasing) of a convex function minus a constant, so they are convex too (§6).
 
-Clarabel handles `power(·, 1.5)` through the **power cone**. Convexity guarantees a single global optimum, found reliably, and matches the economics: the marginal cost of trading rises with size. A concave cost such as a fixed per-order fee would make the problem combinatorial, which is why the \$0.35 minimum stays out of the optimizer.
+Clarabel handles `power(·, e)` through the **power cone**. The optimizer asks cvxpy for the exact power-cone atom (one 3-d cone per name) instead of cvxpy's default rational second-order-cone approximation. Convexity guarantees a single global optimum, found reliably, and matches the economics: the marginal cost of trading rises with size. A concave cost such as a fixed per-order fee would make the problem combinatorial, which is why the \$0.35 minimum stays out of the optimizer.
 
 ### Why this choice
 - **Square root over linear impact.** Linear impact ($I \propto Q$, the Almgren–Chriss default) gives quadratic total cost. It overstates the cost of big trades and understates small ones, and the evidence above rejects it (ΔAIC = 22 in favour of the square root in Vasaikar 2026).
-- **Exponent fixed at 1.5, not fitted.** Almgren 2005 found 0.6 and Sato & Kanazawa 0.5. With R² below 7%, own-fill data cannot distinguish them, so the prefactor $b$ is the only calibrated parameter.
+- **Exponent configurable, defaulting to 1.5, and not fitted.** Almgren 2005 found 0.6 on participation ($e$ = 1.6) and Sato & Kanazawa 0.5 ($e$ = 1.5). With R² below 7%, own-fill data cannot distinguish them, so the prefactor $b$ is the only parameter calibrated from fills. `impact_exponent` exists so a sensitivity run at, say, $e$ = 1.6 is a config change rather than a code change. Every consumer reads it: the cost model's estimate and convex terms, `SquareRootImpact`, the router's LOC offset and the TCA regressor. Before the November wave the field existed but 1.5 was hard-coded everywhere. **Changing $e$ changes the meaning of $b$** (units of $b$ depend on $e$), so a $b$ calibrated at one exponent must be recalibrated at another.
 - **Propagator models** (transient impact with power-law decay; cross-impact between stocks) slightly beat parametric forms on CFM metaorder data (Hey, Neuman & Tuschmann 2025) but need tens of thousands of metaorders. BUILD_PLAN §4: ML effort is better spent forecasting $\sigma$ and $V$.
 - **No credit for reversion.** Temporary impact does revert, but the plan forbids modelling next-day reversion as a benefit (§11).
 
 ### In the code
-- `qts/tcost/impact.py::SquareRootImpact`
-  - `cost_bps(notional, adv_usd, sigma_daily, b, venue)` gives $10^4\, b\,\sigma\sqrt{\lvert Q\rvert/V}$, vectorised;
+- `qts/tcost/impact.py::SquareRootImpact` (the name is historical; it uses the configured exponent)
+  - `cost_bps(notional, adv_usd, sigma_daily, b, venue)` gives $10^4\, b\,\sigma\,(\lvert Q\rvert/V)^{e-1}$, vectorised;
   - `total_cost_fraction(...)` gives the integrated cost in **dollars**, despite the name, which is kept for API compatibility;
-  - `cvx_cost_expression(x, nav, ...)` is the stand-alone cvxpy form;
-  - `participation_cap(adv_usd, nav)` gives `max_participation_adv × ADV / nav`, the per-name bound on $\lvert x\rvert$ (default 5% of ADV).
-- `qts/tcost/model.py::TransactionCostModel` is the facade the optimizer and backtester call. `estimate(...)` returns point estimates per ticker (columns `spread_bps, impact_bps, explicit_bps, total_bps` and the `_usd` equivalents). `cvx_terms(...)` returns `(trade_cost_expr, holding_cost_expr)` in fractions of NAV.
-- Snapshot inputs, all point-in-time: `adv_usd` = 63-day mean dollar volume, `sigma_daily` = 63-day standard deviation of daily simple returns. Missing sigma (new listings) is filled with the cross-sectional median in both `estimate` and `cvx_terms`, never with 0, which would make impact free (audit #10).
-- Tuning: `CostConfig.impact_b_continuous` (1.0), `impact_b_auction` (0.5), `max_participation_adv` (0.05). `impact_exponent` (1.5) exists in the config but **is not read**: 1.5 is hard-coded.
+  - `cvx_cost_expression(x, nav, ...)` is a stand-alone cvxpy form for one venue (the optimizer uses `TransactionCostModel.cvx_terms` instead);
+  - `participation_cap(adv_usd, nav)` gives `max_participation_adv × ADV / nav`, the per-name bound on $\lvert x\rvert$ (default 5% of ADV);
+  - `validate_impact_exponent(e)` raises unless $1 < e \le 2$.
+- `qts/tcost/model.py::TransactionCostModel` is the production `CostModel` (§10). `estimate(trades_usd, snap, venue, streak, date, prior_streak_usd)` returns a `CostEstimate` (USD per ticker). `cvx_terms(x, w_post, nav, snap, venue)` returns `(trade_cost_expr, holding_cost_expr)` in fractions of NAV. Internally both go through `_impact_usd(q, V, sigma, b)` = $b\,\sigma\,q^e/V^{e-1}$.
+- Snapshot inputs, all point-in-time: `adv_usd` = 63-day mean dollar volume at as-traded prices, `sigma_daily` = 63-day standard deviation of daily simple returns of the adjusted close. Missing sigma (new listings) is filled with the cross-sectional median by the `LiquiditySnapshot` itself, never with 0, which would make impact free (audit #10).
+- Tuning: `CostConfig.impact_b_continuous` (1.0), `impact_b_auction` (0.3), `impact_exponent` (1.5), `max_participation_adv` (0.05).
+- Tests: `test_impact_sqrt_scaling_and_auction_b`, `test_impact_exponent_is_wired_and_validated`, `tests/test_cost_equivalence.py::test_cvx_terms_equal_estimate_non_default_exponent_and_heavy_day`.
 
 ### Pitfalls & checks
 - **σ in the wrong units.** σ must be **daily**. Feeding annual volatility (≈ 16× larger) multiplies impact by 16.
@@ -375,79 +401,156 @@ A \$500,000 buy, stock ADV \$50M, σ = 2%/day, NAV \$5M, so $x = 0.1$:
 - [MOSEK Portfolio Optimization Cookbook, Transaction costs](https://docs.mosek.com/portfolio-cookbook/transaction.html)
 - [Hey, Neuman & Tuschmann (2025), propagator and cross-impact models on metaorder data](https://arxiv.org/abs/2510.06879)
 
-## 6. Venue: continuous session vs closing auction
+## 6. Venue: continuous session, closing auction, and the routed split
 
 ### What it is
-US stocks trade in two ways each day. In the **continuous session** (09:30–16:00 ET) orders match one at a time against the limit order book. In the **closing auction**, all market-on-close (MOC) and limit-on-close (LOC) orders are collected and crossed at a single price at 16:00. That price is the official close: the price index funds, benchmarks and NAVs use. Mechanics are in → see **Execution › US market microstructure primer**. Here the question is how to price each venue.
+US stocks trade in two ways each day. In the **continuous session** (09:30–16:00 ET) orders match one at a time against the limit order book. In the **closing auction**, all market-on-close (MOC) and limit-on-close (LOC) orders are collected and crossed at a single price at 16:00. That price is the official close: the price index funds, benchmarks and NAVs use. Mechanics are in → see **Execution › US market microstructure primer**. Here the question is how to price each venue, and how to price a trade that uses both.
 
 ### Why we need it here
-The system is a **daily rebalancer** whose backtest assumes trades at the close, so the auction is the default venue (`snapshot["venue"] = "auction"`). The closing auction has a very different volume, and so a different $V$ in the square-root law.
+The system is a **daily rebalancer** whose backtest trades at the close. The closing auction has a very different volume from the whole day, and so a different $V$ in the impact law. The router (→ see **Execution › The routing table**) sends the first slice of each order to the auction and anything above a cap to an in-session algorithm. If the cost model priced every trade as if it went entirely to one venue, the backtest would charge a cost the live system never pays. The cost model therefore knows three venues:
+
+| Venue | Meaning | Who uses it |
+|---|---|---|
+| `continuous` | whole trade by an in-session algo: $V$ = ADV, pays the half-spread | delisting liquidations; research runs |
+| `auction` | whole trade in the closing auction: $V$ = auction share × ADV, no spread | research runs (the pre-November default) |
+| `routed` | auction up to the router's cap, continuous remainder | **default** of `TransactionCostModel`, `DailyBarSimulator.run`, `ResearchPipeline` and `SinglePeriodOptimizer.solve` (design decision D3) |
 
 ### How it works: auction volume share
 The share of a day's volume that trades in the closing auction (BMLL, US equities):
 
 | Day type | Share of daily volume in the close | Code |
 |---|---|---|
-| Normal day | **≈ 9%** (≈ \$50B notional) | `auction_share_for_date` default 0.09 |
+| Normal day | **≈ 9%** (≈ \$50B notional) | `CostConfig.auction_volume_share_default` = 0.09 |
 | Quarterly index rebalance / options expiry ("quad witching": 3rd Friday of Mar/Jun/Sep/Dec) | **≈ 20%** | 0.20 |
 | Russell reconstitution day (last Friday of June) | **≈ 34%** | 0.34 |
 | Russell second semi-annual reconstitution (from 2026): **Friday 11 December 2026** | placeholder 34% | `RUSSELL_RECON_DATES` |
 
-FTSE Russell moved the Russell US indexes to **semi-annual reconstitution from 2026**. The December date is published each year (2026: rank day 30 October, effective after the close on 11 December), and **must be added by hand** to `RUSSELL_RECON_DATES` every year. The 34% for December is a placeholder equal to June's figure. Note that 2026-12-11 is a Friday *before* the third Friday (12-18, quad witching, 20%), so December 2026 has two heavy closes a week apart.
+`qts/core/costs.py::auction_share_for_date(date, share_default)` implements the calendar. Russell dates are checked first, then the June last-Friday rule, then the quad-witching rule (a Friday on day 15–21 of a quarter-end month); every other day gets `share_default`. The heavy-day figures are **floors**: `max(share_default, 0.34)`, so a configured normal-day share above them still wins.
 
-### How it works: the auction prefactor
-For an auction fill the cost model uses
+FTSE Russell moved the Russell US indexes to **semi-annual reconstitution from 2026**. The December date is published each year (2026: rank day 30 October, effective after the close on Friday 11 December, per FTSE Russell's 1 September 2026 announcement) and **must be added by hand** to `RUSSELL_RECON_DATES` every year. The 34% for December is a placeholder equal to June's figure. 2026-12-11 is a Friday *before* the third Friday (12-18, quad witching, 20%), so December 2026 has two heavy closes a week apart.
+
+**One source for the normal-day share.** Before November the 0.09 constant lived in five places, and the config field was not read. Now `CostConfig.auction_volume_share_default` is **the** source, read by the cost model (`SquareRootImpact.auction_share_for_date`), the router, the fill simulator, the dry-run broker and the TCA ledger. `ExecutionConfig` no longer has a copy. The module constant `AUCTION_SHARE_NORMAL_DAY` = 0.09 is only a fallback when no config is at hand (`tests/test_tcost.py::test_auction_share_single_source`).
+
+**Which date's share.** The share is a property of the **execution** date. The calendar is published in advance, so the optimizer is allowed to know that tomorrow is Russell day. With a signal lag (→ see **Backtesting › The simulator timeline**) the simulator builds the optimizer's snapshot from the signal date's liquidity but stamps it with the execution date's `auction_share` (`DailyBarSimulator._optimizer_snapshot`; second-pass audit finding 14; `test_optimizer_snapshot_uses_execution_date_auction_share`). Pricing a heavy day as a normal day would only make the optimizer under-use a cheap auction.
+
+### How it works: the auction prefactor (design decision D2)
+For an auction fill the cost model uses $V$ = auction volume:
 
 $$
-I_{\text{auc}} = b_{\text{auc}}\,\sigma\sqrt{\frac{Q}{s \cdot \text{ADV}}} = \frac{b_{\text{auc}}}{\sqrt{s}}\;\sigma\sqrt{\frac{Q}{\text{ADV}}}
+I_{\text{auc}} = b_{\text{auc}}\,\sigma\Big(\frac{Q}{\phi \cdot \text{ADV}}\Big)^{e-1} = \underbrace{\frac{b_{\text{auc}}}{\phi^{\,e-1}}}_{\beta_a}\;\sigma\Big(\frac{Q}{\text{ADV}}\Big)^{e-1}
 $$
 
 where:
-- $s$ is the auction share of daily volume (0.09 on a normal day);
-- $b_{\text{auc}}$ = `impact_b_auction` = **0.5**;
-- $b_{\text{auc}}/\sqrt{s}$ is the **effective** coefficient per $\sqrt{Q/\text{ADV}}$: $0.5/\sqrt{0.09} = 0.5/0.3 = \mathbf{1.67}$, against 1.0 for the continuous session.
+- $\phi$ is the auction share of daily volume on the execution date (0.09 on a normal day);
+- $b_{\text{auc}}$ = `impact_b_auction` = **0.3**;
+- $\beta_a = b_{\text{auc}}/\phi^{e-1}$ is the **effective** auction prefactor per $(Q/\text{ADV})^{e-1}$, `TransactionCostModel.effective_auction_b(phi)`. On a normal day at $e$ = 1.5: $0.3/\sqrt{0.09} = 0.3/0.3 = \mathbf{1.0}$, exactly the continuous prefactor $b_c$ = `impact_b_continuous` = 1.0. On quad witching $\beta_a = 0.3/\sqrt{0.20} = 0.67$; on Russell day $0.3/\sqrt{0.34} = 0.51$.
 
-**The review reasoning (REVIEW_NOTES item 9).** The senior-quant review first proposed $b_{\text{auc}} = 1.5$. With $V$ = auction volume that is an effective 1.5 / 0.3 = 5.0 per $\sqrt{Q/\text{ADV}}$: every auction order would cost **5× an in-session algo**. That contradicts the routing table, which sends small orders to the auction because it is believed to be the cheapest venue. The amendment set $b_{\text{auc}} = 0.5$ as a **prior** (effective 1.67) to be replaced by a per-venue calibration from own fills (§11). The BUILD_PLAN evidence for auctions is qualitative. BMLL reports stable auction prices and no outsized deviation at the next open. There is no published US auction prefactor. So 0.5 is a judgment call, and the TCA loop exists to correct it.
+**The reasoning.** An auction fill and a continuous fill of the same size now cost the **same impact** on a normal day, and the auction **saves the half-spread**, because a call auction has no spread to cross. On heavy days the auction is cheaper still. That is exactly the premise of the routing table: send what the auction can absorb to the close. It also matches the qualitative evidence in BUILD_PLAN §4: BMLL reports stable auction prices and no outsized deviation at the next open. There is no published US auction prefactor, so 0.3 is a **prior**, chosen so the cost model and the router agree, and the TCA loop (§11) exists to replace it with a number from own fills.
+
+<callout icon="🤔" color="purple_bg">
+**Why not the old 0.5 (or the review's 1.5)?** The senior-quant review first proposed $b_{\text{auc}} = 1.5$. With $V$ = auction volume that is an effective 1.5/0.3 = 5.0 per $\sqrt{Q/\text{ADV}}$: every auction order would cost 5× an in-session algo. The REVIEW_NOTES amendment cut it to 0.5, but that still gave an effective **1.67**. Under 0.5 the auction was the *more expensive* venue for every order above roughly 0.02–0.05% of ADV, which contradicted the router sending orders up to 0.18% of ADV to the close; the previous version of this page carried that as a "known tension" callout. Design decision D2 (`docs/notes/doc_review_findings.md`) resolved it with 0.3. On the golden test market the change cut impact cost by about a third (cost per side 10.7 → 7.2 bp, `docs/notes/golden_changes_2026-11-05.md`, step S5) and let the optimizer trade more (turnover 10.0% → 11.4% a day). That is in-sample, synthetic, 60 days, and only shows the size of the lever, not which value is right.
+</callout>
 
 ### How it works: venue choice
-`SquareRootImpact.cost_for_venue_choice(notional, adv_usd, sigma_daily, half_spread_bps, date)` compares
+`SquareRootImpact.cost_for_venue_choice(notional, adv_usd, sigma_daily, half_spread_bps, date)` compares the per-dollar costs
 
 $$
-\text{cont} = h + b_{\text{cont}}\,\sigma\sqrt{Q/\text{ADV}}, \qquad \text{auc} = b_{\text{auc}}\,\sigma\sqrt{Q/(s\,\text{ADV})}
+\text{cont} = h + b_c\,\sigma\,(Q/\text{ADV})^{e-1}, \qquad \text{auc} = \beta_a\,\sigma\,(Q/\text{ADV})^{e-1}
 $$
 
-and returns the cheaper venue. Setting them equal, the auction is cheaper only when
+and returns the cheaper venue. With D2 the impact terms are equal on a normal day, so the auction wins by exactly the half-spread at **every** size. At 0.18% of ADV (σ = 2%, $h$ = 2 bp): continuous 10.49 bp, auction 8.49 bp. On Russell day at 1% of ADV: 22.0 bp against 10.3 bp. The function ignores the auction exchange fee (\$0.001/share, 0.2 bp on a \$50 stock), which narrows the gap slightly. Note that "cheaper per dollar at every size" does **not** mean "send everything to the auction": the auction is only 9% of the day's volume, so a large order would be a large share of it. The cap that stops this lives in the router and in the routed venue below.
+
+### How it works: the routed venue (design decision D3)
+The router sends up to `ExecutionConfig.auction_max_pct_of_auction_volume` (κ = 2%) of the expected auction volume to the close and the rest to an algo (→ see **Execution › The routing table**). The routed venue prices a trade the same way. Per name, with $q = \lvert\text{trade}\rvert$ in dollars, $A$ = `adv_usd`, $h$ the half-spread (fraction):
 
 $$
-\sqrt{p}\,\Big(\frac{b_{\text{auc}}}{\sqrt{s}} - b_{\text{cont}}\Big) < \frac{h}{\sigma}, \qquad p = Q/\text{ADV}
+K = \kappa\,\phi\,A, \qquad q_a = \min(q, K), \qquad q_c = q - q_a
 $$
 
-With the defaults (effective 1.67 vs 1.0), $h$ = 2 bp and σ = 2%, that is $\sqrt{p} < 0.0002/(0.667 \times 0.02) = 0.015$, i.e. **$p < 0.0225\%$ of ADV**. With $h$ = 3 bp the crossover is $p < 0.05\%$ of ADV.
+$$
+\begin{aligned}
+\text{spread} &= h\,q_c \\
+\text{impact} &= C_{\phi A,\,b_a}(q_a) + \big[\,C_{A,\,b_c}(q) - C_{A,\,b_c}(q_a)\,\big] \\
+\text{fees} &= \text{fees}(q_a \text{ shares, auction}) + \text{fees}(q_c \text{ shares, continuous})
+\end{aligned}
+$$
 
-<callout icon="⚠️" color="yellow_bg">
-**Known tension between the cost model and the router.** The router (→ see **Execution › The routing table**) sends orders up to **2% of auction volume** to the auction as LOC, which is 0.18% of ADV at a 9% share. Under the cost model's own priors the auction is the *more expensive* venue for most of that range. At 0.18% ADV, σ = 2%, h = 2 bp: auction 14.1 bp against continuous 10.5 bp, before the auction exchange fee. The config comment ("0.5 keeps small auction orders cheaper than crossing the spread") holds only for orders below about 0.02–0.05% of ADV. The router does not call `cost_for_venue_choice`. It routes on the plan's rule of thumb. Until the TCA loop calibrates $b_{\text{auc}}$, read the auction default as a **conservative** costing choice: the backtest prices every trade at the auction model, which audit #11 also notes. Do not read it as a proven cost saving.
+where:
+- $C_{V,b}(Q) = b\,\sigma\,Q^{e}/V^{e-1}$ is the integrated impact of a $Q$-dollar metaorder against volume $V$ (§5);
+- $K$ is the **auction cap** in dollars, `TransactionCostModel.auction_cap_usd(snap)`; at a 9% share it is 0.18% of ADV;
+- the fees are **two orders**: the auction slice pays the auction exchange fee, and each slice pays its own commission minimum (§3);
+- `CostEstimate.auction_fraction` records $q_a/q$ per name.
+
+**Why the continuous leg is an increment, not $C(q_c)$.** Both slices are one day's metaorder in the same name and push the same price. The square-root law describes the *whole* metaorder: the impact of a child order depends on what has already been done. $C$ is convex with $C(0) = 0$, hence **superadditive**: $C(q_a) + C(q_c) < C(q)$. Pricing $q_c$ as an independent order would therefore make splitting look artificially cheap. The model treats the auction fill as the first $q_a$ dollars of the metaorder and charges the continuous remainder the *marginal* cost of extending it from $q_a$ to $q$. This is the same argument as multi-day persistence (§7). The second-pass audit notes that this ordering (auction first) is the conservative one: the other ordering would be cheaper by $(b_c - \beta_a)(q^e - q_a^e - q_c^e) \ge 0$ (dollar units after the common factor).
+
+**What D2 implies.** Under the D2 prior on a normal day $\beta_a = b_c$, so the auction leg equals $C_{A,b_c}(q_a)$ and the routed impact collapses to $C_{A,b_c}(q)$: the same impact as sending everything to the algo. The router saves only the half-spread on $q_a$, and pays the auction exchange fee on it. **It never saves impact on a normal day.** On heavy days $\beta_a < b_c$ and the auction slice is cheaper.
+
+### How it works: the convex surrogate the optimizer sees
+The optimizer needs the routed cost as a convex cvxpy expression of the weight change $x$ (fraction of NAV). Write $k = K/\text{nav}$ and $c = \sigma/(A/\text{nav})^{e-1}$. Dividing the routed impact by nav:
+
+$$
+\frac{\text{impact}}{\text{nav}} = c\Big[\beta_a \min(\lvert x\rvert,k)^e + b_c\big(\lvert x\rvert^e - \min(\lvert x\rvert,k)^e\big)\Big] = c\Big[\beta_a\lvert x\rvert^e + (b_c - \beta_a)\big(\lvert x\rvert^e - \min(\lvert x\rvert,k)^e\big)\Big]
+$$
+
+and $\lvert x\rvert^e - \min(\lvert x\rvert,k)^e = \text{pos}(\lvert x\rvert^e - k^e)$, likewise $\lvert x\rvert - \min(\lvert x\rvert,k) = \text{pos}(\lvert x\rvert - k)$. So `cvx_terms(venue="routed")` builds
+
+$$
+h\,\text{pos}(\lvert x\rvert - k) \;+\; c\Big[\beta_a\,\lvert x\rvert^{e} + (b_c - \beta_a)\,\text{pos}\big(\lvert x\rvert^{e} - k^{e}\big)\Big] \;+\; (f_c + f_{\text{auc}})^{\text{buy}}\,\text{pos}(x) + (f_c + f_{\text{auc}})^{\text{sell}}\,\text{neg}(x)
+$$
+
+where:
+- $h\,\text{pos}(\lvert x\rvert - k)$ is the spread on the continuous part only;
+- $f_c$ is the linear continuous fee per dollar (`marginal_fraction`) and $f_{\text{auc}}$ the auction exchange fee per dollar, charged on the whole trade;
+- `cvx_coefficients` returns $c\,\beta_a$ as `impact`, $c\,(b_c - \beta_a)$ as `impact_kink` and $k$ as `spread_kink`.
+
+**Validity condition: $\beta_a \le b_c$.** `pos` is convex and non-decreasing, and $\lvert x\rvert^e - k^e$ is convex, so $\text{pos}(\lvert x\rvert^e - k^e)$ is convex. With a **non-negative** coefficient $(b_c - \beta_a)$ the whole expression is convex, and the spread and impact terms are **exact**: they equal `estimate` to rounding. That holds at the defaults on every day: $\beta_a$ = 1.0 = $b_c$ on a normal day (the kink term vanishes) and $\beta_a < b_c$ on heavy days. If $\beta_a > b_c$ (for example `impact_b_auction` = 0.5, or after a TCA update pushes $b_{\text{auc}}$ up), the coefficient would be negative and the problem non-convex. The code then drops the kink and prices the **whole** trade at $\beta_a$, an upper bound. The second-pass audit (finding 7) measured that bound at up to +66% per name and 1.58× in total with $b_{\text{auc}}$ = 0.5: the optimizer would under-trade, though the backtest's booked cost (from `estimate`) would stay exact.
+
+The only other approximation is in fees: the auction exchange fee is charged on the whole trade (exact: on $q_a$ only) and the per-order minimum (possibly twice, two orders) and caps are ignored, as for every venue. The audit measured surrogate/estimate totals of 1.0013–1.0023, all from fees.
+
+<callout icon="💡" color="blue_bg">
+**Why the kink is allowed.** A "kink" at $k$ means the marginal cost jumps when the trade outgrows the auction cap: below $k$ you pay auction impact and no spread, above it you also pay the spread and the continuous impact rate. A cost whose marginal *rises* at a kink is still convex (think of a tax bracket). A cost whose marginal *falls* would not be, which is the $\beta_a > b_c$ case. Convexity is exactly "the next dollar never costs less than the previous one".
 </callout>
+
+The optimizer caches one compiled problem and re-solves it with new coefficients each day (disciplined parametrised programming, DPP). A term `C * pos(A - K)` with both `C` and `K` as parameters is not DPP, so the optimizer rewrites it as `pos(C * A - C K)` with `C K` a parameter of its own (`qts/portfolio/optimizer.py::_Parametrizer`; second-pass risk/portfolio finding 6).
 
 ### Why this choice
 - **Auction volume as V.** BUILD_PLAN §4 is explicit: use closing-auction volume, not full-day ADV. Full ADV would claim the auction can absorb 11× more than it does.
 - **Date-aware share.** Heavy closes (quad witching, Russell) can absorb 2–4× more size at the same impact. Ignoring them would over-charge exactly the days on which a rebalancer can trade cheaply.
+- **Routed as the default.** Pricing every trade at the auction (the pre-November default) charged large trades auction impact on their full size at an effective prefactor of 1.67. Pricing at the routed venue matches what the live system does. On the golden market the switch moved costs by less than 0.2%, because almost every trade fits under the cap (golden note, last step).
 - **A forecast model of auction volume** (per name, using imbalance history) is on the roadmap. The flat 9%/20%/34% shares are cross-sectional averages.
 
 ### In the code
-- `qts/tcost/impact.py::SquareRootImpact.auction_share_for_date(date)` and `auction_volume_estimate(adv_shares, date)`.
-- `qts/tcost/model.py::TransactionCostModel._venue_volume` uses `V = auction_share × ADV` and $b = b_{\text{auc}}$ for auction names, and `V = ADV`, $b = b_{\text{cont}}$ otherwise. The share comes from `snapshot["auction_share"]` if present, else `auction_share_for_date(snapshot["date"])`.
-- The `venue` passed to `estimate` overrides the per-name venue. The backtester passes the venue it was asked to run, a fix from audit #3.
+- `qts/core/costs.py::auction_share_for_date(date, share_default)` and `RUSSELL_RECON_DATES`; `SquareRootImpact.auction_share_for_date(date)` passes `cfg.auction_volume_share_default`; `auction_volume_estimate(adv_shares, date)`.
+- `TransactionCostModel.snapshot` stores the date's share on `LiquiditySnapshot.auction_share`; `estimate` and `cvx_terms` read it from there.
+- `TransactionCostModel(cfg, exec_cfg, default_venue="routed")`: `exec_cfg` supplies κ. The pipeline constructs it as `TransactionCostModel(cfg.cost, cfg.execution)`. `auction_cap_usd(snap)`, `effective_auction_b(phi)`, `estimate(..., venue=)`, `cvx_coefficients`, `cvx_terms`.
+- Tests: `tests/test_tcost.py::test_participation_cap_and_auction_volume` (06-26 → 0.34, 03-20 → 0.20, venue choice), `test_routed_venue_hand_computed`; `tests/test_cost_equivalence.py::test_routed_spread_and_impact_exact_when_beta_a_le_b_c`, `test_routed_surrogate_is_convex_and_solves`, `test_routed_small_trades_cheaper_and_surrogate_error_bounded`; `tests/test_execution.py::test_router_split_matches_routed_cost_model`.
 
 ### Pitfalls & checks
-- **The 0.09 constant is duplicated** in `CostConfig.auction_volume_share_default`, `ExecutionConfig.auction_volume_share_default`, `SquareRootImpact.cfg_share_default()` (hard-coded), `DryRunBroker` (hard-coded) and `FillSimulator(auction_share=0.09)`. `CostConfig.auction_volume_share_default` is **not read** by the cost model. Change the share in one place and the others will not follow.
-- **Russell calendar.** The June rule ("last Friday of June") approximates the official calendar. December dates must be added yearly.
-- Tests: `test_participation_cap_and_auction_volume` (06-26 → 0.34, 03-20 → 0.20, venue choice formula).
+- **Russell calendar.** The June rule ("last Friday of June") approximates the official calendar. December dates must be added yearly, or a December reconstitution is priced as a normal day (or a quad-witching day if it happens to fall on the 15th–21st).
+- **Raising $b_{\text{auc}}$ above $b_c\,\phi^{e-1}$** (0.3 at the defaults) switches the optimizer to the loose upper-bound surrogate. Expect lower turnover and a lower transfer coefficient. The backtest's booked costs stay exact.
+- **Changing the exponent** changes $\beta_a$ too: at $e$ = 1.6 the normal-day $\beta_a = 0.3/0.09^{0.6} = 1.27 > 1$, so D2's equality no longer holds and the surrogate becomes an upper bound. Recalibrate both prefactors together.
+- **The fill simulator is not routed.** `FillSimulator` prices a split's continuous child as an independent order, $C(q_c)$, not as the increment (→ see **Execution › Fill simulation**). For execution research it is slightly optimistic relative to the cost model.
 
 ### Worked example
-The same \$500k order (1% of \$50M ADV, σ = 2%) on a normal day: continuous = 2 bp spread + 20 bp impact = 22 bp; auction = $0.5 \times 0.02 \times \sqrt{0.01/0.09} = 33.3$ bp. `cost_for_venue_choice` returns `continuous`. On quad witching ($s$ = 0.20): auction = $0.5 \times 0.02 \times \sqrt{0.05} = 22.4$ bp, roughly a tie. On Russell day ($s$ = 0.34): 17.1 bp, so the auction wins.
+A \$500,000 buy of a \$50 stock (10,000 shares), ADV \$50M, σ = 2%/day, half-spread 2 bp, NAV \$5M ($x$ = 0.1), on a normal day (2026-06-15, $\phi$ = 0.09). Run through `TransactionCostModel.estimate`:
+
+| Venue | Spread | Impact | Fees | Total | Optimizer surrogate × nav |
+|---|---|---|---|---|---|
+| continuous | \$100.00 | \$1,000.00 | \$37.03 | \$1,137.03 | \$1,137.03 |
+| auction | \$0 | \$1,000.00 | \$47.03 | \$1,047.03 | \$1,047.03 |
+| routed | \$82.00 | \$1,000.00 | \$38.83 | \$1,120.83 | \$1,129.03 |
+
+- Cap $K = 0.02 \times 0.09 \times 50\text{M} = \$90{,}000$ (1,800 shares), so $q_a$ = \$90k and $q_c$ = \$410k; `auction_fraction` = 0.18.
+- Spread: 2 bp × \$410k = \$82.
+- Impact: auction leg $0.3 \times 0.02 \times 90{,}000^{1.5}/\sqrt{4.5\text{M}} = \$76.37$; continuous increment $C(500\text{k}) - C(90\text{k}) = 1{,}000 - 76.37 = \$923.63$; total \$1,000.00. That is exactly the continuous impact, as D2 implies.
+- Fees: auction order 1,800 shares = \$6.30 commission + \$0.36 clearing + \$0.005 CAT + \$1.80 auction fee = \$8.47; continuous order 8,200 shares = \$28.70 + \$1.64 + \$0.025 = \$30.36; total \$38.83.
+- Surrogate: spread and impact exact; fees \$8.20 higher because the \$0.001/share auction fee is charged on all 10,000 shares instead of 1,800.
+
+The same order on **Russell day 2026-12-11** ($\phi$ = 0.34, $K$ = \$340k, $\beta_a$ = 0.514): continuous \$1,137.03, auction \$561.53, routed \$803.59 (spread \$32, impact \$727.76, fees \$43.83). On quad witching 2026-03-20 ($\phi$ = 0.20): routed \$1,017.75.
 
 ### References
 - [BMLL, Into the close: unpacking US closing auction dynamics and the impact of the Russell reconstitution](https://www.bmlltech.com/news/market-insight/into-the-close-unpacking-u-s-closing-auction-dynamics-and-the-impact-of-the-russell-reconstitution)
+- [FTSE Russell (2026), FTSE Russell announces December 2026 Russell US indexes reconstitution schedule](https://www.lseg.com/en/media-centre/press-releases/ftse-russell/2026/ftse-russell-announces-december-2026-russell-us-indexes-reconstitution-schedule)
 
 ## 7. Multi-day impact persistence
 
@@ -457,52 +560,90 @@ The optimizer often moves toward a target over several days. Partial trading tow
 ### Why we need it here
 Pricing each day as an isolated metaorder **under-states** cost during multi-day builds. Audit #6 estimated the under-statement of the impact leg at 1.4–2× for 2–4-day builds. The bias is optimistic, which is the dangerous direction for a go/no-go decision.
 
-### How it works
-Treat a streak of $k$ consecutive same-direction trading days with daily notional $q_j$ as one metaorder of size $Q_k = \sum_{j \le k} q_j$. Its integrated cost is $C(Q_k) = b\sigma Q_k^{3/2}/\sqrt{V}$, with daily $V$ thanks to horizon invariance (§5). The cost attributable to day $k$ is the **increment** $C(Q_k) - C(Q_{k-1})$.
+### How it works: the exact streak increment
+Treat a streak of consecutive same-direction trading days in one name as one metaorder. Let $q_j$ be the dollars traded on day $j$ of the streak and $Q_k = \sum_{j \le k} q_j$ the cumulative notional through day $k$. The metaorder's integrated cost after $k$ days is $C(Q_k) = b\,\sigma\,Q_k^{e}/V^{e-1}$, with **daily** $\sigma$ and $V$ thanks to horizon invariance (§5). The cost attributable to day $k$ is the **increment**
+
+$$
+\text{impact}_k = C(Q_k) - C(Q_{k-1}) = C(Q_{k-1} + q_k) - C(Q_{k-1})
+$$
+
+where:
+- $Q_{k-1}$ is the **actual** cumulative notional of the earlier days of the streak (USD), 0 on the first day;
+- $q_k$ is today's trade (USD);
+- $C$ uses today's $\sigma$ and $V$ (the convention under which $b$ is calibrated).
+
+The sum telescopes: $\sum_{j \le k}\text{impact}_j = C(Q_k)$, so over the streak the backtest charges exactly the cost of one metaorder of the total size, whatever the daily sizes were.
+
+**State the simulator carries.** Per name, `DailyBarSimulator` keeps `streak` (consecutive same-direction trading days including today) and `streak_usd` (dollars traded in the current streak through the last trade, each day's $\lvert x\rvert \cdot \text{nav}_t$). A trade with the same sign as the previous day's continues the streak; a sign flip, or a day without a trade, resets it. The simulator passes $Q_{k-1}$ as `estimate(prior_streak_usd=)` whenever the cost model's signature accepts it (the production model does):
+
+```python
+same = (sgn != 0) & (sgn == last_sign)
+streak = np.where(sgn != 0, np.where(same, streak + 1.0, 1.0), 0.0)
+prior_usd = np.where(same, streak_usd, 0.0)  # Q_{k-1}: earlier days of this streak
+streak_usd = np.where(sgn != 0, prior_usd + np.abs(x) * nav, 0.0)
+```
+
+**How `estimate` applies it.** It first prices today's trade at the venue as a one-day order, then adds a **streak surcharge**
+
+$$
+S = C(Q_{k-1} + q) - C(Q_{k-1}) - C(q) \;\ge\; 0
+$$
+
+($S \ge 0$ because $C$ is superadditive). For `continuous` the result is exactly $C(Q_k) - C(Q_{k-1})$. For `auction`, $C$ is $C_{\phi A,b_a}$. For `routed`, $S$ uses $C_{A,b_c}$, because the earlier days and the continuous increment share $V = A$, so the routed impact becomes
+
+$$
+\big[C_{A,b_c}(Q_k) - C_{A,b_c}(Q_{k-1})\big] + \big[C_{\phi A,b_a}(q_a) - C_{A,b_c}(q_a)\big]
+$$
+
+which is the exact streak increment plus today's auction discount on the first $q_a$ dollars (zero under D2 on a normal day, negative on heavy days). `CostEstimate.persistence_mult` reports (impact + $S$)/impact per name. Only the **impact** leg persists; spread and fees are paid afresh each day.
 
 <toggle heading="h3">
-Derivation of the k^1.5 − (k−1)^1.5 multiplier
+Special case: equal daily trades and the k^e − (k−1)^e multiplier
 
-`estimate` only sees today's notional $q_k$ and the streak length $k$. It assumes the earlier days were the same size, $Q_{k-1} = (k-1)q_k$ and $Q_k = k\,q_k$. Then
+When only the streak length $k$ is known (`estimate(streak=)` without `prior_streak_usd`, as for a legacy cost model), the code assumes the earlier days were the same size as today: $Q_{k-1} = (k-1)q_k$ and $Q_k = k\,q_k$. Then
 
 $$
-C(Q_k) - C(Q_{k-1}) = \frac{b\sigma}{\sqrt{V}}\Big[(k q_k)^{3/2} - ((k-1)q_k)^{3/2}\Big] = \underbrace{\frac{b\sigma q_k^{3/2}}{\sqrt{V}}}_{\text{one-day cost}} \cdot \underbrace{\big[k^{3/2} - (k-1)^{3/2}\big]}_{m_k}
+C(Q_k) - C(Q_{k-1}) = \frac{b\sigma}{V^{e-1}}\Big[(k q_k)^{e} - ((k-1)q_k)^{e}\Big] = \underbrace{\frac{b\sigma q_k^{e}}{V^{e-1}}}_{\text{one-day cost}} \cdot \underbrace{\big[k^{e} - (k-1)^{e}\big]}_{m_k}
 $$
 
-So day $k$'s impact is the one-day impact times $m_k = k^{3/2} - (k-1)^{3/2}$. The sum telescopes: $\sum_{j=1}^{k} m_j = k^{3/2}$, so the total charged over the streak equals the cost of one metaorder of size $k q$, as it should (`test_impact_persistence_multiplier` checks this to 1e-9). For large $k$, $m_k \approx \tfrac{d}{dk}k^{3/2} = 1.5\sqrt{k}$.
+So day $k$'s impact is the one-day impact times $m_k = k^{e} - (k-1)^{e}$, and $\sum_{j=1}^{k} m_j = k^{e}$. For large $k$, $m_k \approx e\,k^{e-1}$ ($1.5\sqrt{k}$ at $e$ = 1.5). `qts/tcost/model.py::persistence_multiplier(streak, exponent)`:
 
 | k | 1 | 2 | 3 | 4 | 5 | 10 |
 |---|---|---|---|---|---|---|
-| $m_k$ | 1.000 | 1.828 | 2.368 | 2.804 | 3.180 | 4.623 |
+| $m_k$ ($e$ = 1.5) | 1.000 | 1.828 | 2.368 | 2.804 | 3.180 | 4.623 |
 | $1.5\sqrt{k}$ | 1.50 | 2.12 | 2.60 | 3.00 | 3.35 | 4.74 |
+
+**This is not a bound.** It is exact only when the daily trades really are equal. Partial adjustment toward a target usually produces *shrinking* trades, and then $m_k$ under-states the increment; growing trades are over-stated. The second-pass audit (finding 5) measured 0.785× the exact total on a halving path, 1.256× on a growing path and 1.18× on a real backtest at $e$ = 1.5, so even the sign of the error depends on the trade path. The previous version of this page (and of the module docstring) called it an upper bound; that was wrong, and is why the simulator now tracks the actual cumulative notional.
 </toggle>
 
-The multiplier applies to the **impact leg only**. Spread and fees are paid afresh each day.
+**Why it is still conservative.** Both forms treat all impact within a streak as **fully permanent**: day 1's price push is still there on day $k$. In reality only part is permanent (≈70% per Frazzini et al.), and the transient part decays as a power law over hours to days. The true increment lies between the one-day cost (full decay overnight) and the full-persistence increment. The system takes the conservative end on purpose. A propagator-style model with a decay kernel is on the roadmap.
 
-**Why it is an upper bound.** It treats all impact within a streak as **fully permanent**: day 1's price push is still there on day $k$. In reality only part is permanent (≈70% per Frazzini et al.), and the transient part decays as a power law over hours to days. The true multiplier lies between 1 (full decay overnight) and $m_k$ (no decay). The system takes the conservative end on purpose. A propagator-style model with a decay kernel is on the roadmap.
-
-**Asymmetry with the optimizer.** `cvx_terms` gives the optimizer the **one-day marginal** cost ($m = 1$), because the optimizer does not know how many more days it will keep trading in the same direction. During a multi-day build the backtest's realised cost is therefore ≥ what the optimizer expected. This is a deliberate, conservative inconsistency, documented in the module docstring of `qts/tcost/model.py`.
+**Asymmetry with the optimizer.** `cvx_terms` gives the optimizer the **one-day marginal** cost (no surcharge), because the optimizer does not know how many more days it will keep trading in the same direction. During a multi-day build the backtest's realised cost is therefore ≥ what the optimizer expected. This is a deliberate, conservative inconsistency, documented in the module docstring of `qts/tcost/model.py`.
 
 ### Why this choice
-Audit #6 listed three options: a $\sqrt{k_{\text{eff}}}$ haircut from trade-sign autocorrelation, a decaying "pending permanent impact" state, or reporting both numbers. The incremental-metaorder multiplier is the simplest one that is *exactly right* under the model's own assumptions (square root, full persistence). It needs only one integer of state per name.
+Audit #6 listed three options: a $\sqrt{k_{\text{eff}}}$ haircut from trade-sign autocorrelation, a decaying "pending permanent impact" state, or reporting both numbers. The first fix (November wave 1) was the equal-size multiplier, which needs one integer of state per name. The second-pass audit showed its error has a path-dependent sign, and the simulator knows the trades anyway, so wave 2 added one float of state per name (`streak_usd`) and made the increment exact under the model's own assumptions (power-law impact, full persistence). The decay kernel (option two) remains the roadmap item.
 
 ### In the code
-- `qts/tcost/model.py::persistence_multiplier(streak)`:
-```python
-def persistence_multiplier(streak) -> np.ndarray:
-    """``m_k = k^{1.5} - (k-1)^{1.5}`` for streak length ``k >= 1`` (1 for ``k <= 1``)."""
-    k = np.asarray(streak, dtype=float)
-    k = np.where(np.isfinite(k), np.maximum(k, 1.0), 1.0)
-    return k ** 1.5 - (k - 1.0) ** 1.5
-```
-- `TransactionCostModel.estimate(..., streak=)` multiplies `impact_bps` by $m_k$ when `CostConfig.impact_persistence` is True (default) and returns the multiplier in column `persistence_mult`.
-- `qts/backtest/simulator.py` maintains `streak` per name: +1 if today's trade has the same sign as yesterday's, reset to 1 on a sign change or after a day without trading, 0 if no trade today.
+- `TransactionCostModel.estimate(trades_usd, snap, venue, streak=None, date=None, prior_streak_usd=None)`: with `prior_streak_usd` and `CostConfig.impact_persistence` = True (default) it adds the surcharge $S$; with only `streak` it multiplies by $m_k$; the multiplier is returned in column `persistence_mult`.
+- `qts/backtest/simulator.py` maintains `streak`, `streak_usd` and `last_sign` per name (snippet above) and detects `prior_streak_usd` by signature inspection, so a legacy cost model still gets `streak`.
+- Delisting liquidations are priced without persistence (`streak=None`).
 
 ### Pitfalls & checks
-- The equal-size assumption over-charges a streak whose later days are smaller than its first (the usual shape of a partial-adjustment build) and under-charges the reverse.
 - A one-day pause resets the streak, although real impact does not reset overnight. That is mildly optimistic.
-- The docstring in `qts/tcost/model.py` says $m_3 = 2.40$. The exact value is 2.368.
-- Tests: `tests/test_tcost.py::test_impact_persistence_multiplier`, `tests/test_backtest.py::test_run_with_tcost_model_venue_and_persistence`.
+- $C(Q_k)$ uses **today's** $\sigma$ and $V$ for the whole cumulative notional. If liquidity changes during a long streak the increment is priced on the latest liquidity, not on a blend.
+- Turning `impact_persistence` off makes every day a fresh metaorder. Use it only to measure how much persistence costs, never for a headline number.
+- Tests: `tests/test_tcost.py::test_impact_persistence_multiplier`; `tests/test_audit2_costs_backtest.py::test_streak_increment_is_exact_for_any_path`, `test_streak_increment_routed_and_auction`, `test_simulator_books_exact_streak_increment`; `tests/test_backtest.py::test_run_with_tcost_model_venue_and_persistence`.
+
+### Worked example: a halving build
+Same stock as §6 (ADV \$50M, σ = 2%, continuous venue). The optimizer buys \$500k, then \$250k, then \$125k on three consecutive days:
+
+| Day | $q_k$ | $Q_{k-1}$ | One-day impact $C(q_k)$ | Exact increment $C(Q_k) - C(Q_{k-1})$ | `persistence_mult` | Equal-size approximation $m_k\,C(q_k)$ |
+|---|---|---|---|---|---|---|
+| 1 | \$500k | 0 | \$1,000.00 | \$1,000.00 | 1.000 | \$1,000.00 |
+| 2 | \$250k | \$500k | \$353.55 | \$837.12 | 2.368 | \$646.45 |
+| 3 | \$125k | \$750k | \$125.00 | \$477.92 | 3.823 | \$295.97 |
+
+Check day 2: $C(750\text{k}) = 1{,}000 \times 1.5^{1.5} = 1{,}837.12$, minus $C(500\text{k})$ = 1,000, gives \$837.12. The three-day total is $C(875\text{k}) = 1{,}000 \times 1.75^{1.5} = \$2{,}315.04$, as the telescoping sum says. The equal-size approximation charges \$1,942.42, i.e. 0.84× the exact cost: on a shrinking build it is optimistic.
 
 ## 8. Borrow costs
 
@@ -524,7 +665,12 @@ $$
 
 where $w_i$ is the post-trade weight (shorts negative), $f_i$ the annual borrow fee (fraction), 252 trading days a year. Interest earned on short proceeds is **ignored**, which is conservative. Longs carry no holding cost here.
 
-The fee $f_i$ comes from, in priority order: (1) data (`md.borrow_fee`, eventually the logged IBKR indicative rate); (2) a **proxy** from short interest; (3) the GC default 0.5%/yr. The proxy (`borrow_fee_proxy`):
+The fee $f_i$ is chosen **per name**, in priority order:
+1. **data**: the name's latest finite `md.borrow_fee` value on or before $t$ (eventually the logged IBKR indicative rate), used as-is;
+2. **proxy**: if the name has no datum but has a short-interest ratio, the short-interest proxy below;
+3. **default**: otherwise the GC fee `default_borrow_fee_annual` (0.5%/yr), **times the small-cap multiplier when the name's market cap is known and below \$2B**.
+
+Each name's source is recorded. The snapshot's `borrow_fee_source` summarises them as the sources actually used, in the order data, proxy, default, joined by `+` (for example `"proxy+default"`). `"data"` appears only if at least one name had a finite datum. Before the second-pass audit (finding 8) the label read `"data"` whenever a `borrow_fee` panel existed, even an all-NaN one, and data-poor small caps got plain 0.5% GC: exactly the names that should not get the cheapest borrow. The proxy (`borrow_fee_proxy`):
 
 $$
 u = \text{clip}\!\left(\frac{\text{SI} - 0.05}{0.20 - 0.05}, 0, 1\right), \quad u_{\text{DTC}} = \text{clip}\!\left(\frac{\text{DTC} - 2}{8}, 0, 1\right), \quad f = f_{\text{GC}} + (f_{\text{cap}} - f_{\text{GC}})\,\max(u, u_{\text{DTC}})^2
@@ -538,6 +684,8 @@ then $f \leftarrow 2f$ if market cap < \$2B, where:
 - the quadratic in $u$ makes the rise **convex**: slow just above 5% SI, steep near 20%;
 - the small-cap multiplier (`small_cap_borrow_multiplier` = 2.0 below `small_cap_threshold_usd` = \$2B) is applied **after** the curve, so a small-cap HTB name reaches 50%/yr and small-cap GC is 1%/yr.
 
+**Small-cap multiplier semantics, precisely.** It multiplies the proxy curve and the GC default (sources `proxy` and `default`) when the name's market cap is **known** and below the threshold. It never touches a `data` fee: a logged borrow rate already reflects the name's size. A name with unknown market cap gets no multiplier. A data-poor small cap keeps the source label `default` even though its fee is 1%/yr.
+
 Values: SI 5% → 0.5%; 10% → 3.2%; 15% → 11.4%; ≥ 20% → 25% (large cap).
 
 ### Why this choice
@@ -547,19 +695,21 @@ Values: SI 5% → 0.5%; 10% → 3.2%; 15% → 11.4%; ≥ 20% → 25% (large cap)
 
 ### In the code
 - `qts/tcost/borrow.py::borrow_fee_proxy(short_interest_ratio, days_to_cover, cfg, market_cap)`, `holding_cost_fraction`, `holding_cost_breakdown`, `cvx_holding_expression` (convex: `fee/252 · neg(w_post)`).
-- `qts/tcost/model.py::TransactionCostModel._borrow_fee_asof` applies the priority chain and records `snapshot["borrow_fee_source"]` ∈ {`data`, `proxy`, `default`}. It logs a warning once when the proxy is in use.
+- `qts/tcost/model.py::TransactionCostModel._borrow_fee_detail(md, date, tickers, adv_shares)` applies the per-name chain and returns `(fee, source)` Series. `borrow_fee_sources(md, date)` exposes the per-name sources; `borrow_source_label` builds the summary string stored on `LiquiditySnapshot.borrow_fee_source`. A warning is logged once when the proxy is in use and no name has data.
+- Days-to-cover needs `md.shares_outstanding` (SI ratio × shares outstanding / ADV shares); without it the proxy uses short interest alone.
 - The optimizer receives the holding cost from `cvx_terms`. The portfolio layer multiplies it by the holding horizon $H$ (→ see **Portfolio construction › Objective units**).
-- The backtester charges one day of borrow per step on post-trade shorts.
+- The backtester charges one day of borrow per step on post-trade shorts through `TransactionCostModel.holding_cost_usd(w_post, nav, snap)` = $\max(-w,0)\cdot\text{nav}\cdot f/252$, on the **execution-date** snapshot.
 
 ### Pitfalls & checks
 - **Placeholder.** The proxy is a guess with plausible shape, not a calibrated model. Replace it with logged SLB rates as soon as they exist, and check `borrow_fee_source` in every backtest report.
 - **Sparse simulation dates.** Borrow is charged at `fee/252` once per step. Running the simulator on a sparse date grid under-charges borrow proportionally (audit #19).
 - **Recall and locate failure** are not modelled. An HTB short can be bought in at the worst moment.
 - **No short rebate or cash interest** (audit #21), which is conservative in high-rate regimes.
-- Tests: `test_borrow_fee_proxy_shape`, `test_snapshot_uses_borrow_proxy_when_fee_absent`, `test_holding_cost`.
+- **Borrow in the gates.** Borrow is not a per-side cost, so breakeven and cost sensitivity start from `gross_after_borrow` (§1). Before the fix the gate ignored borrow entirely.
+- Tests: `test_borrow_fee_proxy_shape`, `test_snapshot_uses_borrow_proxy_when_fee_absent`, `test_borrow_fee_source_per_name_and_all_nan_panel`, `test_holding_cost`.
 
 ### Worked example
-A large-cap short of 1% of NAV with SI = 12%: $u = (0.12 - 0.05)/0.15 = 0.467$, so $f = 0.005 + 0.245 \times 0.218 = 5.84\%$/yr. Daily cost = $0.01 \times 0.0584/252 = 2.3 \times 10^{-6}$ of NAV, or \$11.6 a day on a \$5M book (≈ \$2,900 a year). The same name with market cap \$1.5B: 11.7%/yr.
+A large-cap short of 1% of NAV with SI = 12%: $u = (0.12 - 0.05)/0.15 = 0.467$, so $f = 0.005 + 0.245 \times 0.218 = 5.84\%$/yr. Daily cost = $0.01 \times 0.0584/252 = 2.3 \times 10^{-6}$ of NAV, or \$11.6 a day on a \$5M book (≈ \$2,900 a year). The same name with market cap \$1.5B: 11.7%/yr. A \$1.5B name with **no** short-interest data: GC 0.5% × 2 = 1.0%/yr, source `default`. The same name with a logged fee of 3%: 3%/yr, source `data`, no multiplier.
 
 ### References
 - [Engelberg et al. (2025), equity loan fees as a return predictor, Management Science 71(7)](https://ideas.repec.org/a/inm/ormnsc/v71y2025i7p5529-5551.html)
@@ -573,7 +723,7 @@ A large-cap short of 1% of NAV with SI = 12%: $u = (0.12 - 0.05)/0.15 = 0.467$, 
 A **delisting** happens when a stock stops trading on its exchange: acquisition, bankruptcy, failure to meet listing standards. In price data it shows up as a missing next close. What a holder actually receives ranges from 0 (bankruptcy) to a premium (cash takeover).
 
 ### Why we need it here
-The earlier simulator gave a delisted name a 0 return at its last price and removed it for free, with no trade, cost or turnover (audit #7). Last-price exits are optimistic for longs in failures, because performance-related delistings with a missing delisting return lose about 30% on average (Shumway 1997, the convention cited in `AlphaConfig`).
+The earlier simulator gave a delisted name a 0 return at its last price and removed it for free, with no trade, cost or turnover (audit #7). Last-price exits are optimistic for longs in failures, because performance-related delistings with a missing delisting return lose about 30% on average (Shumway 1997, the convention cited in `qts/core/config.py`).
 
 ### How it works
 On the day a held name's next close is NaN, the backtester:
@@ -581,7 +731,7 @@ On the day a held name's next close is NaN, the backtester:
 2. force-liquidates the remaining value $-w(1+r)$ at **spread + explicit fees** on the continuous venue, with no impact, and books it as a trade on that decision row so it counts in turnover and cost;
 3. records the event in `BacktestResult.diagnostics["delistings"]`.
 
-Labels get the matching treatment: a forward return that runs into a delisting is measured to the last close and multiplied by $(1 + \text{delisting\_return})$, with `AlphaConfig.delisting_return` = −0.30 (→ see **Alpha model › Targets**).
+Labels get the matching treatment: a forward return that runs into a delisting is measured to the last close and multiplied by $(1 + h)$ with the same `CostConfig.delisting_haircut`. That field is now the **single source** of the delisting assumption; the former `AlphaConfig.delisting_return` was removed. Labels identify a delisting from `MarketData.delisting_dates` when the vendor supplies them, otherwise from a causal price-gap rule (`AlphaConfig.delisting_gap_days` = 63) (→ see **Alpha model › Targets**).
 
 ### Why this choice
 Charging −30% to both sides has no theoretical justification beyond conservatism. It removes a bias that otherwise always favours the strategy. When the price source carries real delisting returns (Sharadar and Norgate do), they should replace the haircut. That is on the roadmap.
@@ -595,19 +745,59 @@ Charging −30% to both sides has no theoretical justification beyond conservati
 ## 10. The cost model end to end
 
 ### What it is
-The pieces above combine into one function used in two forms:
+The pieces above combine into one model used in two forms, behind one **typed contract** in `qts/core/costs.py`. Think of it as an interface in the software sense: the portfolio and backtest layers only know three types, and any cost model that satisfies the protocol can be dropped in.
+
+| Type | What it is | Produced by | Consumed by |
+|---|---|---|---|
+| `LiquiditySnapshot` | per-ticker market inputs as of one date (frozen dataclass) | `CostModel.snapshot(md, date)` | `estimate`, `cvx_terms`, `holding_cost_usd`, the optimizer |
+| `CostEstimate` | per-ticker USD cost of one trade vector | `CostModel.estimate(trades_usd, snap, venue, streak)` | the simulator |
+| `CostModel` | the protocol: `snapshot`, `estimate`, `cvx_terms`, `holding_cost_usd` | implemented by `qts.tcost.TransactionCostModel` (production) and `qts.portfolio.costs.SimpleCostModel` (test double) | `SinglePeriodOptimizer`, `DailyBarSimulator` |
+
+How each consumer sees the model:
 
 | Consumer | Form | Units | Called as |
 |---|---|---|---|
-| Optimizer | cvxpy expression: $\sum_i \big(h_i\lvert x_i\rvert + \text{coef}_i\lvert x_i\rvert^{3/2} + f^{b}_i\,x_i^+ + f^{s}_i\,x_i^-\big)$ plus holding $\sum_i (f_i/252)\,w_i^-$ | fraction of NAV | the cost model's convex-terms method |
-| Backtester | per-ticker DataFrame: `spread_usd, impact_usd, explicit_usd, total_usd` (+ `borrow_usd`) | dollars at $\text{nav}_t$ | the cost model's estimate method |
+| Optimizer | cvxpy expression: $\sum_i \big(h_i\lvert x_i\rvert + \text{coef}_i\lvert x_i\rvert^{e} + f^{b}_i\,x_i^+ + f^{s}_i\,x_i^-\big)$ (routed: the surrogate of §6) plus holding $\sum_i (f_i/252)\,w_i^-$ | fraction of NAV | `cvx_terms(x, w_post, nav, snap, venue)` |
+| Backtester | `CostEstimate`: `spread_usd, impact_usd, fees_usd, total_usd, venue, persistence_mult` | dollars at $\text{nav}_t$ | `estimate(...)`; borrow via `holding_cost_usd(...)` |
 | Router / reports | `cost_bps`, `cost_for_venue_choice` | bp of notional | `SquareRootImpact` |
 | TCA | measured, not modelled | bp of decision notional | `TCALedger` |
 
-The cost interface is being consolidated into a single typed contract (a liquidity snapshot in, a cost estimate out, behind a cost-model protocol in `qts.core`). This page describes the math, which does not change. Check `qts.tcost` for the current call signatures.
+### How it works: `LiquiditySnapshot`
+Fields and units:
 
-### Snapshot inputs (point-in-time, data ≤ $t$)
-`adv_usd` (63-day mean dollar volume), `adv_shares`, `sigma_daily` (63-day std of daily simple returns), `half_spread_bps` / `half_spread`, `price`, `borrow_fee`, per-ticker `venue` (default `auction`), `date`, `borrow_fee_source`. The audit confirmed snapshots are identical when rebuilt on data truncated at $t$. One small exception: ADV includes day $t$'s own volume (audit #18).
+| Field | Units | Built from (point-in-time, data ≤ $t$) |
+|---|---|---|
+| `date`, `tickers` | — | the snapshot date; `md.tickers` |
+| `price` | USD/share, **as-traded** | `md.trade_price()` on $t$ |
+| `adv_usd` | USD/day | mean of as-traded price × actual shares over the last 63 days (includes day $t$, audit #18) |
+| `adv_shares` | shares/day | mean share volume over the same window, restated on day $t$'s share basis across splits |
+| `sigma_daily` | fraction | sample sd of daily simple returns of the **adjusted** close over 63 days |
+| `half_spread` | **fraction** of price | `md.spread_bps` on $t$ / 10⁴, default 2 bp; `half_spread_bps` is a derived property |
+| `borrow_fee` | annual fraction | data → proxy → default per name (§8) |
+| `auction_share` | fraction of ADV | `auction_share_for_date(date)`; validated in (0, 1] |
+| `borrow_fee_source` | string | summary label (§8) |
+| `nav` | USD, optional | — |
+
+Construction **normalises** every per-ticker field: reindexed to `tickers`; NaN or ±inf filled with the cross-sectional median (fallbacks if the whole column is missing: price \$100, ADV \$1M, σ 2%, half-spread 2 bp, borrow 0.5%/yr); floored at price \$0.01, ADV \$1,000, σ 10⁻⁴, spread and borrow 0. A missing `adv_shares` becomes `adv_usd / price`. So a snapshot is always aligned and always finite, and the optimizer's convex terms and the simulator's point estimates can never price different inputs. A new listing gets median impact, never zero impact (audit #10). `snap.reindex(tickers)` extends a snapshot to new names with medians; `snap.to_dict()` and read-only mapping access (`snap["adv_usd"]`) keep old dict-based callers working, and `as_snapshot` converts an old dict.
+
+<callout icon="⚠️" color="yellow_bg">
+**Raw vs adjusted prices.** Adjusted closes (splits and dividends folded in) are right for **returns** and wrong for **levels**. A 2-for-1 split halves the as-traded price and doubles the shares traded; the adjusted series rescales the past instead. The snapshot therefore uses the **as-traded** close for everything that is a level on one date: the per-share fee count (shares = USD / as-traded price), dollar volume (as-traded price × actual shares) and `adv_shares` (earlier volumes rescaled by the change in `close_raw / close`). It uses the **adjusted** close for $\sigma$, which is a return statistic. When a loader supplies no `close_raw`, `trade_price()` falls back to the adjusted close, which is historically wrong across splits: real-data loaders should provide it (`test_snapshot_adv_and_fees_use_as_traded_prices_across_splits`).
+</callout>
+
+### How it works: `CostEstimate`
+`CostEstimate.frame` has fixed columns `spread_usd, impact_usd, fees_usd, total_usd, venue, persistence_mult`, plus `trade_usd` (the signed trade) and, for the routed venue, `auction_fraction`. Construction **raises** if a column is missing, any USD value is non-finite, or any USD component is below −10⁻⁶ (a negative fee from a bad config would otherwise be booked as a rebate). `totals()` sums the components; `bps()` gives them per ticker in bp of the trade. Holding cost is deliberately *not* part of a trade estimate: it is `holding_cost_usd(w_post, nav, snap)`, one day of borrow per ticker.
+
+### How it works: the simulator's side of the contract
+`DailyBarSimulator` calls `snapshot(md, t)` once per date (cached for the lag window), `estimate` on the execution-date snapshot, and `holding_cost_usd`. A legacy duck-typed model without `snapshot` is wrapped once, at construction, by `_LegacyCostModel`, whose output is normalised by `cost_frame` with the same "raise on unrecognised or non-finite" rule (audit #8). There is no silent fallback between paths.
+
+### Why this choice
+Before the contract the snapshot was a dict of Series whose keys drifted (audit #3 lost venue, date and real spreads in `align_snapshot`), `estimate` returned a free-form DataFrame, and two snapshot builders existed. `docs/audit/code_quality.md` refactor #1 asked for one typed contract; the November wave delivered it (WORK_PLAN 1.2). The math did not change; what changed is that inputs are validated once and every consumer reads the same object.
+
+### In the code
+- `qts/core/costs.py`: `LiquiditySnapshot`, `CostEstimate`, `CostModel`, `as_snapshot`, `auction_share_for_date`, `VENUE_CONTINUOUS / VENUE_AUCTION / VENUE_ROUTED`.
+- `qts/tcost/model.py::TransactionCostModel(cfg, exec_cfg, default_venue="routed")`: `snapshot`, `estimate`, `cvx_coefficients`, `cvx_terms`, `holding_cost_usd`, `participation_cap`, `auction_cap_usd`, `effective_auction_b`. `snapshot_from_market` is a deprecated alias returning `snapshot(...).to_dict()`.
+- `qts/portfolio/costs.py`: `snapshot_from_market` (the single builder, delegating to `TransactionCostModel.snapshot`), `align_snapshot`, and `SimpleCostModel` (test double only).
+- Tests: `tests/test_tcost.py::test_snapshot_point_in_time_and_estimate`, `test_benchmark_vectorised_estimate_1500_names`; `tests/test_backtest.py::test_simulator_snapshot_is_the_cost_model_snapshot`, `test_cost_frame_raises_on_unrecognised_or_nan`; `tests/test_audit2_costs_backtest.py::test_cost_estimate_rejects_negative_components`.
 
 ## 11. Transaction cost analysis (TCA)
 
@@ -634,12 +824,12 @@ $$
 - **delay** is the drift between decision and arrival. For a buy, a rising price is a cost. It measures the cost of latency, for example deciding at the 15:00 snapshot and arriving at 15:50;
 - **impact** (here: execution cost against arrival) includes spread crossing and market impact. This is the quantity the square-root law predicts;
 - **opportunity** is the paper return missed on unfilled shares, valued at the close. If an unfilled buy's stock rose, you lost that gain;
-- **reversion** $= s\,F\,(\overline{P}_{\text{fill}} - P_{\text{next}})/N$ is a **diagnostic, not part of IS**. It is positive when the price came back after you traded (a buy followed by a lower next open), i.e. the part of impact that turned out temporary.
+- **reversion** $= s\,F\,(\overline{P}_{\text{fill}} - P_{\text{ref}})/N$ is a **diagnostic, not part of IS**. $P_{\text{ref}}$ is the **next close** by default (`CostConfig.tca_reversion_reference` = `"next_close"`, the BUILD_PLAN convention) or the next open (`"next_open"`). It is positive when the price came back after you traded (a buy followed by a lower reference price), i.e. the part of impact that turned out temporary. A missing reference price gives NaN reversion, never a silent 0, and NaN rows are left out of the bucket averages.
 
 Sign conventions are symmetric: for a sell, $s = -1$, so a falling price before arrival ($P_{\text{arr}} < P_{\text{dec}}$) is a positive delay cost.
 
 <callout icon="🤔" color="purple_bg">
-**Why never credit reversion in the optimizer?** If impact reverts overnight, a buy at an inflated close is partly "refunded" by tomorrow's mark-to-market. It is tempting to subtract that from expected cost. BUILD_PLAN §4 forbids it. About 70% of impact is permanent, reversion estimates are noisy, and crediting it would make the optimizer trade more on the strength of a benefit it cannot reliably collect. The plan defines reversion against the **next close**; the code uses the **next open** (audit #15, still open). Next close is the more common convention.
+**Why never credit reversion in the optimizer?** If impact reverts overnight, a buy at an inflated close is partly "refunded" by tomorrow's mark-to-market. It is tempting to subtract that from expected cost. BUILD_PLAN §4 forbids it. About 70% of impact is permanent, reversion estimates are noisy, and crediting it would make the optimizer trade more on the strength of a benefit it cannot reliably collect. The plan defines reversion against the **next close**; the code used the next open until November (audit #15, handbook finding #25). It now defaults to the next close and keeps the next open as an option.
 </callout>
 
 **Benchmarks matter.** AQR's identical trades measure 12.18 bp against arrival but 3.7 bp against VWAP (Frazzini et al.), because a VWAP benchmark absorbs your own impact. Fix the benchmark before comparing tactics. For auction fills BUILD_PLAN §6 says the relevant arrival benchmark is the 15:50 mid or the pre-imbalance mid. The fill simulator approximates it with the close (see → **Execution › Fill simulator**).
@@ -648,12 +838,15 @@ Sign conventions are symmetric: for a sell, $s = -1$, so a falling price before 
 Model: arrival slippage minus half-spread equals impact, $y_i = b\,x_i + \varepsilon_i$, with
 
 $$
-y_i = s_i\frac{\overline{P}_{\text{fill},i} - P_{\text{arr},i}}{P_{\text{arr},i}} - h_i, \qquad x_i = \sigma_i\sqrt{\frac{F_i}{V_i}}
+y_i = s_i\frac{\overline{P}_{\text{fill},i} - P_{\text{arr},i}}{P_{\text{arr},i}} - h_i, \qquad x_i = \sigma_i\Big(\frac{F_i}{V_i}\Big)^{e-1}
 $$
 
 where:
 - $y_i$ is in return units (fraction). $h_i$ is the half-spread recorded with the order: **zero for auction fills**, which pay no spread;
-- $x_i$ is the square-root regressor. $V_i$ is the **venue volume**: full-day ADV (63-day, shares) for continuous orders, auction share × ADV for auction orders, or the realised auction print if logged (`venue_volume`).
+- $x_i$ is the impact regressor, `decompose()["impact_x"]`. It is the *average* impact per dollar of the cost model's $C(Q) = b\,\sigma\,Q^e/V^{e-1}$, i.e. $C(Q)/Q = b\,\sigma\,(Q/V)^{e-1}$, with $e$ = `CostConfig.impact_exponent`. At the default $e$ = 1.5 it is the familiar $\sigma\sqrt{F/V}$. The participation $F/V$ is the same in shares or dollars;
+- $V_i$ is the **venue volume**: full-day ADV (63-day, shares) for continuous orders; auction share × ADV for auction orders, where the share is the order's own `auction_share` if supplied, else `auction_share_for_date` of the decision date (so a Russell-day fill is regressed on Russell-day volume); or the realised volume the fill was priced on (`venue_volume`), which overrides both.
+
+**Exponent-aware regressor (second-pass finding 2, fixed).** The regressor used to hard-code $\sqrt{F/V}$. With any other exponent in the model, $b$ came out wrong by a large factor: with noise-free fills at $e$ = 1.25 the calibration returned 0.88 / 2.54 for true values 0.3 / 1.0, and at $e$ = 1.8 it returned 0.084 / 0.333. Now `impact_x` uses `cost_cfg.impact_exponent`, and `test_calibrate_b_uses_configured_exponent` checks the recovery.
 
 **Regression through the origin.** There is no intercept, because zero participation must mean zero impact:
 
@@ -663,7 +856,7 @@ $$
 
 Orders with no fill, fill rate < 50% (`min_fill_rate`) or non-finite $x$ are dropped.
 
-**Venue-aware V (audit #1, HIGH, fixed).** Regressing auction fills on full-ADV participation recovers $b_{\text{auc}}/\sqrt{s}$, which is 3.3× too large at $s$ = 0.09. The auditors verified this: noise-free simulated fills with $b_{\text{auc}} = 0.5$ calibrated to **1.667**. Feeding that back into `impact_b_auction` would have tripled auction costs on the first monthly run. The fix stores the venue on each order and regresses each venue on its own $V$. `calibrate_b_by_venue` returns one $b$ per venue.
+**Venue-aware V (audit #1, HIGH, fixed).** Regressing auction fills on full-ADV participation recovers $b_{\text{auc}}/\phi^{e-1}$ (the effective $\beta_a$ of §6), which is 3.3× too large at $\phi$ = 0.09. The auditors verified this: noise-free simulated fills with the then-prior $b_{\text{auc}} = 0.5$ calibrated to **1.667**. Feeding that back into `impact_b_auction` would have tripled auction costs on the first monthly run. The fix stores the venue on each order and regresses each venue on its own $V$. `calibrate_b_by_venue` returns one $b$ per venue.
 
 **Shrinkage to the prior.** With a few hundred noisy fills and R² of a few percent, $\hat b_{\text{OLS}}$ is very noisy. The code blends it with the prior:
 
@@ -678,9 +871,9 @@ where $n$ is the number of usable orders, $w$ = `prior_weight` (default **20**) 
 </callout>
 
 ### How it works: the monthly loop
-1. Every parent order is logged at submission (`record_order`) with decision price/time, arrival price/time, venue and order type. Fills are logged as they arrive (`record_fill`). After the close and the next open, the order is closed (`close_order`) with close, next open, 63-day ADV, σ, fees, half-spread and the venue volume.
+1. Every parent order is logged at submission (`record_order`) with decision price/time, arrival price/time, venue and order type. Fills are logged as they arrive (`record_fill`). After the next close, the order is closed (`close_order`) with close, next open, next close, 63-day ADV, σ, fees, half-spread and the venue volume.
 2. Monthly: `TCALedger.decompose()` and `summary()` produce notional-weighted components by participation bucket (< 1%, 1–5%, 5–10%, > 10% ADV) and volatility bucket (< 1.5%, 1.5–3%, > 3% daily σ), as Bloomberg's buy-side reporting does.
-3. `calibrate_b_by_venue(prior_weight=20)` gives new `impact_b_auction` and `impact_b_continuous`. Review `n`, `b_ols`, `se` and `r2` before accepting. A move of more than about 2 standard errors from the prior deserves investigation, not automatic adoption.
+3. `calibrate_b_by_venue(prior_weight=20)` gives new `impact_b_auction` and `impact_b_continuous`. Review `n`, `b_ols`, `se` and `r2` before accepting. A move of more than about 2 standard errors from the prior deserves investigation, not automatic adoption. Check the new pair against the surrogate's validity condition $b_{\text{auc}}/\phi^{e-1} \le b_{\text{cont}}$ (§6): if the auction prefactor rises above $b_{\text{cont}} \times 0.3$ the optimizer switches to the upper-bound surrogate.
 4. Update `CostConfig`, which changes the config hash. Re-run the backtest and the breakeven gate.
 
 This loop is **not automated** in the code. No scheduler calls `calibrate_b`, and the router, fill simulator and ledger are not wired into `ResearchPipeline`. It is a manual monthly procedure until the live harness exists.
@@ -691,23 +884,24 @@ This loop is **not automated** in the code. No scheduler calls `calibrate_b`, an
 - **Arrival, not VWAP or close,** as the impact benchmark: VWAP hides your own impact.
 
 ### In the code
-`qts/tcost/tca.py::TCALedger`: `record_order(order_id, ticker, side, qty, decision_px, decision_ts, arrival_px, arrival_ts, venue=None, **meta)` (venue derived from `meta['order_type']` ∈ {MOC, LOC} if omitted), `record_fill`, `close_order(..., auction_share=None, venue_volume=None)`, `decompose`, `summary`, `calibrate_b(prior_b=1.0, prior_weight=20.0, min_fill_rate=0.5, venue=None)`, `calibrate_b_by_venue`, `save`/`load` (parquet or CSV). Order ids must be unique across days. `targets_to_orders` prefixes the date (audit #14).
+`qts/tcost/tca.py::TCALedger`: `record_order(order_id, ticker, side, qty, decision_px, decision_ts, arrival_px, arrival_ts, venue=None, **meta)` (venue derived from `meta['order_type']` ∈ {MOC, LOC} if omitted), `record_fill`, `close_order(..., auction_share=None, venue_volume=None, next_close_px=None)`, `decompose`, `summary`, `calibrate_b(prior_b=1.0, prior_weight=20.0, min_fill_rate=0.5, venue=None)`, `calibrate_b_by_venue`, `save`/`load` (parquet or CSV). `TCALedger(cost_cfg=...)` supplies the priors, the exponent, the default auction share and the reversion reference. Order ids must be unique across days. `targets_to_orders` prefixes the date (audit #14).
 
 ### Pitfalls & checks
 - **Called directly, `calibrate_b` defaults to `prior_b = 1.0`**, the continuous prior. For auction orders, use `calibrate_b_by_venue`, which takes the priors from `CostConfig`.
 - **ADV denominator.** Pass the 63-day ADV to `close_order`. The fill simulator falls back to the day's realised volume when the caller gives none (audit #16).
 - **Selection bias.** Dropping low-fill-rate orders removes exactly the LOCs that failed because the price ran away, which biases $b$ down. Watch the opportunity-cost column.
-- Tests: `test_decomposition_sums_and_signs`, `test_calibrate_b_recovers_truth` (synthetic $b$ = 0.8 recovered within 0.2), `test_calibrate_b_is_venue_aware` (0.5 / 1.0 recovered per venue; the old full-ADV regressor gives ≈ 1.67), `test_ledger_persistence_roundtrip`.
+- Tests: `test_decomposition_sums_and_signs`, `test_calibrate_b_recovers_truth` (synthetic $b$ = 0.8 recovered within 0.2), `test_calibrate_b_is_venue_aware` (auction and continuous priors recovered per venue; the old full-ADV regressor gives the effective prefactor instead), `test_calibrate_b_uses_configured_exponent`, `test_ledger_persistence_roundtrip`.
 
 ### Worked example
-A buy of 100 shares. Decision price \$100.00 (10:00), arrival \$100.10 (10:05), fills 60 @ \$100.30 and 20 @ \$100.50, 20 shares unfilled, close \$101.00, next open \$100.80, fees \$0.50. Decision notional $N$ = 100 × 100 = \$10,000, so 1 dollar = 1 bp.
+A buy of 100 shares. Decision price \$100.00 (10:00), arrival \$100.10 (10:05), fills 60 @ \$100.30 and 20 @ \$100.50, 20 shares unfilled, close \$101.00, next open \$100.80, next close \$100.20, fees \$0.50. Decision notional $N$ = 100 × 100 = \$10,000, so 1 dollar = 1 bp.
 - Fill VWAP = (60 × 100.30 + 20 × 100.50) / 80 = \$100.35.
 - Delay = +1 × 80 × (100.10 − 100.00) = \$8.00 → **8.0 bp**.
 - Impact = 80 × (100.35 − 100.10) = \$20.00 → **20.0 bp**.
 - Opportunity = 20 × (101.00 − 100.00) = \$20.00 → **20.0 bp**.
 - Fees = **0.5 bp**.
 - IS = **48.5 bp**. Check: 80 × 0.35 + 20 × 1.00 + 0.50 = 48.50 ✓.
-- Reversion = 80 × (100.35 − 100.80) = −\$36 → **−36 bp**. The price kept rising after the fill, so none of the impact reverted. Either the impact was permanent or the move was information.
+- Reversion (default, vs the next close) = 80 × (100.35 − 100.20) = +\$12 → **+12 bp**: by the next close the price had come back below the fill, so part of the impact looks temporary.
+- Reversion vs the next open (`tca_reversion_reference="next_open"`) = 80 × (100.35 − 100.80) = −\$36 → **−36 bp**: measured at the open, the price was still rising and none of the impact had reverted. The two references can disagree in sign on the same order, which is one more reason reversion is a diagnostic and never a credit.
 
 This is `tests/test_tcost.py::test_decomposition_sums_and_signs`.
 
@@ -719,68 +913,64 @@ This is `tests/test_tcost.py::test_decomposition_sums_and_signs`.
 
 ## 12. Parameter reference (`CostConfig`)
 
-| Field | Default | Units | Meaning / where used |
-|---|---|---|---|
-| `commission_per_share` | 0.0035 | \$/share | IBKR Pro tiered, first tier |
-| `commission_min_per_order` | 0.35 | \$/order | per-order minimum (exact `explicit_cost` only) |
-| `commission_max_pct_value` | 0.01 | fraction of value | commission cap |
-| `clearing_per_share` | 0.0002 | \$/share | NSCC/DTC, capped at 0.5% of value |
-| `sec_fee_per_dollar_sold` | 20.60e-6 | \$/\$ sold | SEC §31 when no date is given (dated table otherwise) |
-| `finra_taf_per_share_sold` | 0.000195 | \$/share sold | TAF when no date is given |
-| `finra_taf_max_per_trade` | 9.79 | \$/trade | TAF cap when no date is given |
-| `cat_fee_per_share` | 0.000003 | \$/share | CAT, both sides (audit #13: current prospective rate \$0.000001; immaterial) |
-| `auction_exchange_fee_per_share` | 0.001 | \$/share | MOC/LOC fills only |
-| `impact_b_continuous` | 1.0 | — | square-root prefactor, $V$ = ADV |
-| `impact_b_auction` | 0.5 | — | prefactor, $V$ = auction volume (effective 1.67 per √(Q/ADV)) |
-| `auction_volume_share_default` | 0.09 | fraction of ADV | **not read** by the cost model (date-aware function used instead) |
-| `impact_exponent` | 1.5 | — | **not read**: 1.5 is hard-coded |
-| `default_half_spread_bps` | 2.0 | bp | fallback half-spread |
-| `default_borrow_fee_annual` | 0.005 | fraction/yr | GC fee; proxy floor |
-| `max_participation_adv` | 0.05 | fraction of ADV | per-name daily trade cap via `participation_cap` |
-| `htb_fee_cap_annual` | 0.25 | fraction/yr | proxy ceiling |
-| `borrow_proxy_si_gc` | 0.05 | SI ratio | proxy GC threshold |
-| `borrow_proxy_si_htb` | 0.20 | SI ratio | proxy HTB threshold |
-| `small_cap_borrow_multiplier` | 2.0 | × | applied below the size threshold |
-| `small_cap_threshold_usd` | 2e9 | \$ | market cap threshold |
-| `delisting_haircut` | −0.30 | return | applied against position sign on delisting |
-| `impact_persistence` | True | bool | multi-day $m_k$ multiplier in `estimate` |
+Defaults match `qts/core/config.py` and `configs/default.yaml`. **Bounds** are the semantic bounds in `COST_CONFIG_BOUNDS`, checked when the config is constructed (`[` / `]` inclusive, `(` / `)` exclusive).
 
-`TCALedger.calibrate_b` has its own defaults (`prior_weight` = 20, `min_fill_rate` = 0.5). `PortfolioConfig.max_adv_participation` (0.05) is the optimizer-side copy of the participation cap.
+| Field | Default | Units | Bounds | Meaning / where used |
+|---|---|---|---|---|
+| `commission_per_share` | 0.0035 | \$/share | [0, 1] | IBKR Pro tiered, first tier |
+| `commission_min_per_order` | 0.35 | \$/order | [0, 100] | per-order minimum (exact fees only; routed = two orders) |
+| `commission_max_pct_value` | 0.01 | fraction of value | [0, 1] | commission cap |
+| `clearing_per_share` | 0.0002 | \$/share | [0, 1] | NSCC/DTC, capped at 0.5% of value |
+| `sec_fee_per_dollar_sold` | 20.60e-6 | \$/\$ sold | [0, 0.01] | SEC §31 when no date is given (dated table otherwise) |
+| `finra_taf_per_share_sold` | 0.000195 | \$/share sold | [0, 1] | TAF when no date is given |
+| `finra_taf_max_per_trade` | 9.79 | \$/trade | [0, 1000] | TAF cap when no date is given |
+| `cat_fee_per_share` | 0.000003 | \$/share | [0, 1] | CAT, both sides (audit #13: current prospective rate \$0.000001; immaterial) |
+| `auction_exchange_fee_per_share` | 0.001 | \$/share | [0, 1] | auction fills / the auction slice of a routed trade |
+| `impact_b_continuous` | 1.0 | — | (0, 10] | impact prefactor $b_c$, $V$ = ADV |
+| `impact_b_auction` | **0.3** | — | (0, 10] | prefactor $b_a$, $V$ = auction volume; effective $\beta_a$ = 1.0 per $\sqrt{Q/\text{ADV}}$ on a normal day (D2) |
+| `auction_volume_share_default` | 0.09 | fraction of ADV | (0, 1] | **single source** of the normal-day auction share (cost model, router, fill simulator, dry-run broker, TCA) |
+| `impact_exponent` | 1.5 | — | (1, 2] | $e$ in $C(Q) = b\sigma Q^e/V^{e-1}$; read by every consumer |
+| `default_half_spread_bps` | 2.0 | bp | [0, 1000] | fallback half-spread |
+| `default_borrow_fee_annual` | 0.005 | fraction/yr | [0, 5] | GC fee; proxy floor |
+| `max_participation_adv` | 0.05 | fraction of ADV | (0, 1] | per-name daily trade cap via `participation_cap` |
+| `htb_fee_cap_annual` | 0.25 | fraction/yr | [0, 5] | proxy ceiling |
+| `borrow_proxy_si_gc` | 0.05 | SI ratio | [0, 1] | proxy GC threshold; must be < `borrow_proxy_si_htb` |
+| `borrow_proxy_si_htb` | 0.20 | SI ratio | (0, 1] | proxy HTB threshold |
+| `small_cap_borrow_multiplier` | 2.0 | × | [0, 100] | applied to proxy and default fees below the size threshold (§8) |
+| `small_cap_threshold_usd` | 2e9 | \$ | [0, ∞) | market cap threshold |
+| `delisting_haircut` | −0.30 | return | [−1, 1] | against position sign on delisting; also the label haircut (single source) |
+| `impact_persistence` | True | bool | — | exact streak increment (or $m_k$ fallback) in `estimate` |
+| `tca_reversion_reference` | `"next_close"` | enum | `next_close` \| `next_open` | TCA reversion diagnostic reference price |
+
+**Validation.** `CostConfig.__post_init__` calls `validate()`, which checks every bound (a value must be a finite real number inside its interval; booleans and strings are rejected), `borrow_proxy_si_gc < borrow_proxy_si_htb` and the reversion enum, and raises one `ValueError` naming every offending field. So `SystemConfig.from_dict`, `from_yaml` and API overrides are all checked; after mutating a field in place, call `validate()` again. The second-pass audit (finding 3) found that negative fees and a zero auction share were accepted by the API and that negative fees were then booked as rebates; the bounds plus `CostEstimate`'s negative-cost check close both. The upper bounds only reject absurd values (for example a typo of 10¹²); they are not plausibility ranges. The API's config schema publishes the same bounds as `minimum` / `exclusiveMinimum` / `maximum`. Tests: `tests/test_audit2_costs_backtest.py::test_cost_config_rejects_out_of_bounds`, `test_config_bounds_edges_and_round_trip`.
+
+Related fields outside `CostConfig`: `ExecutionConfig.auction_max_pct_of_auction_volume` (0.02, bounds (0, 1]) is the routed venue's κ. `PortfolioConfig.max_adv_participation` (0.05) is the optimizer-side copy of the participation cap. `TCALedger.calibrate_b` has its own defaults (`prior_weight` = 20, `min_fill_rate` = 0.5).
 
 ## 13. Pitfalls & checks (cross-cutting)
 
 <callout icon="⚠️" color="yellow_bg">
-**Units, units, units.** The layer handles four unit systems: **bp** (`cost_bps`, `half_spread_bps`, `explicit_bps`, TCA output), **fractions of notional** (`half_spread`, `marginal_fraction`), **dollars** (`explicit_cost`, `total_cost_fraction` despite its name, `estimate()[*_usd]`) and **fractions of NAV** (`cvx_terms`, `cvx_cost_expression`, `holding_cost_fraction`). A bp value passed where a fraction is expected is a 10,000× error. The convention: names ending `_bps` are bp; `half_spread` without suffix is a fraction; anything feeding cvxpy is a fraction of NAV. When in doubt, compute one trade by hand as in §5's worked example.
+**Units, units, units.** The layer handles four unit systems: **bp** (`cost_bps`, `half_spread_bps`, `explicit_bps`, `CostEstimate.bps()`, TCA output), **fractions of notional or price** (`LiquiditySnapshot.half_spread`, `marginal_fraction`), **dollars** (`explicit_cost`, `total_cost_fraction` despite its name, `CostEstimate` `*_usd`) and **fractions of NAV** (`cvx_terms`, `cvx_cost_expression`, `holding_cost_fraction`). A bp value passed where a fraction is expected is a 10,000× error. The convention: names ending `_bps` are bp; `half_spread` without suffix is a fraction; anything feeding cvxpy is a fraction of NAV. When in doubt, compute one trade by hand as in §5's or §6's worked example.
 </callout>
 
 **Optimizer ⇄ simulator consistency.** If the optimizer believes trades are cheaper than the backtester charges, it over-trades and the backtest is internally inconsistent. If they agree, a weak net result is an alpha problem, not a plumbing problem. By construction:
-- both use the same snapshot (same σ with the same median fill, same venue volume and $b$ per name, same zero spread for auction names);
-- the impact terms are algebraically identical: $\text{coef}\cdot\lvert x\rvert^{3/2} = \text{impact\_usd}/\text{nav}$ (derivation in §5);
-- explicit fees differ only by the \$0.35 minimum and per-trade caps (linear in the optimizer, exact in the simulator);
-- the multi-day persistence multiplier is applied only in the simulator (§7), deliberately.
+- both read the same `LiquiditySnapshot` type with the same median fills, venue volume, $b$ and spread per name (with a signal lag, the optimizer's snapshot is the signal date's liquidity and the simulator books on the execution date's; → see **Backtesting › The simulator timeline**);
+- for `continuous` and `auction`, the spread and impact terms are algebraically identical: $\text{coef}\cdot\lvert x\rvert^{e} = \text{impact\_usd}/\text{nav}$ (§5);
+- for `routed`, spread and impact are exact whenever $\beta_a \le b_c$, which holds at the defaults (§6), and an upper bound otherwise;
+- explicit fees differ only by the \$0.35 minimum and per-trade caps (linear in the optimizer, exact in the simulator) and, for `routed`, by the auction exchange fee charged on the whole trade;
+- the multi-day persistence surcharge is applied only in the simulator (§7), deliberately.
 
-The audit verified the impact equivalence **to machine precision** for random trades at both venues (`docs/audit/tcost_execution_backtest.md`, "cvx_terms ≡ estimate"; script `/tmp/audit/cost_check.py`), and `docs/audit/RESOLUTION.md` lists it under "verified correct". **The repository's test suite has no test that compares the two numerically.** The tests check convexity and solvability of `cvx_terms`, the NaN-σ median fill on both paths, and that the simulator prices the requested venue (`tests/test_tcost.py::test_estimate_prices_requested_venue_and_real_spreads`, `tests/test_backtest.py::test_simulator_snapshot_keeps_venue_date_and_spreads`). A one-line regression test should be added, especially during the cost-contract refactor:
-
-```python
-x = cp.Variable(n); x.value = xv
-trade, _ = tcm.cvx_terms(x, x, nav, snap, include_explicit=False)
-est = tcm.estimate(pd.Series(xv * nav, index=idx), snap)
-assert trade.value == pytest.approx((est.impact_usd.sum() + est.spread_usd.sum()) / nav)
-```
-
-This was run while writing this page and matches to all printed digits.
+This is now **tested**. `tests/test_cost_equivalence.py` (handbook finding #24) compares `cvx_terms(...).value × nav` with `estimate(...).total` for random trades: `test_cvx_terms_equal_estimate` (default exponent, both single venues), `test_cvx_terms_equal_estimate_non_default_exponent_and_heavy_day`, and the routed tests listed in §6. The second-pass audit measured the per-name impact error of the routed surrogate at ≤ 7.7 × 10⁻¹⁶ and total surrogate/estimate ratios of 1.000045 (continuous), 1.000058 (auction) and 1.0013–1.0023 (routed), all from fees.
 
 Other cross-cutting checks:
-- **Silent zero cost.** The backtester raises if `estimate()` returns no recognised cost column or NaN costs (audit #8 fix; `tests/test_backtest.py::test_cost_frame_raises_on_unrecognised_or_nan`). Do not weaken this during refactors.
-- **Snapshot key loss.** Audit #3: an `align_snapshot` that kept only five keys dropped venue, date and real spreads. Fixed by pass-through; guarded by `test_simulator_snapshot_keeps_venue_date_and_spreads`.
-- **Remaining biases.** Optimistic: no recall risk, streak reset on one-day pauses. Conservative: auction model for every backtest trade, full-permanence persistence, no short rebate, first-tier commissions, pessimistic borrow proxy, −30% delisting for both sides.
+- **Silent zero cost.** `CostEstimate` raises on missing columns, non-finite values and negative components; `cost_frame` raises on unrecognised columns for legacy models (audit #8; `test_cost_frame_raises_on_unrecognised_or_nan`, `test_cost_estimate_rejects_negative_components`). Do not weaken this.
+- **Snapshot key loss.** Audit #3: an `align_snapshot` that kept only five keys dropped venue, date and real spreads. The typed snapshot makes this impossible for the production path; `test_simulator_snapshot_is_the_cost_model_snapshot` checks that the simulator prices on exactly the cost model's snapshot.
+- **Remaining biases.** Optimistic: no recall risk, streak reset on one-day pauses, the fill simulator's independent pricing of a split's continuous child (§6). Conservative: full-permanence persistence, no short rebate or cash interest, first-tier commissions, pessimistic borrow proxy and small-cap multiplier, −30% delisting for both sides, the auction-first ordering of the routed increment. The second-pass audit's verdict: on the default configuration the net backtest numbers are conservative, and the cost, timing and NAV accounting reproduce an independent hand computation exactly.
 
 ## 14. Roadmap
-- **Single typed cost contract** (snapshot / estimate / protocol in `qts.core`), in progress, per `docs/audit/code_quality.md`. Add the numerical optimizer ⇄ simulator equivalence test as part of it.
-- **Auction volume forecast** per name (imbalance history, special-day calendar) to replace the flat 9/20/34% shares, plus a single source of truth for the default share.
-- **Impact decay kernel** (propagator with ~70% permanent and power-law transient decay) to replace the full-persistence upper bound.
+- **Auction volume forecast** per name (imbalance history, special-day calendar) to replace the flat 9/20/34% shares; automate the yearly Russell December date.
+- **Impact decay kernel** (propagator with ~70% permanent and power-law transient decay) to replace full persistence within a streak.
 - **Log IBKR SLB indicative rates daily** and splice them in after ~12 months. Model short rebate and cash interest.
 - **Real delisting returns** from Sharadar/Norgate in place of the −30% haircut.
-- **Automate the monthly TCA job** once live fills exist. Fix reversion to next close (audit #15).
-- **Wire `impact_exponent`** or remove it from the config. Revisit `b_auction` once 200+ auction fills exist, and with it the router's auction threshold (§6 callout).
+- **Automate the monthly TCA job** once live fills exist. Revisit `impact_b_auction` once 200+ auction fills exist, check it against the surrogate condition (§6), and revisit the router's 2% auction cap with it.
+- Make `FillSimulator` price a split's continuous child as the increment $C(q) - C(q_a)$, as the routed cost model does.
 - Verify the pre-2024 FINRA TAF rows (code TODO).
