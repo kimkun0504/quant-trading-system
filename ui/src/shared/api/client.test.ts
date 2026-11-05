@@ -6,10 +6,8 @@ import { ApiError, buildUrl } from './client';
 
 describe('api client', () => {
   it('builds query strings and skips empty values', () => {
-    expect(buildUrl('/api/runs/x/holdings', { date: undefined })).toMatch(
-      /\/api\/runs\/x\/holdings$/,
-    );
-    expect(buildUrl('/api/runs/x/series', { names: 'nav,net' })).toMatch(/\?names=nav%2Cnet$/);
+    expect(buildUrl('/runs/x/holdings', { date: undefined })).toMatch(/\/api\/runs\/x\/holdings$/);
+    expect(buildUrl('/runs/x/series', { names: 'nav,net' })).toMatch(/\?names=nav%2Cnet$/);
   });
 
   it('surfaces the API detail on errors', async () => {

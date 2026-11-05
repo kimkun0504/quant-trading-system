@@ -63,7 +63,7 @@ carry the page.
 │nav │ Run 2026-11-05 · composite · synthetic seed 0 │               │
 │    │ Verdict: passes cost & Sharpe gates, fails    │ margin notes  │
 │Runs│ deflated Sharpe (4 trials) — not yet real.    │ (sticky,      │
-│New │ [gate strip ■■■■□■■]                          │  aligned to   │
+│New │ [gate strip ▬▬▬▬╌▬▬]                          │  aligned to   │
 │Mod.│ ────────────────────────────────────────────  │  the figure   │
 │Ldgr│ NAV + drawdown (full width of the column)     │  they explain)│
 │    │ Metrics table                                 │               │
@@ -116,7 +116,7 @@ derived tokens were added because the build needed them; none introduces a new h
 | Token                               | Light                                    | Dark      | Why                                                                                                                  |
 | ----------------------------------- | ---------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------- |
 | `caution-ink`                       | `#7D5B00`                                | `#D9B25C` | `caution` (#B8860B) is 3.25:1 on white: fine for marks, fails AA as text. Warnings set in text use this darker step. |
-| `on-accent`                         | `#FFFFFF`                                | `#10161D` | text on a `gain` fill (primary button, gate-marker glyphs)                                                           |
+| `on-accent`                         | `#FFFFFF`                                | `#10161D` | text on a `gain` fill (primary button)                                                                               |
 | `wash`, `caution-wash`, `loss-wash` | `color-mix()` of the accent into `sheet` | same      | row hover, suspicious banner, error summary                                                                          |
 
 Focus in dark mode uses the dark `gain` (#6FA8D6) rather than #3B82C4, which is 4.0:1 on the dark
@@ -191,7 +191,11 @@ same way the browser does, and fails the build step if any pair drops below its 
 - **Monthly returns heatmap is an HTML table** (its own text alternative). The tint is capped
   at a 50 % wash so ink text stays above 6.6:1 on every cell.
 - **Motion.** The NAV line is drawn by progressively revealing data (≤ 600 ms, ease-out), then
-  the gate markers fill left to right (70 ms stagger). It plays once per run per page session;
+  the gate bars draw left to right (70 ms stagger). It plays once per run per page session;
   `prefers-reduced-motion` turns both off.
-- **Status is always in words.** Gate markers differ by shape too (filled with a tick, filled
-  with a cross, dashed outline for skipped), and every status is written next to the marker.
+- **Status is always in words.** In the gate strip the status word ("passed", "failed",
+  "skipped") is the primary signal, set in weight 600 under the gate name. A short bar before
+  it repeats the status as a data mark, like a legend swatch: solid `gain` for passed,
+  `loss` hatching for failed, dashed `caution` outline for skipped. The marks are deliberately
+  not boxes: the first version used 14 px squares with a tick or cross, which read as form
+  checkboxes (interactive) in review.

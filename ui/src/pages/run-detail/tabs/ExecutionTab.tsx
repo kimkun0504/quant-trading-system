@@ -24,8 +24,14 @@ export function ExecutionTab() {
         >
           <div className={styles.prose}>
             <p>
-              This run’s orders were routed to the <strong>{run.execution_venue}</strong>. Signals
-              form at the close of <em>t</em> and trade{' '}
+              {run.execution_venue ? (
+                <>
+                  This run’s orders were routed to the <strong>{run.execution_venue}</strong>.
+                </>
+              ) : (
+                <>This run did not record its execution venue (it predates that field).</>
+              )}{' '}
+              Signals form at the close of <em>t</em> and trade{' '}
               {run.config.signal_lag_days === 0 ? 'at that same close' : 'at the next close'}; the
               backtest books each trade at the closing price.
             </p>

@@ -1,0 +1,2597 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "qts research workbench API",
+    "description": "\nRun registry, trial ledger, config schema and background pipeline jobs of the `qts`\nresearch workbench. Errors are RFC 7807 problem details (`application/problem+json`)\nwith a string `detail`. Non-finite floats (NaN / inf) are serialised as `null`.\n",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/runs": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "All runs, newest first",
+        "operationId": "list_runs_api_runs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RunSummary"
+                  },
+                  "type": "array",
+                  "title": "Response List Runs Api Runs Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Launch a pipeline run as a background job",
+        "operationId": "launch_run_api_runs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LaunchRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LaunchRunResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "One run",
+        "operationId": "get_run_api_runs__run_id__get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "The run is still running or failed before writing results"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/series": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Return series on the realisation-date axis",
+        "operationId": "get_series_api_runs__run_id__series_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "names",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "comma-separated subset of nav, gross, net, drawdown, turnover, exante_vol (default: all)",
+              "title": "Names"
+            },
+            "description": "comma-separated subset of nav, gross, net, drawdown, turnover, exante_vol (default: all)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ColumnarSeries"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "The run is still running or failed before writing results"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request"
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/costs": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Get Costs",
+        "operationId": "get_costs_api_runs__run_id__costs_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunCosts"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "The run is still running or failed before writing results"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/exposures": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Get Exposures",
+        "operationId": "get_exposures_api_runs__run_id__exposures_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunExposures"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "The run is still running or failed before writing results"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/holdings": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Get Holdings",
+        "operationId": "get_holdings_api_runs__run_id__holdings_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "YYYY-MM-DD, one of available_dates (default: latest)",
+              "title": "Date"
+            },
+            "description": "YYYY-MM-DD, one of available_dates (default: latest)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunHoldings"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "The run is still running or failed before writing results"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/ic": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Get Ic",
+        "operationId": "get_ic_api_runs__run_id__ic_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunIc"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "The run is still running or failed before writing results"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Get Job",
+        "operationId": "get_job_api_jobs__job_id__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Cancel (best effort)",
+        "operationId": "cancel_job_api_jobs__job_id__delete",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ledger": {
+      "get": {
+        "tags": [
+          "ledger"
+        ],
+        "summary": "Get Ledger ",
+        "operationId": "get_ledger__api_ledger_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ledger"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config/schema": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Get Config Schema",
+        "operationId": "get_config_schema_api_config_schema_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonSchemaObject"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Health",
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "BacktestSummary": {
+        "properties": {
+          "start": {
+            "type": "string",
+            "title": "Start"
+          },
+          "end": {
+            "type": "string",
+            "title": "End"
+          },
+          "n_days": {
+            "type": "integer",
+            "title": "N Days"
+          },
+          "final_nav": {
+            "type": "number",
+            "title": "Final Nav"
+          },
+          "cagr_gross": {
+            "type": "number",
+            "title": "Cagr Gross"
+          },
+          "cagr_net": {
+            "type": "number",
+            "title": "Cagr Net"
+          },
+          "ann_vol_gross": {
+            "type": "number",
+            "title": "Ann Vol Gross"
+          },
+          "ann_vol_net": {
+            "type": "number",
+            "title": "Ann Vol Net"
+          },
+          "sharpe_gross": {
+            "type": "number",
+            "title": "Sharpe Gross"
+          },
+          "sharpe_net": {
+            "type": "number",
+            "title": "Sharpe Net"
+          },
+          "sharpe_net_lo": {
+            "type": "number",
+            "title": "Sharpe Net Lo"
+          },
+          "sharpe_t_stat_net": {
+            "type": "number",
+            "title": "Sharpe T Stat Net"
+          },
+          "newey_west_t_net": {
+            "type": "number",
+            "title": "Newey West T Net"
+          },
+          "max_drawdown_net": {
+            "type": "number",
+            "title": "Max Drawdown Net"
+          },
+          "calmar_net": {
+            "type": "number",
+            "title": "Calmar Net"
+          },
+          "sortino_net": {
+            "type": "number",
+            "title": "Sortino Net"
+          },
+          "hit_rate_net": {
+            "type": "number",
+            "title": "Hit Rate Net"
+          },
+          "avg_gross_exposure": {
+            "type": "number",
+            "title": "Avg Gross Exposure"
+          },
+          "avg_net_exposure": {
+            "type": "number",
+            "title": "Avg Net Exposure"
+          },
+          "avg_daily_turnover": {
+            "type": "number",
+            "title": "Avg Daily Turnover"
+          },
+          "effective_holding_days": {
+            "type": "number",
+            "title": "Effective Holding Days"
+          },
+          "avg_cost_bps_per_side": {
+            "type": "number",
+            "title": "Avg Cost Bps Per Side"
+          },
+          "avg_daily_cost_bps_of_nav": {
+            "type": "number",
+            "title": "Avg Daily Cost Bps Of Nav"
+          },
+          "total_costs_usd": {
+            "type": "number",
+            "title": "Total Costs Usd"
+          },
+          "transfer_coefficient_mean": {
+            "type": "number",
+            "title": "Transfer Coefficient Mean"
+          },
+          "realized_vs_exante_vol_ratio": {
+            "type": "number",
+            "title": "Realized Vs Exante Vol Ratio"
+          },
+          "breakeven_cost_bps": {
+            "type": "number",
+            "title": "Breakeven Cost Bps"
+          },
+          "n_delistings": {
+            "type": "integer",
+            "title": "N Delistings"
+          },
+          "n_failed_solves": {
+            "type": "integer",
+            "title": "N Failed Solves"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "start",
+          "end",
+          "n_days",
+          "final_nav",
+          "cagr_gross",
+          "cagr_net",
+          "ann_vol_gross",
+          "ann_vol_net",
+          "sharpe_gross",
+          "sharpe_net",
+          "sharpe_net_lo",
+          "sharpe_t_stat_net",
+          "newey_west_t_net",
+          "max_drawdown_net",
+          "calmar_net",
+          "sortino_net",
+          "hit_rate_net",
+          "avg_gross_exposure",
+          "avg_net_exposure",
+          "avg_daily_turnover",
+          "effective_holding_days",
+          "avg_cost_bps_per_side",
+          "avg_daily_cost_bps_of_nav",
+          "total_costs_usd",
+          "transfer_coefficient_mean",
+          "realized_vs_exante_vol_ratio",
+          "breakeven_cost_bps",
+          "n_delistings",
+          "n_failed_solves"
+        ],
+        "title": "BacktestSummary",
+        "description": "``BacktestResult.summary()`` (qts/backtest/simulator.py)."
+      },
+      "ColumnarSeries": {
+        "properties": {
+          "dates": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Dates"
+          },
+          "series": {
+            "additionalProperties": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Series"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dates",
+          "series"
+        ],
+        "title": "ColumnarSeries",
+        "description": "Columnar time series: ``series[name][i]`` belongs to ``dates[i]``."
+      },
+      "CostSensitivityRow": {
+        "properties": {
+          "multiplier": {
+            "type": "number",
+            "title": "Multiplier"
+          },
+          "cost_bps_per_side": {
+            "type": "number",
+            "title": "Cost Bps Per Side"
+          },
+          "net_sharpe": {
+            "type": "number",
+            "title": "Net Sharpe"
+          },
+          "net_cagr": {
+            "type": "number",
+            "title": "Net Cagr"
+          },
+          "mean_daily_cost_bps": {
+            "type": "number",
+            "title": "Mean Daily Cost Bps"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "multiplier",
+          "cost_bps_per_side",
+          "net_sharpe",
+          "net_cagr",
+          "mean_daily_cost_bps"
+        ],
+        "title": "CostSensitivityRow"
+      },
+      "CostSeries": {
+        "properties": {
+          "dates": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Dates"
+          },
+          "series": {
+            "$ref": "#/components/schemas/CostValues"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dates",
+          "series"
+        ],
+        "title": "CostSeries",
+        "description": "``ColumnarSeries<CostComponent>``: USD per decision date by component."
+      },
+      "CostValues": {
+        "properties": {
+          "spread": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Spread"
+          },
+          "impact": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Impact"
+          },
+          "fees": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Fees"
+          },
+          "borrow": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Borrow"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "spread",
+          "impact",
+          "fees",
+          "borrow"
+        ],
+        "title": "CostValues"
+      },
+      "DecileSpread": {
+        "properties": {
+          "mean": {
+            "type": "number",
+            "title": "Mean"
+          },
+          "sharpe": {
+            "type": "number",
+            "title": "Sharpe"
+          },
+          "t_stat": {
+            "type": "number",
+            "title": "T Stat"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "mean",
+          "sharpe",
+          "t_stat"
+        ],
+        "title": "DecileSpread"
+      },
+      "DsrInputs": {
+        "properties": {
+          "n_trials": {
+            "type": "number",
+            "title": "N Trials"
+          },
+          "var_trials_sr_annual": {
+            "type": "number",
+            "title": "Var Trials Sr Annual"
+          },
+          "skew": {
+            "type": "number",
+            "title": "Skew"
+          },
+          "kurtosis": {
+            "type": "number",
+            "title": "Kurtosis"
+          },
+          "n_obs": {
+            "type": "integer",
+            "title": "N Obs"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "n_trials",
+          "var_trials_sr_annual",
+          "skew",
+          "kurtosis",
+          "n_obs"
+        ],
+        "title": "DsrInputs"
+      },
+      "ExposureSnapshot": {
+        "properties": {
+          "date": {
+            "type": "string",
+            "title": "Date"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/ExposureSnapshotRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "date",
+          "rows"
+        ],
+        "title": "ExposureSnapshot"
+      },
+      "ExposureSnapshotRow": {
+        "properties": {
+          "factor": {
+            "type": "string",
+            "title": "Factor"
+          },
+          "exposure": {
+            "type": "number",
+            "title": "Exposure"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "alpha_theme",
+              "risk_only",
+              "market"
+            ],
+            "title": "Role"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "factor",
+          "exposure",
+          "role"
+        ],
+        "title": "ExposureSnapshotRow"
+      },
+      "FoldSharpe": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "sharpe_net": {
+            "type": "number",
+            "title": "Sharpe Net"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "label",
+          "sharpe_net"
+        ],
+        "title": "FoldSharpe"
+      },
+      "GateResult": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "t_stat",
+              "ic_sign",
+              "incremental_ic",
+              "net_sharpe_delta",
+              "breakeven_cost",
+              "dsr",
+              "pbo",
+              "phase_sharpe",
+              "suspect"
+            ],
+            "title": "Name"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PASS",
+              "FAIL",
+              "skipped"
+            ],
+            "title": "Status"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "threshold": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threshold"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "required": {
+            "type": "boolean",
+            "title": "Required"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "status",
+          "value",
+          "threshold",
+          "reason",
+          "required"
+        ],
+        "title": "GateResult"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "Health": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok",
+            "title": "Status"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "qts_version": {
+            "type": "string",
+            "title": "Qts Version"
+          },
+          "runs_root": {
+            "type": "string",
+            "title": "Runs Root"
+          },
+          "runs_root_exists": {
+            "type": "boolean",
+            "title": "Runs Root Exists"
+          },
+          "n_runs": {
+            "type": "integer",
+            "title": "N Runs"
+          },
+          "jobs": {
+            "$ref": "#/components/schemas/JobCounts"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "version",
+          "qts_version",
+          "runs_root",
+          "runs_root_exists",
+          "n_runs",
+          "jobs"
+        ],
+        "title": "Health"
+      },
+      "Holding": {
+        "properties": {
+          "ticker": {
+            "type": "string",
+            "title": "Ticker"
+          },
+          "weight": {
+            "type": "number",
+            "title": "Weight"
+          },
+          "alpha": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alpha"
+          },
+          "specific_vol": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Specific Vol"
+          },
+          "industry": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Industry"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ticker",
+          "weight",
+          "alpha",
+          "specific_vol",
+          "industry"
+        ],
+        "title": "Holding"
+      },
+      "Hurdles": {
+        "properties": {
+          "overall": {
+            "type": "string",
+            "enum": [
+              "PASS",
+              "FAIL"
+            ],
+            "title": "Overall"
+          },
+          "phase": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Phase"
+          },
+          "required": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "t_stat",
+                "ic_sign",
+                "incremental_ic",
+                "net_sharpe_delta",
+                "breakeven_cost",
+                "dsr",
+                "pbo",
+                "phase_sharpe",
+                "suspect"
+              ]
+            },
+            "type": "array",
+            "title": "Required"
+          },
+          "gates": {
+            "items": {
+              "$ref": "#/components/schemas/GateResult"
+            },
+            "type": "array",
+            "title": "Gates"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "overall",
+          "phase",
+          "required",
+          "gates"
+        ],
+        "title": "Hurdles"
+      },
+      "IcByYear": {
+        "properties": {
+          "year": {
+            "type": "integer",
+            "title": "Year"
+          },
+          "mean_ic": {
+            "type": "number",
+            "title": "Mean Ic"
+          },
+          "n": {
+            "type": "integer",
+            "title": "N"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "year",
+          "mean_ic",
+          "n"
+        ],
+        "title": "IcByYear"
+      },
+      "IcDecayPoint": {
+        "properties": {
+          "horizon_days": {
+            "type": "integer",
+            "title": "Horizon Days"
+          },
+          "mean_ic": {
+            "type": "number",
+            "title": "Mean Ic"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "horizon_days",
+          "mean_ic"
+        ],
+        "title": "IcDecayPoint"
+      },
+      "IcReport": {
+        "properties": {
+          "mean_ic": {
+            "type": "number",
+            "title": "Mean Ic"
+          },
+          "ic_sd": {
+            "type": "number",
+            "title": "Ic Sd"
+          },
+          "icir": {
+            "type": "number",
+            "title": "Icir"
+          },
+          "t_stat": {
+            "type": "number",
+            "title": "T Stat"
+          },
+          "hit_rate": {
+            "type": "number",
+            "title": "Hit Rate"
+          },
+          "periods_per_year": {
+            "type": "number",
+            "title": "Periods Per Year"
+          },
+          "n": {
+            "type": "integer",
+            "title": "N"
+          },
+          "horizon_days": {
+            "type": "integer",
+            "title": "Horizon Days"
+          },
+          "by_year": {
+            "items": {
+              "$ref": "#/components/schemas/IcByYear"
+            },
+            "type": "array",
+            "title": "By Year"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "mean_ic",
+          "ic_sd",
+          "icir",
+          "t_stat",
+          "hit_rate",
+          "periods_per_year",
+          "n",
+          "horizon_days",
+          "by_year"
+        ],
+        "title": "IcReport"
+      },
+      "Job": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "done",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "progress": {
+            "type": "number",
+            "title": "Progress"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "job_id",
+          "run_id",
+          "status",
+          "progress",
+          "message"
+        ],
+        "title": "Job"
+      },
+      "JobCounts": {
+        "properties": {
+          "queued": {
+            "type": "integer",
+            "title": "Queued"
+          },
+          "running": {
+            "type": "integer",
+            "title": "Running"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "queued",
+          "running"
+        ],
+        "title": "JobCounts"
+      },
+      "JsonSchemaBoolean": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "boolean",
+            "title": "Type"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "default": {
+            "type": "boolean",
+            "title": "Default"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "title": "JsonSchemaBoolean"
+      },
+      "JsonSchemaNumber": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "number",
+              "integer"
+            ],
+            "title": "Type"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "default": {
+            "type": "number",
+            "title": "Default"
+          },
+          "minimum": {
+            "type": "number",
+            "title": "Minimum"
+          },
+          "maximum": {
+            "type": "number",
+            "title": "Maximum"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "title": "JsonSchemaNumber"
+      },
+      "JsonSchemaObject": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "object",
+            "title": "Type"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "properties": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/JsonSchemaNumber"
+                },
+                {
+                  "$ref": "#/components/schemas/JsonSchemaBoolean"
+                },
+                {
+                  "$ref": "#/components/schemas/JsonSchemaString"
+                },
+                {
+                  "$ref": "#/components/schemas/JsonSchemaObject"
+                }
+              ]
+            },
+            "type": "object",
+            "title": "Properties"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type",
+          "properties"
+        ],
+        "title": "JsonSchemaObject"
+      },
+      "JsonSchemaString": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "string",
+            "title": "Type"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "default": {
+            "type": "string",
+            "title": "Default"
+          },
+          "enum": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Enum"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "title": "JsonSchemaString"
+      },
+      "LaunchRunRequest": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "synthetic",
+              "store"
+            ],
+            "title": "Kind"
+          },
+          "ml": {
+            "type": "boolean",
+            "title": "Ml"
+          },
+          "phase": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Phase"
+          },
+          "stocks": {
+            "type": "integer",
+            "maximum": 3000.0,
+            "minimum": 50.0,
+            "title": "Stocks"
+          },
+          "days": {
+            "type": "integer",
+            "maximum": 6000.0,
+            "minimum": 764.0,
+            "title": "Days",
+            "description": "512 warm-up days plus at least one year"
+          },
+          "seed": {
+            "type": "integer",
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Seed"
+          },
+          "signal_lag_days": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ],
+            "title": "Signal Lag Days"
+          },
+          "config_overrides": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            },
+            "type": "object",
+            "title": "Config Overrides",
+            "description": "dotted-path overrides of SystemConfig, e.g. {\"portfolio.trade_aversion\": 2}"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label",
+            "description": "run label (default: derived)"
+          },
+          "max_days": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 20.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Days",
+            "description": "backtest only the last N out-of-sample days (quick runs)"
+          },
+          "venue": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "routed",
+                  "auction",
+                  "continuous"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Venue",
+            "description": "simulator pricing venue (default routed)"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "ml",
+          "phase",
+          "stocks",
+          "days",
+          "seed",
+          "signal_lag_days",
+          "config_overrides"
+        ],
+        "title": "LaunchRunRequest"
+      },
+      "LaunchRunResponse": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "job_id",
+          "run_id"
+        ],
+        "title": "LaunchRunResponse"
+      },
+      "Ledger": {
+        "properties": {
+          "trials": {
+            "items": {
+              "$ref": "#/components/schemas/LedgerTrial"
+            },
+            "type": "array",
+            "title": "Trials"
+          },
+          "families": {
+            "items": {
+              "$ref": "#/components/schemas/LedgerFamily"
+            },
+            "type": "array",
+            "title": "Families"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "trials",
+          "families"
+        ],
+        "title": "Ledger"
+      },
+      "LedgerFamily": {
+        "properties": {
+          "family": {
+            "type": "string",
+            "title": "Family"
+          },
+          "n_trials": {
+            "type": "integer",
+            "title": "N Trials"
+          },
+          "effective_trials": {
+            "type": "number",
+            "title": "Effective Trials"
+          },
+          "var_sr_annual": {
+            "type": "number",
+            "title": "Var Sr Annual"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "family",
+          "n_trials",
+          "effective_trials",
+          "var_sr_annual"
+        ],
+        "title": "LedgerFamily"
+      },
+      "LedgerTrial": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "ts": {
+            "type": "string",
+            "title": "Ts"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "family": {
+            "type": "string",
+            "title": "Family"
+          },
+          "config_hash": {
+            "type": "string",
+            "title": "Config Hash"
+          },
+          "data_hash": {
+            "type": "string",
+            "title": "Data Hash"
+          },
+          "sharpe_annual": {
+            "type": "number",
+            "title": "Sharpe Annual"
+          },
+          "n_obs": {
+            "type": "integer",
+            "title": "N Obs"
+          },
+          "mean_ic": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Ic"
+          },
+          "n_reruns": {
+            "type": "integer",
+            "title": "N Reruns"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "ts",
+          "name",
+          "family",
+          "config_hash",
+          "data_hash",
+          "sharpe_annual",
+          "n_obs",
+          "mean_ic",
+          "n_reruns"
+        ],
+        "title": "LedgerTrial"
+      },
+      "RankIcSeries": {
+        "properties": {
+          "dates": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Dates"
+          },
+          "series": {
+            "$ref": "#/components/schemas/RankIcValues"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dates",
+          "series"
+        ],
+        "title": "RankIcSeries",
+        "description": "``ColumnarSeries<'rank_ic'>``."
+      },
+      "RankIcValues": {
+        "properties": {
+          "rank_ic": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Rank Ic"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "rank_ic"
+        ],
+        "title": "RankIcValues"
+      },
+      "RunConfig": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "synthetic",
+              "store"
+            ],
+            "title": "Kind"
+          },
+          "use_ml": {
+            "type": "boolean",
+            "title": "Use Ml"
+          },
+          "phase": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Phase"
+          },
+          "stocks": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stocks",
+            "description": "universe size of the input data; null when not recorded"
+          },
+          "days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Days",
+            "description": "days of market data; null when not recorded"
+          },
+          "seed": {
+            "type": "integer",
+            "title": "Seed"
+          },
+          "signal_lag_days": {
+            "type": "integer",
+            "title": "Signal Lag Days",
+            "description": "ExecutionConfig.signal_lag_days (the launch form offers 0 or 1)"
+          },
+          "config_yaml": {
+            "type": "string",
+            "title": "Config Yaml"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "use_ml",
+          "phase",
+          "stocks",
+          "days",
+          "seed",
+          "signal_lag_days",
+          "config_yaml"
+        ],
+        "title": "RunConfig",
+        "description": "Subset of ``SystemConfig`` the UI reads directly; the full YAML is in ``config_yaml``."
+      },
+      "RunCosts": {
+        "properties": {
+          "daily": {
+            "$ref": "#/components/schemas/CostSeries"
+          },
+          "nav": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Nav",
+            "description": "pre-trade NAV (USD) per date of `daily`"
+          },
+          "cost_sensitivity": {
+            "items": {
+              "$ref": "#/components/schemas/CostSensitivityRow"
+            },
+            "type": "array",
+            "title": "Cost Sensitivity"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "daily",
+          "nav",
+          "cost_sensitivity"
+        ],
+        "title": "RunCosts"
+      },
+      "RunDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "done",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/BacktestSummary"
+          },
+          "manifest": {
+            "$ref": "#/components/schemas/RunManifest"
+          },
+          "config": {
+            "$ref": "#/components/schemas/RunConfig"
+          },
+          "hurdles": {
+            "$ref": "#/components/schemas/Hurdles"
+          },
+          "ic_report": {
+            "$ref": "#/components/schemas/IcReport"
+          },
+          "decile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecileSpread"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dsr": {
+            "type": "number",
+            "title": "Dsr"
+          },
+          "dsr_inputs": {
+            "$ref": "#/components/schemas/DsrInputs"
+          },
+          "pbo": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pbo"
+          },
+          "fold_sharpes": {
+            "items": {
+              "$ref": "#/components/schemas/FoldSharpe"
+            },
+            "type": "array",
+            "title": "Fold Sharpes"
+          },
+          "execution_venue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Venue",
+            "description": "routing venue of the execution layer, e.g. \"closing auction (LOC/MOC)\"; null for runs written before it was recorded"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Notes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "status",
+          "summary",
+          "manifest",
+          "config",
+          "hurdles",
+          "ic_report",
+          "decile",
+          "dsr",
+          "dsr_inputs",
+          "pbo",
+          "fold_sharpes",
+          "execution_venue",
+          "notes"
+        ],
+        "title": "RunDetail"
+      },
+      "RunExposures": {
+        "properties": {
+          "factors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Factors"
+          },
+          "roles": {
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "alpha_theme",
+                "risk_only",
+                "market"
+              ]
+            },
+            "type": "object",
+            "title": "Roles"
+          },
+          "history": {
+            "$ref": "#/components/schemas/ColumnarSeries"
+          },
+          "latest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExposureSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null when the run has no exposure history"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "factors",
+          "roles",
+          "history",
+          "latest"
+        ],
+        "title": "RunExposures"
+      },
+      "RunHeadline": {
+        "properties": {
+          "sharpe_net": {
+            "type": "number",
+            "title": "Sharpe Net"
+          },
+          "sharpe_gross": {
+            "type": "number",
+            "title": "Sharpe Gross"
+          },
+          "cagr_net": {
+            "type": "number",
+            "title": "Cagr Net"
+          },
+          "max_drawdown": {
+            "type": "number",
+            "title": "Max Drawdown"
+          },
+          "avg_cost_bps_per_side": {
+            "type": "number",
+            "title": "Avg Cost Bps Per Side"
+          },
+          "dsr": {
+            "type": "number",
+            "title": "Dsr"
+          },
+          "overall_gate": {
+            "type": "string",
+            "enum": [
+              "PASS",
+              "FAIL"
+            ],
+            "title": "Overall Gate"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "sharpe_net",
+          "sharpe_gross",
+          "cagr_net",
+          "max_drawdown",
+          "avg_cost_bps_per_side",
+          "dsr",
+          "overall_gate"
+        ],
+        "title": "RunHeadline",
+        "description": "Headline numbers shown in the runs list."
+      },
+      "RunHoldings": {
+        "properties": {
+          "date": {
+            "type": "string",
+            "title": "Date"
+          },
+          "available_dates": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Available Dates"
+          },
+          "positions": {
+            "items": {
+              "$ref": "#/components/schemas/Holding"
+            },
+            "type": "array",
+            "title": "Positions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "date",
+          "available_dates",
+          "positions"
+        ],
+        "title": "RunHoldings"
+      },
+      "RunIc": {
+        "properties": {
+          "ic": {
+            "$ref": "#/components/schemas/RankIcSeries"
+          },
+          "decay": {
+            "items": {
+              "$ref": "#/components/schemas/IcDecayPoint"
+            },
+            "type": "array",
+            "title": "Decay"
+          },
+          "horizon_days": {
+            "type": "integer",
+            "title": "Horizon Days"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ic",
+          "decay",
+          "horizon_days"
+        ],
+        "title": "RunIc"
+      },
+      "RunManifest": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "git_sha": {
+            "type": "string",
+            "title": "Git Sha"
+          },
+          "git_dirty": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Git Dirty",
+            "description": "null when git was unavailable"
+          },
+          "config_hash": {
+            "type": "string",
+            "title": "Config Hash"
+          },
+          "data_hash": {
+            "type": "string",
+            "title": "Data Hash"
+          },
+          "python": {
+            "type": "string",
+            "title": "Python"
+          },
+          "platform": {
+            "type": "string",
+            "title": "Platform"
+          },
+          "versions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Versions"
+          },
+          "timings": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Timings"
+          },
+          "seeds": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Seeds"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id",
+          "created_at",
+          "git_sha",
+          "git_dirty",
+          "config_hash",
+          "data_hash",
+          "python",
+          "platform",
+          "versions",
+          "timings",
+          "seeds"
+        ],
+        "title": "RunManifest"
+      },
+      "RunSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "synthetic",
+              "store"
+            ],
+            "title": "Kind"
+          },
+          "phase": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Phase"
+          },
+          "use_ml": {
+            "type": "boolean",
+            "title": "Use Ml"
+          },
+          "config_hash": {
+            "type": "string",
+            "title": "Config Hash"
+          },
+          "data_hash": {
+            "type": "string",
+            "title": "Data Hash"
+          },
+          "git_sha": {
+            "type": "string",
+            "title": "Git Sha"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "done",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "headline": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunHeadline"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null while running or after a failure"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "created_at",
+          "label",
+          "kind",
+          "phase",
+          "use_ml",
+          "config_hash",
+          "data_hash",
+          "git_sha",
+          "status",
+          "headline"
+        ],
+        "title": "RunSummary"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "ValidationIssue": {
+        "additionalProperties": false,
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Loc",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Msg",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationIssue",
+        "type": "object"
+      },
+      "ApiErrorBody": {
+        "additionalProperties": false,
+        "description": "RFC 7807 problem details (``application/problem+json``); ``detail`` is always a string.",
+        "properties": {
+          "type": {
+            "title": "Type",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "integer"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationIssue"
+            },
+            "title": "Errors",
+            "type": "array"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "ApiErrorBody",
+        "type": "object"
+      }
+    }
+  }
+}

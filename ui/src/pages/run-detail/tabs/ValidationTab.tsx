@@ -164,13 +164,13 @@ export function ValidationTab() {
         note={
           <MarginNote>
             {foldsOk} of {run.fold_sharpes.length} folds clear +0.05. Consistency across folds
-            matters more than the average: one great year can carry a mediocre strategy.
+            matters more than the average: one great stretch can carry a mediocre strategy.
           </MarginNote>
         }
       >
         <ChartFrame
-          title="Net Sharpe by calendar-year fold"
-          description="Years with at least 60 return days. Dashed line: the +0.05 fold bar."
+          title="Net Sharpe by walk-forward fold"
+          description="Contiguous test blocks of the purged walk-forward split (validation.n_splits), labelled by first and last month. Dashed line: the +0.05 fold bar."
           table={{
             caption: 'Net Sharpe by fold',
             columns: ['Fold', 'Net Sharpe'],

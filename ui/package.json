@@ -17,7 +17,9 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "contrast": "node scripts/contrast.mjs",
-    "screenshots": "node scripts/screenshots.mjs"
+    "screenshots": "node scripts/screenshots.mjs",
+    "api:types": "python -m qts_api.openapi ../api/openapi.json && npx --yes openapi-typescript@7.13.0 ../api/openapi.json -o src/shared/api/generated.ts && prettier --write src/shared/api/generated.ts",
+    "test:e2e:real": "npm run build && playwright test -c playwright.real.config.ts"
   },
   "dependencies": {
     "@fontsource/source-sans-3": "^5.3.1",

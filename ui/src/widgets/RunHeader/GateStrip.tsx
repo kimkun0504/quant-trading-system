@@ -5,8 +5,10 @@ import { cx } from '@/shared/lib/cx';
 import styles from './GateStrip.module.css';
 
 /**
- * The hurdle gates as an ordered list. Each item states its name and status in text;
- * the marker's colour and shape repeat that, they never carry it alone.
+ * The hurdle gates as an ordered list. Each item states its name and status in text; the
+ * status word is the signal. The short bar before it repeats the status as a data mark
+ * (solid: passed, hatched: failed, dashed outline: skipped), never as a control: no box,
+ * no tick, nothing that reads as a checkbox.
  */
 export function GateStrip({
   gates,
@@ -28,35 +30,15 @@ export function GateStrip({
             style={{ '--i': i } as CSSProperties}
             title={g.reason}
           >
-            <Marker status={g.status} />
             <span className={styles.name}>{def.label}</span>
             <span className={styles.status}>
-              {STATUS_WORD[g.status]}
+              <span className={styles.marker} aria-hidden="true" />
+              <span className={styles.word}>{STATUS_WORD[g.status]}</span>
               {g.required ? <span className={styles.required}> (required)</span> : null}
             </span>
           </li>
         );
       })}
     </ol>
-  );
-}
-
-function Marker({ status }: { status: GateResult['status'] }) {
-  return (
-    <svg className={styles.marker} width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-      {status === 'PASS' ? (
-        <>
-          <rect className={styles.fillPass} x="1" y="1" width="12" height="12" rx="2" />
-          <path d="M3.8 7.2 6 9.3 10.3 4.8" className={styles.tick} />
-        </>
-      ) : status === 'FAIL' ? (
-        <>
-          <rect className={styles.fillFail} x="1" y="1" width="12" height="12" rx="2" />
-          <path d="M4.3 4.3 9.7 9.7M9.7 4.3 4.3 9.7" className={styles.tick} />
-        </>
-      ) : (
-        <rect className={styles.skip} x="1.5" y="1.5" width="11" height="11" rx="2" />
-      )}
-    </svg>
   );
 }

@@ -1,7 +1,8 @@
 import { useId, useMemo, useRef, useState } from 'react';
 import type { ReactNode, SyntheticEvent } from 'react';
 import type { Phase, RunKind } from '@/shared/api';
-import { overrideFields } from './schemaFields';
+import { groupFields, overrideFields } from './schemaFields';
+import type { OverrideField } from './schemaFields';
 import { useConfigSchema, useLaunchRun } from '@/entities/run';
 import { Button } from '@/shared/ui';
 import { ErrorState } from '@/shared/ui/ErrorState';
@@ -28,6 +29,7 @@ export function LaunchRunForm({
   const schema = useConfigSchema();
   const launch = useLaunchRun();
   const fields = useMemo(() => overrideFields(schema.data), [schema.data]);
+  const groups = useMemo(() => groupFields(fields), [fields]);
   const idBase = useId();
   const fid = (name: string) => `${idBase}-${name.replace(/[^a-z0-9]/gi, '-')}`;
 
@@ -51,7 +53,7 @@ export function LaunchRunForm({
       requestAnimationFrame(() => summaryRef.current?.focus());
       return;
     }
-    launch.mutate(toRequest(values), { onSuccess: (r) => onLaunched(r.job_id, r.run_id) });
+    launch.mutate(toRequest(values, fields), { onSuccess: (r) => onLaunched(r.job_id, r.run_id) });
   };
 
   const errorEntries = Object.entries(errors) as [FieldName, string][];
@@ -199,48 +201,39 @@ export function LaunchRunForm({
           ledger.
         </p>
         {schema.isError ? <ErrorState error={schema.error} /> : null}
-        <div className={styles.row}>
-          {fields.map((f) => {
-            const name: FieldName = `override:${f.path}`;
-            const id = fid(name);
-            const hintId = `${id}-hint`;
-            if (f.leaf.type === 'boolean') {
-              const current = values.overrides[f.path];
-              return (
-                <div key={f.path} className={styles.field}>
-                  <div className={styles.check}>
-                    <input
-                      id={id}
-                      type="checkbox"
-                      checked={typeof current === 'boolean' ? current : (f.leaf.default ?? false)}
-                      onChange={(e) => setOverride(f.path, e.target.checked)}
-                      aria-describedby={hintId}
-                    />
-                    <label htmlFor={id}>{f.title}</label>
-                  </div>
-                  <p id={hintId} className={styles.hint}>
-                    {f.leaf.description}
-                  </p>
-                </div>
-              );
-            }
-            const cur = values.overrides[f.path];
-            return (
-              <NumberField
-                key={f.path}
-                id={id}
-                label={f.title}
-                value={typeof cur === 'string' ? cur : ''}
-                placeholder={f.leaf.default === undefined ? '' : String(f.leaf.default)}
-                onChange={(v) => setOverride(f.path, v)}
-                hint={f.leaf.description ?? ''}
-                error={errors[name]}
-                describedBy={describedBy(name, hintId)}
-                decimal={f.type === 'number'}
-              />
-            );
-          })}
-        </div>
+        {groups.map(([group, groupFields]) => {
+          const changed = groupFields.filter((f) => {
+            const v = values.overrides[f.path];
+            return v !== undefined && v !== '';
+          }).length;
+          return (
+            <details key={group} className={styles.group}>
+              <summary>
+                {group}
+                <span className={styles.groupMeta}>
+                  {' '}
+                  ({groupFields.length} settings{changed ? `, ${changed} changed` : ''})
+                </span>
+              </summary>
+              <div className={styles.row}>
+                {groupFields.map((f) => (
+                  <OverrideInput
+                    key={f.path}
+                    field={f}
+                    id={fid(`override:${f.path}`)}
+                    value={values.overrides[f.path]}
+                    error={errors[`override:${f.path}`]}
+                    describedBy={describedBy(
+                      `override:${f.path}`,
+                      `${fid(`override:${f.path}`)}-hint`,
+                    )}
+                    onChange={(v) => setOverride(f.path, v)}
+                  />
+                ))}
+              </div>
+            </details>
+          );
+        })}
       </details>
 
       {launch.isError ? <ErrorState error={launch.error} /> : null}
@@ -251,6 +244,97 @@ export function LaunchRunForm({
         </Button>
       </div>
     </form>
+  );
+}
+
+function OverrideInput({
+  field: f,
+  id,
+  value,
+  error,
+  describedBy,
+  onChange,
+}: {
+  field: OverrideField;
+  id: string;
+  value: string | boolean | undefined;
+  error: string | undefined;
+  describedBy: string | undefined;
+  onChange: (v: string | boolean) => void;
+}) {
+  const hintId = `${id}-hint`;
+  const leaf = f.leaf;
+  if (leaf.type === 'boolean') {
+    return (
+      <div className={styles.field}>
+        <div className={styles.check}>
+          <input
+            id={id}
+            type="checkbox"
+            checked={typeof value === 'boolean' ? value : (leaf.default ?? false)}
+            onChange={(e) => onChange(e.target.checked)}
+            aria-describedby={hintId}
+          />
+          <label htmlFor={id}>{f.title}</label>
+        </div>
+        <p id={hintId} className={styles.hint}>
+          {leaf.description}
+        </p>
+      </div>
+    );
+  }
+  const text = typeof value === 'string' ? value : '';
+  if (leaf.type === 'string') {
+    return (
+      <div className={styles.field}>
+        <label htmlFor={id} className={styles.label}>
+          {f.title}
+        </label>
+        {leaf.enum ? (
+          <select
+            id={id}
+            className={styles.input}
+            value={text}
+            onChange={(e) => onChange(e.target.value)}
+            aria-describedby={describedBy}
+          >
+            <option value="">Default{leaf.default ? ` (${leaf.default})` : ''}</option>
+            {leaf.enum.map((o) => (
+              <option key={o} value={o}>
+                {o}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input
+            id={id}
+            className={styles.input}
+            value={text}
+            placeholder={leaf.default ?? ''}
+            onChange={(e) => onChange(e.target.value)}
+            aria-describedby={describedBy}
+            autoComplete="off"
+          />
+        )}
+        <p id={hintId} className={styles.hint}>
+          {leaf.description ?? ''}
+        </p>
+        <FieldError id={`${id}-error`} message={error} />
+      </div>
+    );
+  }
+  return (
+    <NumberField
+      id={id}
+      label={f.title}
+      value={text}
+      placeholder={leaf.default === undefined ? '' : String(leaf.default)}
+      onChange={onChange}
+      hint={leaf.description ?? ''}
+      error={error}
+      describedBy={describedBy}
+      decimal={f.type === 'number'}
+    />
   );
 }
 

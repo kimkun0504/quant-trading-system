@@ -64,7 +64,8 @@ export function validateLaunch(
   if (v.phase === 2 && !v.ml) e.ml = 'Phase 2 tests the ML sleeve: turn it on, or choose phase 1.';
   for (const o of overrides) {
     const raw = v.overrides[o.path];
-    if (raw === undefined || raw === '' || typeof raw === 'boolean') continue;
+    if (raw === undefined || raw === '' || typeof raw === 'boolean' || o.type === 'string')
+      continue;
     const n = Number(raw);
     const key: FieldName = `override:${o.path}`;
     if (!Number.isFinite(n)) e[key] = `${o.title} must be a number.`;
@@ -78,11 +79,20 @@ export function validateLaunch(
   return e;
 }
 
-export function toRequest(v: LaunchFormValues): LaunchRunRequest {
+/**
+ * The request body. Booleans pass through; with `fields`, string-typed overrides stay
+ * strings and numeric ones become numbers (without `fields`, every text value is numeric).
+ */
+export function toRequest(
+  v: LaunchFormValues,
+  fields: readonly Pick<OverrideBounds, 'path' | 'type'>[] = [],
+): LaunchRunRequest {
+  const types = new Map(fields.map((f) => [f.path, f.type]));
   const config_overrides: Record<string, number | boolean | string> = {};
   for (const [k, raw] of Object.entries(v.overrides)) {
     if (raw === '') continue;
-    config_overrides[k] = typeof raw === 'boolean' ? raw : Number(raw);
+    config_overrides[k] =
+      typeof raw === 'boolean' ? raw : types.get(k) === 'string' ? raw : Number(raw);
   }
   return {
     kind: v.kind,

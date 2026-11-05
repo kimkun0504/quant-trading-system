@@ -141,3 +141,13 @@ export function pollJob(jobId: string, now = Date.now()): Job | undefined {
   };
   return rec.job;
 }
+
+export function cancelJob(jobId: string): Job | undefined {
+  const rec = db.jobs.get(jobId);
+  if (!rec) return undefined;
+  if (rec.job.status === 'done' || rec.job.status === 'failed') return rec.job;
+  rec.job = { ...rec.job, status: 'failed', message: 'Cancelled' };
+  const pending = db.pending.get(rec.spec.id);
+  if (pending) db.pending.set(rec.spec.id, { ...pending, status: 'failed' });
+  return rec.job;
+}

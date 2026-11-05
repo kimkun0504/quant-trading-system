@@ -90,8 +90,8 @@ export function RunHeader({ run, animate = false }: { run: RunDetail; animate?: 
             use_ml: run.config.use_ml,
             kind: run.config.kind,
           })}
-          , {int(run.config.stocks)} stocks, seed {run.config.seed}, signal lag{' '}
-          {run.config.signal_lag_days}
+          {run.config.stocks !== null ? `, ${int(run.config.stocks)} stocks` : ''}, seed{' '}
+          {run.config.seed}, signal lag {run.config.signal_lag_days}
         </p>
         <h1 className={styles.title}>{run.label}</h1>
         <p className={cx(styles.verdict, styles[verdict.tone])}>{verdict.sentence}</p>

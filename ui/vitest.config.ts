@@ -9,7 +9,7 @@ export default defineConfig((env) =>
       setupFiles: ['./src/test/setup.ts'],
       include: ['src/**/*.test.{ts,tsx}'],
       css: { modules: { classNameStrategy: 'non-scoped' } },
-      env: { VITE_API_URL: 'http://localhost' },
+      env: { VITE_API_URL: 'http://localhost/api' },
     },
   }),
 );

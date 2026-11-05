@@ -1,13 +1,19 @@
 /**
- * API contract between the workbench and the `qts` run-registry API.
+ * API contract between the workbench and the `qts` run-registry API (`api/`).
  *
- * Hand-written for now; the backend (FastAPI) will publish an OpenAPI schema and this
- * file is meant to be replaced by `openapi-typescript` output. Keep the names below
- * stable (they are re-exported through `entities/*`), so swapping the source only
- * touches this file.
+ * The backend's Pydantic models (`api/qts_api/schemas.py`) mirror these types name for
+ * name; `generated.ts` is `openapi-typescript` output of the API's OpenAPI document
+ * (`npm run api:types`) and `contract.check.ts` type-checks every type here against it,
+ * so a drift on either side fails `npm run typecheck`. The types stay hand-written
+ * because the UI narrows a few generic shapes (`ColumnarSeries<N>`) that OpenAPI cannot
+ * express.
  *
  * Field names follow the Python side verbatim (snake_case): `BacktestResult.summary()`,
  * `HurdleResult.to_dict()`, `ICReport.scalars()`, `RunManifest`.
+ *
+ * Numbers: a value that is not finite in Python (NaN / inf, e.g. an undefined ratio)
+ * arrives as `null` even where the type says `number`; the formatters in
+ * `shared/lib/format` render it as "n/a".
  */
 
 export type RunId = string;
@@ -93,7 +99,8 @@ export interface RunManifest {
   run_id: RunId;
   created_at: IsoDateTime;
   git_sha: string;
-  git_dirty: boolean;
+  /** null when git was unavailable to the run. */
+  git_dirty: boolean | null;
   config_hash: string;
   data_hash: string;
   python: string;
@@ -162,10 +169,12 @@ export interface RunConfig {
   kind: RunKind;
   use_ml: boolean;
   phase: Phase;
-  stocks: number;
-  days: number;
+  /** Universe size / days of market data of the input; null when the run did not record them. */
+  stocks: number | null;
+  days: number | null;
   seed: number;
-  signal_lag_days: 0 | 1;
+  /** `ExecutionConfig.signal_lag_days` (the launch form offers 0 or 1). */
+  signal_lag_days: number;
   config_yaml: string;
 }
 
@@ -183,8 +192,8 @@ export interface RunDetail {
   dsr_inputs: DsrInputs;
   pbo: number | null;
   fold_sharpes: FoldSharpe[];
-  /** Routing venue used by the execution layer, e.g. "closing auction (LOC/MOC)". */
-  execution_venue: string;
+  /** Routing venue used by the execution layer, e.g. "closing auction (LOC/MOC)"; null for runs written before it was recorded. */
+  execution_venue: string | null;
   notes: string[];
 }
 
@@ -209,8 +218,8 @@ export interface CostSensitivityRow {
 export interface RunCosts {
   /** USD per day by component. */
   daily: ColumnarSeries<CostComponent>;
-  /** NAV per day (USD), to convert to bp of NAV. */
-  nav: number[];
+  /** Pre-trade NAV per day (USD), to convert to bp of NAV. */
+  nav: (number | null)[];
   cost_sensitivity: CostSensitivityRow[];
 }
 
@@ -220,19 +229,26 @@ export interface ExposureSnapshotRow {
   role: 'alpha_theme' | 'risk_only' | 'market';
 }
 
+export interface ExposureSnapshot {
+  date: IsoDate;
+  rows: ExposureSnapshotRow[];
+}
+
+/** Empty (`factors: []`, `latest: null`) for runs written without an exposure history. */
 export interface RunExposures {
   factors: string[];
   roles: Record<string, ExposureSnapshotRow['role']>;
   history: ColumnarSeries;
-  latest: { date: IsoDate; rows: ExposureSnapshotRow[] };
+  latest: ExposureSnapshot | null;
 }
 
+/** `alpha`, `specific_vol` and `industry` are null for runs written before they were stored. */
 export interface Holding {
   ticker: string;
   weight: number;
-  alpha: number;
-  specific_vol: number;
-  industry: string;
+  alpha: number | null;
+  specific_vol: number | null;
+  industry: string | null;
 }
 
 export interface RunHoldings {
@@ -252,6 +268,8 @@ export interface RunIc {
   horizon_days: number;
 }
 
+export type Venue = 'routed' | 'auction' | 'continuous';
+
 export interface LaunchRunRequest {
   kind: RunKind;
   ml: boolean;
@@ -262,6 +280,12 @@ export interface LaunchRunRequest {
   signal_lag_days: 0 | 1;
   /** Dotted-path overrides of SystemConfig, e.g. {"portfolio.trade_aversion": 2}. */
   config_overrides: Record<string, number | boolean | string>;
+  /** Run label (default: derived from the model and seed). */
+  label?: string | null;
+  /** Backtest only the last N out-of-sample days (quick runs). */
+  max_days?: number | null;
+  /** Simulator pricing venue (default "routed"). */
+  venue?: Venue | null;
 }
 
 export interface LaunchRunResponse {
@@ -292,14 +316,16 @@ export interface LedgerTrial {
   n_reruns: number;
 }
 
+export interface LedgerFamily {
+  family: string;
+  n_trials: number;
+  effective_trials: number;
+  var_sr_annual: number;
+}
+
 export interface Ledger {
   trials: LedgerTrial[];
-  families: {
-    family: string;
-    n_trials: number;
-    effective_trials: number;
-    var_sr_annual: number;
-  }[];
+  families: LedgerFamily[];
 }
 
 /** JSON Schema (draft 2020-12 subset) of SystemConfig, as served by /api/config/schema. */
@@ -338,6 +364,28 @@ export interface JsonSchemaObject {
 
 export type ConfigSchema = JsonSchemaObject;
 
+export interface ValidationIssue {
+  loc: (string | number)[];
+  msg: string;
+  type: string;
+}
+
+/** RFC 7807 problem details (`application/problem+json`); `detail` is always a string. */
 export interface ApiErrorBody {
+  type?: string;
+  title?: string;
+  status?: number;
   detail: string;
+  /** Per-field issues of a 422. */
+  errors?: ValidationIssue[];
+}
+
+export interface Health {
+  status: 'ok';
+  version: string;
+  qts_version: string;
+  runs_root: string;
+  runs_root_exists: boolean;
+  n_runs: number;
+  jobs: { queued: number; running: number };
 }

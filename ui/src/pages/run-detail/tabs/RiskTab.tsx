@@ -5,8 +5,16 @@ import { metricContext, useRunExposures, useRunHoldings, useRunSeries } from '@/
 import { ChartFrame, LegendItem, LineSwatch, SmallMultiples } from '@/shared/charts';
 import { TimeSeriesChart } from '@/shared/charts/TimeSeriesChart';
 import { annualizedVol } from '@/shared/lib/stats';
-import { date, num, pct } from '@/shared/lib/format';
-import { ErrorState, Flow, MarginNote, Section, Skeleton, SortableTable } from '@/shared/ui';
+import { date, MISSING, num, pct } from '@/shared/lib/format';
+import {
+  EmptyState,
+  ErrorState,
+  Flow,
+  MarginNote,
+  Section,
+  Skeleton,
+  SortableTable,
+} from '@/shared/ui';
 import type { Column } from '@/shared/ui';
 import { useRunOutlet } from '../context';
 import styles from './Tabs.module.css';
@@ -61,7 +69,7 @@ const HOLDING_COLUMNS: Column<Holding>[] = [
     header: 'Industry',
     headerText: 'Industry',
     sortValue: (h) => h.industry,
-    render: (h) => h.industry,
+    render: (h) => h.industry ?? MISSING,
   },
 ];
 
@@ -74,7 +82,7 @@ export function RiskTab() {
   const holdings = useRunHoldings(run.id, holdingDate);
 
   const multiples = useMemo(() => {
-    if (!exposures.data) return null;
+    if (!exposures.data?.latest) return null;
     const { factors, roles, history } = exposures.data;
     return factors.map((f) => ({
       key: f,
@@ -94,8 +102,12 @@ export function RiskTab() {
       const slice = g.slice(i - window, i).filter((v): v is number => v !== null);
       return annualizedVol(slice);
     });
-    return { dates: vol.data.dates, realised, exante: vol.data.series.exante_vol };
+    const exante = vol.data.series.exante_vol;
+    const hasExante = exante.some((v) => v !== null);
+    return { dates: vol.data.dates, realised, exante, hasExante };
   }, [vol.data]);
+  const latest = exposures.data?.latest ?? null;
+  const holdingsDetail = holdings.data?.positions.some((h) => h.alpha !== null) ?? true;
 
   const net = holdings.data?.positions.reduce((a, h) => a + h.weight, 0) ?? 0;
   const grossW = holdings.data?.positions.reduce((a, h) => a + Math.abs(h.weight), 0) ?? 0;
@@ -113,16 +125,20 @@ export function RiskTab() {
           </MarginNote>
         }
       >
-        {multiples && exposures.data ? (
+        {multiples && exposures.data && latest ? (
           <ChartFrame
             title="Net book exposure to each style factor"
             description="In standard deviations of the factor, one panel per factor on a shared scale."
             table={() => ({
-              caption: `Exposures on ${date(exposures.data.latest.date)}`,
+              caption: `Exposures on ${date(latest.date)}`,
               columns: ['Factor', 'Role', 'Exposure'],
-              rows: exposures.data.latest.rows.map((r) => [
+              rows: latest.rows.map((r) => [
                 pretty(r.factor),
-                r.role === 'alpha_theme' ? 'Alpha theme' : 'Risk only',
+                r.role === 'alpha_theme'
+                  ? 'Alpha theme'
+                  : r.role === 'market'
+                    ? 'Market'
+                    : 'Risk only',
                 num(r.exposure, { digits: 3, signed: true }),
               ]),
             })}
@@ -130,14 +146,21 @@ export function RiskTab() {
             <SmallMultiples
               items={multiples}
               startLabel={date(exposures.data.history.dates[0])}
-              endLabel={date(exposures.data.latest.date)}
-              ariaLabel={`Factor exposures over time. Latest: ${exposures.data.latest.rows
+              endLabel={date(latest.date)}
+              ariaLabel={`Factor exposures over time. Latest: ${latest.rows
                 .map((r) => `${pretty(r.factor)} ${num(r.exposure, { digits: 2 })}`)
                 .join(', ')}.`}
             />
           </ChartFrame>
         ) : exposures.isError ? (
           <ErrorState error={exposures.error} onRetry={() => void exposures.refetch()} />
+        ) : exposures.data ? (
+          <EmptyState title="No exposure history for this run">
+            <p>
+              The run was written before the pipeline stored the book’s factor exposures. Re-run it
+              to see them here.
+            </p>
+          </EmptyState>
         ) : (
           <Skeleton height="24rem" />
         )}
@@ -165,10 +188,14 @@ export function RiskTab() {
                   swatch={<LineSwatch color="var(--color-gain)" />}
                   label="Realised (63 days)"
                 />
-                <LegendItem
-                  swatch={<LineSwatch color="var(--color-graphite)" dashed />}
-                  label="Ex-ante forecast"
-                />
+                {volLines.hasExante ? (
+                  <LegendItem
+                    swatch={<LineSwatch color="var(--color-graphite)" dashed />}
+                    label="Ex-ante forecast"
+                  />
+                ) : (
+                  <span>The ex-ante forecast was not recorded for this run.</span>
+                )}
               </>
             }
             table={() => ({
@@ -188,12 +215,16 @@ export function RiskTab() {
               dates={volLines.dates}
               series={[
                 { label: 'Realised', values: volLines.realised, color: 'gain' },
-                {
-                  label: 'Ex-ante',
-                  values: volLines.exante,
-                  color: 'graphite',
-                  dashed: true,
-                },
+                ...(volLines.hasExante
+                  ? [
+                      {
+                        label: 'Ex-ante',
+                        values: volLines.exante,
+                        color: 'graphite' as const,
+                        dashed: true,
+                      },
+                    ]
+                  : []),
               ]}
               format={(v) => pct(v, { digits: 1 })}
               ariaLabel="Realised 63-day volatility against the ex-ante forecast over the backtest."
@@ -211,8 +242,10 @@ export function RiskTab() {
           holdings.data ? (
             <MarginNote>
               {holdings.data.positions.length} names, gross {num(grossW, { digits: 2 })}, net{' '}
-              {pct(net, { digits: 1, signed: true })} of NAV. Expected return is the Grinold-scaled
-              alpha the optimiser saw that day.
+              {pct(net, { digits: 1, signed: true })} of NAV.{' '}
+              {holdingsDetail
+                ? 'Expected return is the Grinold-scaled alpha the optimiser saw that day.'
+                : 'Expected return, specific vol and industry were not recorded for this run.'}
             </MarginNote>
           ) : null
         }

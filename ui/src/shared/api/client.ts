@@ -1,7 +1,11 @@
 import type { ApiErrorBody } from './schema';
 
-/** Base URL of the API. Empty string means same origin (`/api/...`). */
-export const API_BASE_URL: string = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+/**
+ * Root URL of the API, `/api` included. Default `/api` (same origin: the Vite dev server
+ * proxies it to the API, and the API serves the built UI itself with QTS_SERVE_UI=1).
+ * Set VITE_API_URL=http://localhost:8000/api to call the API directly (CORS).
+ */
+export const API_BASE_URL: string = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
 
 export class ApiError extends Error {
   readonly status: number;
@@ -61,6 +65,15 @@ export async function apiGet<T>(
   signal?: AbortSignal,
 ): Promise<T> {
   const res = await fetch(buildUrl(path, query), {
+    headers: { Accept: 'application/json' },
+    signal: signal ?? null,
+  });
+  return parse<T>(res);
+}
+
+export async function apiDelete<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(buildUrl(path), {
+    method: 'DELETE',
     headers: { Accept: 'application/json' },
     signal: signal ?? null,
   });

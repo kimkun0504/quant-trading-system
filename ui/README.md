@@ -11,19 +11,22 @@ Playwright + axe · ESLint (typescript-eslint strict, react-hooks, jsx-a11y) + P
 
 ## Scripts
 
-| Script                            | What it does                                                                                |
-| --------------------------------- | ------------------------------------------------------------------------------------------- |
-| `npm run dev`                     | Dev server on :5173. `.env.development` sets `VITE_USE_MOCKS=true`, so it runs on fixtures. |
-| `npm run build`                   | Typecheck (`tsc -b`) and production build to `dist/`.                                       |
-| `npm run build:analyze`           | Build plus `dist/bundle-report.html` (treemap, gzip sizes).                                 |
-| `npm run preview`                 | Serve `dist/`.                                                                              |
-| `npm run typecheck`               | `tsc -b` over app, tests, configs and e2e.                                                  |
-| `npm run lint`                    | ESLint, zero warnings allowed.                                                              |
-| `npm run format` / `format:check` | Prettier.                                                                                   |
-| `npm test`                        | Vitest: unit, component and integration tests (MSW in Node).                                |
-| `npm run test:e2e`                | Playwright smoke tests and axe scans (starts the dev server with mocks).                    |
-| `npm run contrast`                | WCAG contrast of every token pair in both themes; non-zero exit on failure.                 |
-| `npm run screenshots`             | Light/dark × 1440/390 px screenshots of every page into `docs/screenshots/`.                |
+| Script                            | What it does                                                                                                                                                                            |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run dev`                     | Dev server on :5173 against the real API: `/api` is proxied to http://localhost:8000 (`QTS_API_PROXY` overrides).                                                                       |
+| `npm run dev:mock`                | Dev server on the in-browser mock API (MSW fixtures; `VITE_USE_MOCKS=true`).                                                                                                            |
+| `npm run build`                   | Typecheck (`tsc -b`) and production build to `dist/`.                                                                                                                                   |
+| `npm run build:analyze`           | Build plus `dist/bundle-report.html` (treemap, gzip sizes).                                                                                                                             |
+| `npm run preview`                 | Serve `dist/`.                                                                                                                                                                          |
+| `npm run typecheck`               | `tsc -b` over app, tests, configs and e2e.                                                                                                                                              |
+| `npm run lint`                    | ESLint, zero warnings allowed.                                                                                                                                                          |
+| `npm run format` / `format:check` | Prettier.                                                                                                                                                                               |
+| `npm test`                        | Vitest: unit, component and integration tests (MSW in Node).                                                                                                                            |
+| `npm run test:e2e`                | Playwright smoke tests and axe scans (starts the dev server with mocks).                                                                                                                |
+| `npm run test:e2e:real`           | Build, then one Playwright smoke against the real API: `api/scripts/e2e_server.py` serves `dist/` and the API over a runs root holding a real pipeline run (built on first use, ~30 s). |
+| `npm run api:types`               | Export the API's OpenAPI document (`api/openapi.json`) and regenerate `src/shared/api/generated.ts` (`openapi-typescript`).                                                             |
+| `npm run contrast`                | WCAG contrast of every token pair in both themes; non-zero exit on failure.                                                                                                             |
+| `npm run screenshots`             | Light/dark × 1440/390 px screenshots of every page into `docs/screenshots/`.                                                                                                            |
 
 Playwright uses its own Chromium if present, otherwise the newest `chromium-*` under
 `PLAYWRIGHT_BROWSERS_PATH` (default `/opt/pw-browsers`), or `PW_CHROMIUM_PATH` if set
@@ -84,7 +87,16 @@ component → entities/run/queries.ts hook → shared/api/endpoints.ts → share
 ## API contract and the mock layer
 
 `src/shared/api/schema.ts` is the contract (field names follow `BacktestResult.summary()`,
-`HurdleResult.to_dict()` and `RunManifest` verbatim). Endpoints:
+`HurdleResult.to_dict()` and `RunManifest` verbatim). The API (`api/`, see `api/README.md`)
+implements it with Pydantic models of the same names; `src/shared/api/generated.ts` is
+`openapi-typescript` output of its OpenAPI document and `src/shared/api/contract.check.ts`
+asserts, at type level, that every `schema.ts` type and every endpoint's response type agrees
+with the generated one. After changing either side run `npm run api:types`; `npm run
+typecheck` then fails on any drift. (`schema.ts` stays hand-written rather than re-exporting the
+generated types because the UI narrows generic shapes such as `ColumnarSeries<N>`.)
+
+`api.*` paths are relative to `API_BASE_URL` = `VITE_API_URL` or `/api` (same origin).
+Errors are RFC 7807 problem documents; `ApiError.detail` is their `detail` string.
 
 | Method | Path                                                                     | Returns                                                              |
 | ------ | ------------------------------------------------------------------------ | -------------------------------------------------------------------- |
@@ -92,16 +104,30 @@ component → entities/run/queries.ts hook → shared/api/endpoints.ts → share
 | GET    | `/api/runs/{id}`                                                         | `RunDetail` (409 while running/failed, 404 if unknown)               |
 | GET    | `/api/runs/{id}/series?names=nav,gross,net,drawdown,turnover,exante_vol` | columnar `{dates, series}`                                           |
 | GET    | `/api/runs/{id}/costs`                                                   | daily `spread/impact/fees/borrow` USD, daily NAV, `cost_sensitivity` |
-| GET    | `/api/runs/{id}/exposures`                                               | factor list, roles, columnar history, latest snapshot                |
-| GET    | `/api/runs/{id}/holdings?date=`                                          | positions on a decision date + available dates                       |
+| GET    | `/api/runs/{id}/exposures`                                               | factor list, roles, columnar history, latest snapshot (or empty)     |
+| GET    | `/api/runs/{id}/holdings?date=`                                          | positions on a month-end decision date + available dates             |
 | GET    | `/api/runs/{id}/ic`                                                      | per-date rank IC + decay curve                                       |
-| POST   | `/api/runs`                                                              | `{job_id, run_id}` (202)                                             |
+| POST   | `/api/runs`                                                              | `{job_id, run_id}` (202; 422 with per-field `errors`)                |
 | GET    | `/api/jobs/{job_id}`                                                     | `{status, progress 0..1, message}`                                   |
+| DELETE | `/api/jobs/{job_id}`                                                     | cancel (best effort), returns the job                                |
 | GET    | `/api/ledger`                                                            | trials + per-family trial counts                                     |
 | GET    | `/api/config/schema`                                                     | JSON Schema of `SystemConfig` (drives the override fields)           |
+| GET    | `/api/health`                                                            | liveness, runs root, job counts                                      |
 
-**Mocks.** `src/main.tsx` starts the MSW service worker only when `VITE_USE_MOCKS=true`; in any
-other build the mock code is never loaded (it is not in the production bundle). Handlers
+**Older runs.** Run directories written before the pipeline stored its extra artifacts have
+`null` for `execution_venue`, `config.stocks/days` (unless recoverable from the recorded CLI
+command), per-holding `alpha/specific_vol/industry`, an all-`null` `exante_vol` series and an
+empty exposures payload (`latest: null`). The Risk and Execution tabs show empty states or
+"not recorded" text for these.
+
+**Launch form.** The override fields are generated from `/api/config/schema`: every scalar of
+every section (nested sections such as `alpha.lgbm` included), one collapsible group per
+section, `enum` strings as selects, booleans as checkboxes, bounds validated client-side and
+again (strictly) by the API.
+
+**Mocks.** `src/main.tsx` starts the MSW service worker only when `VITE_USE_MOCKS=true`
+(`npm run dev:mock`, the Vitest setup and the mock Playwright suite); in any other build the mock
+code is never loaded (it is not in the production bundle). Handlers
 (`src/mocks/handlers.ts`) match `*/api/...`, so they work whatever `VITE_API_URL` says. The
 fixtures (`src/mocks/fixtures/generate.ts`) are deterministic and internally consistent: every
 summary metric, gate and DSR is computed from the generated series (DSR with the same formula
@@ -109,15 +135,10 @@ as the handbook's worked example; a unit test checks it reproduces 0.666). Seed 
 post-audit phase-1 demo, a phase-2 ML run below its bar, a lag-0 run with a suspicious Sharpe,
 a passing data-store run, one running and one failed run. Launched runs complete after 4 s.
 
-**Switching to the real API:**
-
-1. Run the FastAPI server, then `VITE_API_URL=http://localhost:8000 VITE_USE_MOCKS=false npm run dev`
-   (or put both in `.env.local`; see `.env.example`). The API must allow CORS from the dev
-   origin, or serve the built UI from the same origin and leave `VITE_API_URL` empty.
-2. Replace `schema.ts` with generated types: `npx openapi-typescript http://localhost:8000/openapi.json -o src/shared/api/openapi.d.ts`,
-   then re-export the component schemas under the existing names from `schema.ts` (or switch
-   `client.ts` to `openapi-fetch`). Nothing outside `shared/api` imports URLs.
-3. Keep the MSW handlers as the contract test: Vitest runs every component test against them.
+**Full stack locally:** `make dev` from the repo root (API on :8000 with `--reload`, Vite on
+:5173), or the two halves: `uvicorn qts_api.main:app --reload` and `npm --prefix ui run dev`.
+Production-like: `npm --prefix ui run build && QTS_SERVE_UI=1 uvicorn qts_api.main:app`
+serves the UI and the API from one origin.
 
 ## How to add…
 

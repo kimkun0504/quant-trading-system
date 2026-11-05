@@ -126,3 +126,24 @@
   display: flex;
   gap: var(--space-3);
 }
+
+.group {
+  border-top: var(--hairline);
+  padding: var(--space-2) 0;
+}
+
+.group > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: var(--space-1) 0;
+}
+
+.group > .row {
+  margin-top: var(--space-3);
+}
+
+.groupMeta {
+  font-weight: 400;
+  color: var(--color-graphite);
+  font-size: var(--step--1);
+}

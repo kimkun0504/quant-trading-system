@@ -1,0 +1,65 @@
+"""Settings from the environment (``QTS_*``); no extra dependency.
+
+=====================  =====================================  ==========================
+variable               meaning                                default
+=====================  =====================================  ==========================
+QTS_RUNS_ROOT          run directories (``runs/<run_id>/``)   ``./runs``
+QTS_LEDGER_PATH        trial ledger JSONL                     ``<runs root>/trial_ledger.jsonl``
+QTS_CORS_ORIGINS       comma-separated allowed origins        ``http://localhost:5173``
+QTS_SERVE_UI           serve the built UI at ``/`` (1/true)   off
+QTS_UI_DIST            the built UI                           ``<repo>/ui/dist``
+QTS_MAX_WORKERS        concurrent pipeline jobs               ``1``
+QTS_STORE_PATH         ParquetStore root for ``kind=store``   unset (store runs refused)
+QTS_JOB_START_METHOD   multiprocessing start method           ``spawn``
+=====================  =====================================  ==========================
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _flag(v: str | None) -> bool:
+    return (v or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+@dataclass(frozen=True)
+class Settings:
+    runs_root: Path = Path("runs")
+    ledger_path: Path | None = None
+    cors_origins: tuple[str, ...] = ("http://localhost:5173",)
+    serve_ui: bool = False
+    ui_dist: Path = REPO_ROOT / "ui" / "dist"
+    max_workers: int = 1
+    store_path: Path | None = None
+    job_start_method: str = "spawn"
+    extra: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def ledger(self) -> Path:
+        return self.ledger_path or (self.runs_root / "trial_ledger.jsonl")
+
+    @property
+    def jobs_dir(self) -> Path:
+        return self.runs_root / "_jobs"
+
+    @classmethod
+    def from_env(cls, env: dict[str, str] | None = None) -> Settings:
+        e = dict(os.environ if env is None else env)
+        origins = tuple(o.strip() for o in e.get("QTS_CORS_ORIGINS", "http://localhost:5173").split(",") if o.strip())
+        ledger = e.get("QTS_LEDGER_PATH")
+        store = e.get("QTS_STORE_PATH")
+        return cls(
+            runs_root=Path(e.get("QTS_RUNS_ROOT", "runs")).expanduser().resolve(),
+            ledger_path=Path(ledger).expanduser().resolve() if ledger else None,
+            cors_origins=origins,
+            serve_ui=_flag(e.get("QTS_SERVE_UI")),
+            ui_dist=Path(e.get("QTS_UI_DIST", str(REPO_ROOT / "ui" / "dist"))).expanduser().resolve(),
+            max_workers=max(1, int(e.get("QTS_MAX_WORKERS", "1"))),
+            store_path=Path(store).expanduser().resolve() if store else None,
+            job_start_method=e.get("QTS_JOB_START_METHOD", "spawn"),
+        )

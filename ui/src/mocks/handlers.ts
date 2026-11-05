@@ -1,12 +1,13 @@
 import { delay, http, HttpResponse } from 'msw';
 import type {
   ApiErrorBody,
+  Health,
   LaunchRunRequest,
   LaunchRunResponse,
   RunSeriesName,
 } from '@/shared/api';
 import { CONFIG_SCHEMA } from './fixtures/configSchema';
-import { db, launch, listSummaries, pollJob } from './db';
+import { cancelJob, db, launch, listSummaries, pollJob } from './db';
 
 /**
  * MSW handlers implementing the API contract in shared/api/schema.ts.
@@ -115,6 +116,27 @@ export const handlers = [
     const job = pollJob(params.jobId);
     return job ? HttpResponse.json(job) : notFound(`No job with id ${params.jobId}`);
   }),
+
+  http.delete<{ jobId: string }>('*/api/jobs/:jobId', async ({ params }) => {
+    await delay(80);
+    const job = cancelJob(params.jobId);
+    return job ? HttpResponse.json(job) : notFound(`No job with id ${params.jobId}`);
+  }),
+
+  http.get('*/api/health', () =>
+    HttpResponse.json<Health>({
+      status: 'ok',
+      version: 'mock',
+      qts_version: 'mock',
+      runs_root: '(in-browser mock)',
+      runs_root_exists: true,
+      n_runs: db.runs.size,
+      jobs: {
+        queued: 0,
+        running: [...db.jobs.values()].filter((j) => j.job.status === 'running').length,
+      },
+    }),
+  ),
 
   http.get('*/api/ledger', async () => {
     await delay();
