@@ -38,8 +38,11 @@ implements the Saxena-Stubbs calibration loop proper: it searches
 ``nu_scale`` so that the bias statistic of the *optimized* book (forecast
 with the alignment term, realised next day) is ~1 over a calibration window.
 It is slow (one optimisation per date per bisection step) and is deliberately
-**not** on the default ``as_of`` path -- run it offline on the warm-up window
-and pass the resulting ``nu_scale`` to ``as_of``.
+**not** on the default ``as_of`` path -- run it offline
+(``scripts/calibrate_alignment_nu.py``) and set ``RiskConfig.alignment_nu_scale``
+(used whenever ``as_of`` / :func:`alpha_alignment` get ``nu_scale=None``).  The
+shipped default 0.25 is the median over three synthetic seeds of the
+production-optimizer calibration (``docs/notes/alignment_nu_calibration.md``).
 """
 from __future__ import annotations
 
@@ -55,7 +58,7 @@ from qts.risk.covariance import style_variances
 
 
 def alpha_alignment(alpha: pd.Series, exposures: pd.DataFrame, specific_var: pd.Series,
-                    nu_scale: float = 1.0, factor_cov: Optional[pd.DataFrame] = None,
+                    nu_scale: Optional[float] = None, factor_cov: Optional[pd.DataFrame] = None,
                     cfg: Optional[RiskConfig] = None, weighted: bool = False
                     ) -> Tuple[pd.Series, float]:
     """Return ``(y, nu)``: unit-norm alignment vector orthogonal to the
@@ -65,8 +68,13 @@ def alpha_alignment(alpha: pd.Series, exposures: pd.DataFrame, specific_var: pd.
     Saxena-Stubbs use and what makes ``B'y = 0`` exact.  ``weighted=True``
     uses ``1/specific_var`` WLS weights (the "implied alpha" metric), in which
     case ``y`` is orthogonal to ``B`` in the weighted inner product instead.
+
+    ``nu_scale=None`` uses ``cfg.alignment_nu_scale`` (the calibrated default,
+    see ``docs/notes/alignment_nu_calibration.md``).
     """
     cfg = cfg or RiskConfig()
+    if nu_scale is None:
+        nu_scale = float(getattr(cfg, "alignment_nu_scale", 1.0))
     idx = alpha.dropna().index.intersection(exposures.index)
     a = alpha.loc[idx].values.astype(float)
     B = exposures.loc[idx].values.astype(float)
@@ -135,6 +143,7 @@ def calibrate_alignment_nu(
     hi: float = 50.0,
     n_iter: int = 10,
     tol: float = 0.02,
+    grid: Optional[Iterable[float]] = None,
 ) -> Dict[str, object]:
     """Saxena-Stubbs calibration of the alignment variance scale.
 
@@ -153,14 +162,20 @@ def calibrate_alignment_nu(
     pass a closure around ``SinglePeriodOptimizer.solve`` to calibrate on the
     production constraint set (slower: one convex solve per date per step).
 
+    A stateful ``solve_fn`` (e.g. one that carries the previous book as
+    ``w_current``) sees the dates in increasing order on every evaluation;
+    each ``nu_scale`` is evaluated at most once (memoised).  ``grid`` adds the
+    bias statistic at the listed ``nu_scale`` values to the output.
+
     Returns ``{"nu_scale", "bias", "bias_unaligned", "lower", "upper",
-    "in_band", "n_dates", "history": [(nu_scale, bias), ...], "converged"}``.
+    "in_band", "n_dates", "history": [(nu_scale, bias), ...], "converged",
+    "grid": [(nu_scale, bias), ...]}``.
     Cost is O(n_dates * (1 as_of + (n_iter + 3) solves)); keep ``dates`` to a
     sample of the warm-up window (e.g. every 5th day of a year).
     """
     from qts.risk.evaluation import bias_band, bias_statistic
 
-    dates = pd.DatetimeIndex(list(dates))
+    dates = pd.DatetimeIndex(sorted(dates))
     solve = solve_fn or _default_mean_variance_book
     all_dates = md.dates
     pos = {d: i for i, d in enumerate(all_dates)}
@@ -182,11 +197,23 @@ def calibrate_alignment_nu(
     if not base:
         raise ValueError("no dates with an alignment term (is cfg.alignment on?)")
 
+    memo: Dict[float, float] = {}
+
     def bias_for(nu_scale: float) -> float:
+        key = float(nu_scale)
+        if key in memo:
+            return memo[key]
+        memo[key] = _bias_for(key)
+        return memo[key]
+
+    def _bias_for(nu_scale: float) -> float:
         pred, real = [], []
         for d, rm, a, r_next in base:
             rm_s = dataclasses.replace(rm, alignment_var=float(rm.alignment_var) * float(nu_scale))
-            w = pd.Series(solve(d, rm_s, a), dtype=float).reindex(rm_s.tickers).fillna(0.0)
+            # the whole book: names outside the risk model (if any) keep their
+            # weight, get the median specific variance in the forecast and
+            # their realised return in the P&L
+            w = pd.Series(solve(d, rm_s, a), dtype=float).fillna(0.0)
             v = rm_s.portfolio_variance(w, include_alignment=True)
             pred.append(np.sqrt(max(v, 0.0)))
             real.append(float((w * r_next.reindex(w.index).fillna(0.0)).sum()))
@@ -217,7 +244,8 @@ def calibrate_alignment_nu(
                 a_ = m_
             else:
                 c_ = m_
+    grid_out = [(float(g), bias_for(float(g))) for g in (grid or [])]
     lo_band, hi_band = bias_band(len(base))
-    return {"nu_scale": float(nu_star), "bias": float(b_star), "bias_unaligned": float(b0),
+    return {"grid": grid_out, "nu_scale": float(nu_star), "bias": float(b_star), "bias_unaligned": float(b0),
             "lower": lo_band, "upper": hi_band, "in_band": bool(lo_band <= b_star <= hi_band),
             "n_dates": len(base), "history": history, "converged": converged}

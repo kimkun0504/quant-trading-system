@@ -19,6 +19,26 @@ from qts.data.synthetic import SyntheticSpec, generate
 from qts.portfolio.alpha_scaling import grinold_alpha
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--update-golden", action="store_true", default=False,
+        help="regenerate tests/golden/*.json from the current code instead of comparing "
+             "(review the diff before committing: see tests/test_golden.py)")
+
+
+def pytest_configure(config):
+    # registered here because pyproject.toml is owned elsewhere
+    config.addinivalue_line("markers", "slow: benchmark / long-running test (timings reported, never asserted); "
+                                       "deselect with -m 'not slow'")
+    config.addinivalue_line("markers", "statistical: threshold tuned on a synthetic seed; checked over several "
+                                       "seeds with a majority rule")
+
+
+@pytest.fixture(scope="session")
+def update_golden(request) -> bool:
+    return bool(request.config.getoption("--update-golden"))
+
+
 class StandInRiskModel:
     """Minimal Barra-like model: factors = beta, size, industry dummies."""
 
@@ -115,3 +135,38 @@ def sys_cfg() -> SystemConfig:
 @pytest.fixture(scope="session")
 def test_date(md) -> pd.Timestamp:
     return md.dates[400]
+
+
+# ----------------------------------------------------------------------------- golden pipeline run
+#: Fixed synthetic market + pipeline settings for the golden-file regression
+#: (tests/test_golden.py) and the pipeline determinism test (tests/test_determinism.py).
+#: Changing any of these invalidates tests/golden/pipeline_summary.json
+#: (regenerate with ``pytest tests/test_golden.py --update-golden``).
+GOLDEN_SPEC = dict(n_stocks=100, n_days=700, seed=11, ic_true=0.08)
+GOLDEN_TOP_N = 80
+GOLDEN_MAX_DAYS = 60
+
+
+def golden_config() -> SystemConfig:
+    cfg = SystemConfig()
+    cfg.universe.top_n_by_mcap = GOLDEN_TOP_N        # time-varying universe inside the 100 names
+    return cfg
+
+
+@pytest.fixture(scope="session")
+def golden_market() -> MarketData:
+    return generate(SyntheticSpec(**GOLDEN_SPEC))
+
+
+@pytest.fixture(scope="session")
+def golden_pipeline_run(golden_market):
+    """``ResearchPipeline(use_ml=False).run(md, max_days=60)`` on the golden market
+    (~25 s; shared by the golden and determinism tests)."""
+    import warnings
+
+    from qts.pipeline import ResearchPipeline
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        pipe = ResearchPipeline(golden_config(), use_ml=False)
+        res = pipe.run(golden_market, max_days=GOLDEN_MAX_DAYS)
+    return pipe, res

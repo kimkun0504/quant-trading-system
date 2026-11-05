@@ -63,6 +63,12 @@ class RiskConfig:
         "short_term_reversal", "quality", "investment", "short_interest"])
     use_nonlinear_shrinkage: bool = True
     alignment: bool = True
+    # Saxena-Stubbs alignment variance: nu = alignment_nu_scale * N * median style
+    # variance (qts.risk.alignment).  Calibrated so the optimized book's bias
+    # statistic is ~1: scripts/calibrate_alignment_nu.py,
+    # docs/notes/alignment_nu_calibration.md (synthetic seeds 0-2: calibrated
+    # 1.58 / 0.05 / 0.28, median 0.28 -> 0.25; recalibrate on real data).
+    alignment_nu_scale: float = 0.25
     eigenfactor_adjust: bool = True
     n_eigen_sims: int = 200
     # --- statistical (APCA) companion model on the fundamental residuals

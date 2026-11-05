@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * *"   # nightly, 06:17 UTC: slow tier
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Ruff lint
+        run: ruff check qts tests scripts --output-format=github
+
+      # The codebase has not been run through `ruff format` yet (refactors in flight).
+      # Flip continue-on-error to false once a one-shot `make format` commit lands.
+      - name: Ruff format check
+        continue-on-error: true
+        run: ruff format --check qts tests scripts
+
+      - name: Pyright (qts/core, strict, blocking)
+        run: pyright qts/core
+
+      - name: Pyright (qts, basic, non-blocking)
+        continue-on-error: true
+        run: pyright qts
+
+      - name: Pytest (fast tier) with coverage
+        run: pytest -q -m "not slow" -p no:warnings --cov=qts --cov-report=xml --cov-report=term
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-py${{ matrix.python-version }}
+          path: coverage.xml
+          if-no-files-found: ignore
+
+  nightly-slow:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Pytest (slow tier)
+        # exit code 5 = "no tests collected" (until tests are tagged @pytest.mark.slow)
+        run: pytest -q -m "slow" -p no:warnings || [ $? -eq 5 ]

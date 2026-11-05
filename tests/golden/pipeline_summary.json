@@ -1,0 +1,92 @@
+{
+  "_meta": {
+    "spec": {
+      "n_stocks": 100,
+      "n_days": 700,
+      "seed": 11,
+      "ic_true": 0.08
+    },
+    "top_n_by_mcap": 80,
+    "max_days": 60,
+    "use_ml": false,
+    "rtol": 1e-06,
+    "atol": 1e-09,
+    "regenerate": "python -m pytest tests/test_golden.py --update-golden"
+  },
+  "data_hash": "198fb24b43e31b23",
+  "summary": {
+    "start": "2020-06-12",
+    "end": "2020-09-04",
+    "n_days": 60,
+    "final_nav": 1001389.0136127822,
+    "cagr_gross": 0.035868916938917916,
+    "cagr_net": 0.005846835677013162,
+    "ann_vol_gross": 0.052348405578559645,
+    "ann_vol_net": 0.05232088143540731,
+    "sharpe_gross": 0.6989889894444181,
+    "sharpe_net": 0.13716332586906516,
+    "sharpe_net_lo": 0.13716332586906516,
+    "sharpe_t_stat_net": 0.06692760070472148,
+    "newey_west_t_net": 0.0696564970715415,
+    "max_drawdown_net": -0.02832186805368664,
+    "calmar_net": 0.20644244461311526,
+    "sortino_net": 0.18916962514587332,
+    "hit_rate_net": 0.55,
+    "avg_gross_exposure": 1.2225076761949238,
+    "avg_net_exposure": 0.04148144435899139,
+    "avg_daily_turnover": 0.10112722243775289,
+    "effective_holding_days": 24.177617989012152,
+    "avg_cost_bps_per_side": 10.37628817856938,
+    "avg_daily_cost_bps_of_nav": 1.1672401985835879,
+    "total_costs_usd": 7041.776524370722,
+    "transfer_coefficient_mean": 0.7798408640513581,
+    "realized_vs_exante_vol_ratio": 0.9440101448919622,
+    "breakeven_cost_bps": 14.358371090163137,
+    "n_delistings": 0,
+    "n_failed_solves": 0
+  },
+  "ic_report": {
+    "n": 3,
+    "mean_ic": 0.0643871917556128,
+    "ic_sd": 0.14997106900760593,
+    "icir": 1.523972987416475,
+    "t_stat": 0.7436226747956659,
+    "hit_rate": 0.6666666666666666,
+    "periods_per_year": 12.6
+  },
+  "decile": {
+    "mean": 0.0307106931725525,
+    "sharpe": 2.1042880468290255,
+    "t_stat": 1.2380545168847596
+  },
+  "dsr": 0.5264284706831046,
+  "hurdles": {
+    "overall": false,
+    "status": {
+      "breakeven_cost": "FAIL",
+      "dsr": "FAIL",
+      "ic_sign": "PASS",
+      "incremental_ic": "skipped",
+      "net_sharpe_delta": "PASS",
+      "pbo": "skipped",
+      "phase_sharpe": "FAIL",
+      "suspect": "PASS",
+      "t_stat": "FAIL"
+    }
+  },
+  "backtest": {
+    "n_nav": 61,
+    "nav_quartiles": [
+      1002011.3005736076,
+      1002276.6325360059,
+      1014460.2488982872
+    ],
+    "sum_abs_weights": 73.35046057169544,
+    "sum_costs_by_kind": {
+      "spread": 0.0,
+      "impact": 4604.6245035490865,
+      "fees": 1722.962208532392,
+      "borrow": 714.1898122892432
+    }
+  }
+}

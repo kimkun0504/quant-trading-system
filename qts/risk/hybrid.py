@@ -180,7 +180,7 @@ class HybridRiskModel:
         return self.statistical is not None and self.statistical.available(date)
 
     def as_of(self, date: pd.Timestamp, alpha: Optional[pd.Series] = None,
-              nu_scale: float = 1.0) -> RiskModelOutput:
+              nu_scale: Optional[float] = None) -> RiskModelOutput:
         """Hybrid risk model as of ``date``.  Before the statistical block has
         enough residual history the fundamental output is returned unchanged
         (documented fallback; check :meth:`statistical_available`)."""

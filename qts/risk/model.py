@@ -124,7 +124,7 @@ class BarraStyleRiskModel:
 
     # ------------------------------------------------------------------ as_of
     def as_of(self, date: pd.Timestamp, alpha: Optional[pd.Series] = None,
-              nu_scale: float = 1.0) -> RiskModelOutput:
+              nu_scale: Optional[float] = None) -> RiskModelOutput:
         """Risk model as of ``date`` (factor returns through ``date`` inclusive,
         exposures as of ``date``)."""
         md, factor_returns, specific_returns = self._fitted_state()

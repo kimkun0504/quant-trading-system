@@ -14,11 +14,37 @@ Daily returns for N stocks over T days:
 * ``f_kt``       K style factor returns (size, value, momentum, quality,
                  investment, low_risk) each with small positive premium.
 * ``x_ik``       slowly mean-reverting exposures (AR(1) in monthly steps).
-* ``alpha_it``   planted predictable component = ``ic_true * sigma_resid *
-                 z_it`` where ``z_it`` is a latent score that the generator
-                 also emits through observable characteristics with noise.
-                 This is how the test-suite checks the alpha model recovers
-                 roughly ``ic_true`` rank-IC and not more.
+* ``alpha_it``   planted predictable component
+                 ``ic_true * sigma_i * z_{i,t-L} / sqrt(H)`` (``L =
+                 alpha_lag_days``, default 1; ``sigma_i`` daily idio vol;
+                 ``H = alpha_horizon_days``).  ``z`` is a latent score, a
+                 daily AR(1) with 21-day autocorrelation 0.80, emitted at ``t``
+                 (``extra["true_latent_score"]``) and through the observable
+                 characteristics (B/P, E/P, GP/A, asset growth) with persistent
+                 monthly noise.  Timing: ``z_t`` is known at the close of ``t``
+                 and loads on ``r_{t+1}`` onward, so characteristics observed at
+                 ``t`` predict returns strictly after ``t`` (the return on ``t``
+                 itself loads on ``z_{t-1}``; ``z_t`` correlates with it only
+                 through the persistence of ``z``).  ``alpha_lag_days=0``
+                 restores the legacy generator (monthly step ``z`` driving the
+                 returns of the month it is revealed in; audit finding 8).
+
+                 Realised strength (default spec: 300 names, 1512 days, seeds
+                 0-4; Spearman IC of ``z_t`` vs the residualised 20-day forward
+                 return from ``qts.alpha.targets.residualize_forward_returns``):
+
+                 ============  ==========================  ===============
+                 ``ic_true``   residual rank IC mean +- sd  raw fwd rank IC
+                 ============  ==========================  ===============
+                 0.04          0.036 +- 0.006 (0.029-0.044) 0.037
+                 0.08          0.066 +- 0.007 (0.059-0.075) 0.069
+                 ============  ==========================  ===============
+
+                 i.e. realised ≈ 0.85-0.9 x ``ic_true``: the score decays over
+                 the 20-day window (mean autocorrelation ≈ 0.94) and the
+                 residualisation / factor and market noise take the rest.  The
+                 tests (``tests/test_synthetic_oracle.py``) check this band;
+                 the alpha model should recover at most this, never more.
 * ``eps_it``     idiosyncratic noise, per-stock vol drawn log-normally.
 
 Also generated: shares outstanding -> market cap, volume (log-normal around a
@@ -63,6 +89,14 @@ class SyntheticSpec:
     alpha_horizon_days: int = 20
     characteristic_noise: float = 1.0  # noise sd added to latent score in observables
     seed: int = 0
+    # Timing of the planted alpha.  ``alpha_lag_days >= 1`` (default 1): the
+    # latent score evolves *daily* (AR(1) with the same 21-day autocorrelation
+    # 0.80 as the legacy monthly path) and the alpha component of the return on
+    # day t loads on z_{t - alpha_lag_days}; the characteristics observed at t
+    # reveal z_t, so they predict returns strictly after t.  ``alpha_lag_days=0``
+    # reproduces the legacy generator bit for bit (monthly step z that drives the
+    # returns of the same month it is revealed in; audit finding 8).
+    alpha_lag_days: int = 1
 
 
 def _ar1_path(n_steps: int, n: int, phi: float, rng: np.random.Generator) -> np.ndarray:
@@ -93,10 +127,24 @@ def generate(spec: Optional[SyntheticSpec] = None) -> MarketData:
     n_months = T // 21 + 2
     expo_m = _ar1_path(n_months, N * K, 0.90, rng).reshape(n_months, N, K)
     expo_m[:, :, 0] = log_size0 / 1.2  # size exposure = standardized log market cap (observable)
-    z_m = _ar1_path(n_months, N, 0.80, rng)              # latent alpha score
+    z_m = _ar1_path(n_months, N, 0.80, rng)              # legacy monthly latent alpha score
     month_of_day = np.arange(T) // 21
     expo = expo_m[month_of_day]                           # T x N x K
-    z = z_m[month_of_day]                                 # T x N
+    lag = int(spec.alpha_lag_days)
+    if lag < 0:
+        raise ValueError("alpha_lag_days must be >= 0")
+    if lag == 0:
+        z = z_m[month_of_day]                             # T x N (legacy: same-month timing)
+        z_drive = z
+    else:
+        # Daily AR(1) latent score on its own stream (the main stream above is
+        # consumed exactly as in the legacy path, so every other panel is
+        # identical across alpha_lag_days settings).  ``lag`` pre-sample days
+        # give the first returns a driver.
+        rng_z = np.random.default_rng([int(spec.seed), 0xA1FA])
+        z_full = _ar1_path(T + lag, N, 0.80 ** (1.0 / 21.0), rng_z)
+        z = z_full[lag:]                                  # observable at t
+        z_drive = z_full[:T]                              # z_{t-lag}: drives r_t
 
     # ---- factor returns with vol clustering in the market
     mkt_vol_d = spec.market_vol_annual / np.sqrt(252)
@@ -114,9 +162,10 @@ def generate(spec: Optional[SyntheticSpec] = None) -> MarketData:
             m[cd:cd + 10] -= 0.004
             f[cd:cd + 10, 1] -= 0.003   # value drawdown
 
-    # ---- planted alpha: ic_true * sigma_resid * z lagged so z at t predicts the next H days
+    # ---- planted alpha: ic_true * sigma_resid * z_{t-lag}; z_t (revealed at t)
+    # therefore predicts r_{t+1}, ..., r_{t+H} and not r_t (for lag >= 1)
     H = spec.alpha_horizon_days
-    per_day_alpha = spec.ic_true * idio_vol[None, :] * z / np.sqrt(H)
+    per_day_alpha = spec.ic_true * idio_vol[None, :] * z_drive / np.sqrt(H)
     eps = idio_vol[None, :] * rng.standard_normal((T, N))
     r = beta[None, :] * m[:, None] + np.einsum("tnk,tk->tn", expo, f) + per_day_alpha + eps
     r = np.clip(r, -0.5, 1.0)

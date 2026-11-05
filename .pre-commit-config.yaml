@@ -1,0 +1,33 @@
+# Install:  pre-commit install && pre-commit install --hook-type pre-push
+# Run all:  pre-commit run --all-files
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.9   # keep in step with the ruff version pip installs
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: [--maxkb=500]
+
+  - repo: local
+    hooks:
+      - id: pytest-fast
+        name: pytest (fast tier, not slow)
+        entry: pytest -q -m "not slow"
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
