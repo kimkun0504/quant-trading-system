@@ -8,11 +8,16 @@ import math
 import multiprocessing as mp
 import subprocess
 
+import numpy as np
 import pytest
 from scipy.stats import norm
 
 from qts.core.manifest import code_version, git_info
-from qts.validation.deflated_sharpe import EULER_GAMMA, expected_max_sharpe
+from qts.validation.deflated_sharpe import (
+    EULER_GAMMA,
+    deflated_sharpe_ratio,
+    expected_max_sharpe,
+)
 from qts.validation.ledger import TrialLedger, callable_identity
 
 
@@ -132,6 +137,27 @@ def test_expected_max_sharpe_uses_fractional_trials():
     assert expected_max_sharpe(2.4, 1.0) == pytest.approx(want, rel=1e-12)
     assert expected_max_sharpe(2.4, 1.0) > expected_max_sharpe(2, 1.0)  # no rounding down
     assert expected_max_sharpe(1.0, 1.0) == 0.0
+
+
+def test_expected_max_sharpe_never_negative_for_small_effective_n():
+    # The closed form alone gives -0.79 at N = 1.01 and is negative up to N ~ 1.28,
+    # which would make the DSR benchmark negative and inflate the DSR.  A
+    # near-duplicate family (Nyholt N_eff just above 1) must deflate at least as
+    # hard as a single trial, never less.
+    n2 = expected_max_sharpe(2.0, 1.0)
+    assert n2 == pytest.approx(0.52, abs=0.01)
+    prev = 0.0
+    for n in np.linspace(1.0, 3.0, 201):
+        v = expected_max_sharpe(float(n), 1.0)
+        assert v >= 0.0
+        assert v >= prev - 1e-12  # non-decreasing in N
+        prev = v
+    assert expected_max_sharpe(1.5, 1.0) == pytest.approx(0.5 * n2)
+    assert expected_max_sharpe(2.0 - 1e-9, 1.0) == pytest.approx(n2, abs=1e-6)  # continuous at 2
+    sr_d = 0.55 / math.sqrt(252)
+    assert deflated_sharpe_ratio(sr_d, 1.0096, 0.251 / 252, 1005) <= deflated_sharpe_ratio(
+        sr_d, 1.0, 0.0, 1005
+    )
 
 
 def test_git_dirty_counts_untracked_files(tmp_path):

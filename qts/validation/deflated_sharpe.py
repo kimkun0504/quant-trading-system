@@ -100,14 +100,30 @@ def expected_max_sharpe(n_trials: float, var_sr: float) -> float:
 
     ``N`` may be fractional (a Nyholt effective number of trials): it is used as
     is, never truncated (rounding 2.4 down to 2 under-deflates; audit 2 #17).
+
+    The closed form is an extreme-value (large-``N``) approximation.  Below
+    ``N`` of about 1.28 it turns negative (at ``N = 1.01`` it gives ``-0.79 sd``),
+    which would set a *negative* benchmark Sharpe and inflate the DSR, although
+    the true expected maximum of ``N`` zero-mean draws is never below zero and is
+    exactly zero at ``N = 1``.  For ``1 < N < 2`` the function therefore
+    interpolates linearly between 0 at ``N = 1`` and the closed form at ``N = 2``
+    (0.52 sd; the exact value for two standard normals is 0.564 sd), which is
+    non-negative, continuous and non-decreasing in ``N``.
     """
     n_trials = float(n_trials)
     if n_trials <= 1:
         return 0.0
     sd = math.sqrt(max(var_sr, 0.0))
+    if n_trials < 2.0:
+        return float((n_trials - 1.0) * _closed_form_unit(2.0) * sd)
+    return float(sd * _closed_form_unit(n_trials))
+
+
+def _closed_form_unit(n_trials: float) -> float:
+    """Bailey & Lopez de Prado eq. 8 with unit variance; valid for ``n_trials >= 2``."""
     z1 = norm.ppf(1.0 - 1.0 / n_trials)
     z2 = norm.ppf(1.0 - 1.0 / (n_trials * math.e))
-    return float(sd * ((1.0 - EULER_GAMMA) * z1 + EULER_GAMMA * z2))
+    return float((1.0 - EULER_GAMMA) * z1 + EULER_GAMMA * z2)
 
 
 def deflated_sharpe_ratio(

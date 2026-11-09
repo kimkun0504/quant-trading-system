@@ -503,10 +503,18 @@ def expected_max_sharpe(n_trials: float, var_sr: float) -> float:
     if n_trials <= 1:
         return 0.0
     sd = math.sqrt(max(var_sr, 0.0))
+    if n_trials < 2.0:                  # closed form is invalid here (see below)
+        return float((n_trials - 1.0) * _closed_form_unit(2.0) * sd)
+    return float(sd * _closed_form_unit(n_trials))
+
+
+def _closed_form_unit(n_trials: float) -> float:   # eq. 8 with V = 1, N >= 2
     z1 = norm.ppf(1.0 - 1.0 / n_trials)
     z2 = norm.ppf(1.0 - 1.0 / (n_trials * math.e))
-    return float(sd * ((1.0 - EULER_GAMMA) * z1 + EULER_GAMMA * z2))
+    return float((1.0 - EULER_GAMMA) * z1 + EULER_GAMMA * z2)
 ```
+
+**Small effective N.** Equation 8 is a large-$N$ approximation and it misbehaves just above $N = 1$: $\Phi^{-1}(1 - 1/N)$ goes to $-\infty$ as $N \to 1^+$, so the formula is *negative* for $N$ below about 1.28 (at $N = 1.01$ it gives $-0.79\sqrt{V}$). The true expected maximum of $N$ zero-mean draws is never negative and is exactly 0 at $N = 1$. A negative benchmark Sharpe would *inflate* the DSR: a family of five near-identical re-runs has Nyholt $N_{\text{eff}} \approx 1.01$, and the uncorrected formula turned a DSR of 0.864 (plain PSR against zero) into 0.958, flipping the gate from FAIL to PASS. Found on 2026-11-09 when a fresh ledger (one trial, $N = 1$) reported 0.864 for a run whose stored report said 0.958. The code now interpolates linearly between 0 at $N = 1$ and the closed form at $N = 2$ ($0.52\sqrt{V}$; the exact value for two standard normals is $0.564\sqrt{V}$), which is non-negative, continuous and non-decreasing; above $N = 2$ the closed form is used unchanged. `tests/test_ledger_concurrency.py::test_expected_max_sharpe_never_negative_for_small_effective_n` pins this.
 
 **Fractional effective trials.** The formula is smooth in $N$, so nothing requires an integer. The code used to truncate with `int(n_trials)`. A Nyholt count of 2.4 then became 2, the expected maximum fell, and the DSR rose: the rounding always favoured the strategy. Now `n_trials` is a float everywhere (`deflated_sharpe_ratio`, `deflated_sharpe_ratio_annual`, the pipeline), and `tests/test_ledger_concurrency.py::test_expected_max_sharpe_uses_fractional_trials` pins the closed form at a non-integer $N$. `min_backtest_length` still takes an integer trial count; it is a planning tool, not a gate input.
 
@@ -518,7 +526,7 @@ How the pipeline feeds it (`qts/pipeline.py::ResearchPipeline._dsr_inputs`), rea
 - three or more → `effective_trials_for(family)` (Nyholt, unrounded) and `family_sharpe_variance(family)`;
 - whenever more than one trial exists, $V$ is **floored at $252/n$** (annual units), the pure sampling-noise variance of an annual Sharpe over $n$ days. Before the first audit $V$ was hard-coded to 0.25 (finding 7, HIGH).
 
-The order matters: `evaluate()` logs this run first, then runs and logs any PBO grid configurations, and only then reads the family. The DSR therefore always counts the run being judged and every configuration searched alongside it. The second audit checked `_dsr_inputs` by hand on a three-trial ledger (Nyholt $N_{\text{eff}} = 1.667$, floor $252/n = 0.336$ applied, DSR 0.957186).
+The order matters: `evaluate()` logs this run first, then runs and logs any PBO grid configurations, and only then reads the family. The DSR therefore always counts the run being judged and every configuration searched alongside it. The second audit checked `_dsr_inputs` by hand on a three-trial ledger (Nyholt $N_{\text{eff}} = 1.667$, floor $252/n = 0.336$ applied, DSR 0.957186 with the closed form at $N = 1.667$; with the small-$N$ interpolation above the expected maximum at that $N$ is slightly higher, $0.347\sqrt{V}$ instead of $0.337\sqrt{V}$, so the DSR is slightly lower).
 
 The DSR threshold is `ValidationConfig.dsr_threshold = 0.95`.
 
@@ -526,6 +534,7 @@ The DSR threshold is `ValidationConfig.dsr_threshold = 0.95`.
 - **Annual vs per-observation inputs**: use the `_annual` wrapper with annual numbers.
 - **Raw kurtosis**: see section 2.
 - **Undercounted N** makes DSR too lenient; **overcounted N** (identical re-runs) makes it too harsh. The ledger de-duplicates only re-runs that are provably identical (section 13); when in doubt it counts.
+- **$N_{\text{eff}}$ just above 1** (re-runs of one configuration) must deflate at least as hard as $N = 1$; the raw closed form does the opposite (see *Small effective N*).
 - **$V$ is not a free parameter**: under the null it is about $252/n$ annualised (0.25 for $n \approx 1{,}000$ days, 0.05 for 20 years). Dispersion of true Sharpes across trials adds to it.
 
 ### Worked example: N = 1, 10, 100 trials
