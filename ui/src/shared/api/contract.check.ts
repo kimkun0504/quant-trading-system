@@ -55,6 +55,8 @@ export type SchemaContract = [
   Assert<Same<G['FoldSharpe'], S.FoldSharpe>>,
   Assert<Same<G['RunConfig'], S.RunConfig>>,
   Assert<Same<G['RunDetail'], S.RunDetail>>,
+  Assert<Same<G['RunCompareRun'], S.RunCompareRun>>,
+  Assert<Same<G['RunCompare'], S.RunCompare>>,
   Assert<Same<G['ColumnarSeries'], S.ColumnarSeries>>,
   Assert<Same<G['CostSensitivityRow'], S.CostSensitivityRow>>,
   Assert<Same<G['RunCosts'], S.RunCosts>>,
@@ -87,6 +89,8 @@ export type SchemaContract = [
 export type EndpointContract = [
   Assert<Same<Json<'/api/runs', 'get'>, S.RunSummary[]>>,
   Assert<Same<Json<'/api/runs/{run_id}', 'get'>, S.RunDetail>>,
+  Assert<Same<Json<'/api/runs/compare', 'get'>, S.RunCompare>>,
+  Assert<Same<ErrorBody<'/api/runs/compare', 'get', 422>, S.ApiErrorBody>>,
   Assert<Sub<S.ColumnarSeries<S.RunSeriesName>, Json<'/api/runs/{run_id}/series', 'get'>>>,
   Assert<Same<Json<'/api/runs/{run_id}/costs', 'get'>, S.RunCosts>>,
   Assert<Same<Json<'/api/runs/{run_id}/exposures', 'get'>, S.RunExposures>>,

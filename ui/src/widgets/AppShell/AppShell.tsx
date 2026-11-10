@@ -1,55 +1,83 @@
-import { useEffect, useRef } from 'react';
-import { NavLink, Outlet, useLocation } from 'react-router';
+import { useEffect, useMemo, useRef } from 'react';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router';
+import { RunSearch } from '@/features/run-search';
+import { SelectionUrlSync } from '@/features/selection';
 import { ThemeToggle } from '@/features/theme-toggle';
 import { HANDBOOK } from '@/shared/lib/handbook';
+import { useGlobalShortcuts } from '@/shared/lib/shortcuts';
+import { cx } from '@/shared/lib/cx';
 import { VisuallyHidden } from '@/shared/ui';
+import { Icons } from '@/shared/ui/icons';
+import { SelectionTray } from '@/widgets/SelectionTray';
+import { REGISTRY_NAV, WORKSPACES } from './nav';
+import type { NavEntry } from './nav';
 import styles from './AppShell.module.css';
 
-const NAV = [
-  { to: '/runs', label: 'Runs', end: true },
-  { to: '/runs/new', label: 'New run', end: true },
-  { to: '/models', label: 'Models', end: false },
-  { to: '/ledger', label: 'Ledger', end: false },
-] as const;
+function NavItem({ entry }: { entry: NavEntry }) {
+  const Glyph = Icons[entry.icon];
+  return (
+    <li>
+      <NavLink
+        to={entry.to}
+        end={entry.end ?? false}
+        className={({ isActive }) => cx(styles.link, isActive && styles.active)}
+      >
+        <Glyph className={styles.glyph} />
+        <span>{entry.label}</span>
+      </NavLink>
+    </li>
+  );
+}
 
-/** Navigation rail + main column. Moves focus to <main> after client-side navigation. */
+/**
+ * Sidebar (workspaces) + top bar (search, theme) + main + the selection tray.
+ * Moves focus to <main> after a client-side page change; `/` focuses search,
+ * `c` opens the compare view.
+ */
 export function AppShell() {
   const { pathname } = useLocation();
+  const navigate = useNavigate();
   const main = useRef<HTMLElement | null>(null);
+  const search = useRef<HTMLInputElement | null>(null);
   const section = pathname.split('/').slice(0, 3).join('/');
   const previous = useRef(section);
 
-  // Move focus to <main> when the page (not a tab inside a run) changes. Comparing with
-  // the previous section keeps this a no-op on first load, StrictMode re-runs included.
   useEffect(() => {
     if (previous.current === section) return;
     previous.current = section;
     main.current?.focus({ preventScroll: false });
   }, [section]);
 
+  const shortcuts = useMemo(
+    () => ({
+      '/': () => search.current?.focus(),
+      c: () => void navigate('/compare'),
+    }),
+    [navigate],
+  );
+  useGlobalShortcuts(shortcuts);
+
   return (
     <div className={styles.shell}>
+      <SelectionUrlSync />
       <a href="#main" className={styles.skip}>
         Skip to content
       </a>
-      <header className={styles.rail}>
-        <NavLink to="/runs" className={styles.brand}>
-          QTS Workbench
+      <aside className={styles.sidebar}>
+        <NavLink to="/" className={styles.brand} end>
+          <span className={styles.mark} aria-hidden="true" />
+          QTS research
         </NavLink>
-        <nav aria-label="Main" className={styles.nav}>
+        <nav aria-label="Workspaces" className={styles.nav}>
           <ul>
-            {NAV.map((n) => (
-              <li key={n.to}>
-                <NavLink
-                  to={n.to}
-                  end={n.end}
-                  className={({ isActive }) =>
-                    isActive ? `${styles.link} ${styles.active}` : styles.link
-                  }
-                >
-                  {n.label}
-                </NavLink>
-              </li>
+            {WORKSPACES.map((n) => (
+              <NavItem key={n.to} entry={n} />
+            ))}
+          </ul>
+          <div className={styles.navGroup}>Registry</div>
+          <ul>
+            {REGISTRY_NAV.map((n) => (
+              <NavItem key={n.to} entry={n} />
             ))}
             <li>
               <a
@@ -58,19 +86,24 @@ export function AppShell() {
                 target="_blank"
                 rel="noreferrer"
               >
-                Handbook
+                <Icons.Book className={styles.glyph} />
+                <span>Handbook</span>
                 <VisuallyHidden> (opens in a new tab)</VisuallyHidden>
               </a>
             </li>
           </ul>
         </nav>
-        <div className={styles.theme}>
+      </aside>
+      <header className={styles.topbar}>
+        <RunSearch ref={search} />
+        <div className={styles.topbarEnd}>
           <ThemeToggle />
         </div>
       </header>
       <main id="main" ref={main} tabIndex={-1} className={styles.main}>
         <Outlet />
       </main>
+      <SelectionTray />
     </div>
   );
 }

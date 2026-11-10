@@ -6,7 +6,7 @@
 
 .list {
   display: flex;
-  gap: var(--space-5);
+  gap: var(--space-4);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -14,21 +14,22 @@
 
 .tab {
   display: inline-block;
-  padding: var(--space-3) 0 calc(var(--space-3) - 3px);
-  border-bottom: 3px solid transparent;
-  color: var(--color-graphite);
-  font-weight: 600;
+  padding: var(--space-2) 0 calc(var(--space-2) - 2px);
+  border-bottom: 2px solid transparent;
+  color: var(--color-fg-muted);
+  font-size: var(--text-md);
+  font-weight: 500;
   text-decoration: none;
   white-space: nowrap;
 }
 
 .tab:hover {
-  color: var(--color-ink);
-  border-bottom-color: var(--color-rule);
+  color: var(--color-fg);
+  border-bottom-color: var(--color-border-strong);
 }
 
 .active,
 .active:hover {
-  color: var(--color-ink);
-  border-bottom-color: var(--color-gain);
+  color: var(--color-fg);
+  border-bottom-color: var(--color-fg);
 }

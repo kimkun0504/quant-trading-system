@@ -116,3 +116,8 @@
   color: var(--color-graphite);
   padding: var(--space-1) 6px 0 34px;
 }
+
+.seriesBar[data-active='true'] {
+  stroke: var(--color-fg);
+  stroke-width: 1.5;
+}

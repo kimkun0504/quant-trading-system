@@ -1,0 +1,94 @@
+.tray {
+  grid-area: tray;
+  position: sticky;
+  bottom: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--tray-height);
+  padding: var(--space-2) var(--space-5);
+  background: var(--color-surface);
+  border-top: var(--hairline);
+  box-shadow: var(--shadow-2);
+}
+
+.empty {
+  color: var(--color-fg-muted);
+  font-size: var(--text-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.count {
+  font-size: var(--text-sm);
+  color: var(--color-fg-muted);
+  white-space: nowrap;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  flex: 1;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 1.5rem;
+  padding: 0 var(--space-1) 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--color-accent-wash);
+  color: var(--color-fg);
+  font-size: var(--text-sm);
+  max-width: 22rem;
+}
+
+.swatch {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 2px;
+  flex: none;
+}
+
+.chipLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-decoration: none;
+  color: inherit;
+}
+
+.chipLabel:hover {
+  text-decoration: underline;
+}
+
+.actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+}
+
+.hint {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+@media (max-width: 899px) {
+  .tray {
+    padding: var(--space-2) var(--space-3);
+  }
+  .hint {
+    display: none;
+  }
+}

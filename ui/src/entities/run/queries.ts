@@ -23,6 +23,7 @@ export const runKeys = {
   holdings: (id: RunId, date: string | undefined) =>
     [...runKeys.detail(id), 'holdings', date ?? 'latest'] as const,
   ic: (id: RunId) => [...runKeys.detail(id), 'ic'] as const,
+  compare: (ids: readonly RunId[]) => [...runKeys.all, 'compare', ids.join(',')] as const,
 };
 
 export const jobKeys = {
@@ -81,6 +82,17 @@ export function useRunIc(id: RunId) {
     queryKey: runKeys.ic(id),
     queryFn: ({ signal }) => api.getRunIc(id, signal),
     staleTime: Infinity,
+  });
+}
+
+/** `GET /api/runs/compare?ids=`: aligned NAV, folds, gates and flattened configs. */
+export function useCompareRuns(ids: readonly RunId[]) {
+  return useQuery({
+    queryKey: runKeys.compare(ids),
+    queryFn: ({ signal }) => api.compareRuns(ids, signal),
+    enabled: ids.length > 0,
+    staleTime: Infinity,
+    placeholderData: keepPreviousData,
   });
 }
 

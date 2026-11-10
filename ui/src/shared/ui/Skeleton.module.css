@@ -1,6 +1,6 @@
 .skeleton {
-  background: color-mix(in srgb, var(--color-rule) 55%, var(--color-sheet));
-  border-radius: 2px;
+  background: var(--color-surface-2);
+  border-radius: var(--radius-sm);
   animation: pulse 1.6s ease-in-out infinite;
 }
 

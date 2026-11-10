@@ -4,6 +4,7 @@ import type {
   Health,
   LaunchRunRequest,
   LaunchRunResponse,
+  RunCompare,
   RunSeriesName,
 } from '@/shared/api';
 import { CONFIG_SCHEMA } from './fixtures/configSchema';
@@ -51,6 +52,63 @@ export const handlers = [
   http.get('*/api/runs', async () => {
     await delay();
     return HttpResponse.json(listSummaries());
+  }),
+
+  http.get('*/api/runs/compare', async ({ request }) => {
+    await delay();
+    const ids = [
+      ...new Set(
+        (new URL(request.url).searchParams.get('ids') ?? '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
+      ),
+    ];
+    if (ids.length === 0 || ids.length > 8)
+      return HttpResponse.json<ApiErrorBody>(
+        { detail: 'ids: give 1 to 8 run ids, comma-separated' },
+        { status: 422 },
+      );
+    const found = [];
+    for (const id of ids) {
+      const r = findRun(id);
+      if ('error' in r) return r.error;
+      found.push(r.run);
+    }
+    const dates = [...new Set(found.flatMap((r) => r.dates))].sort();
+    const body: RunCompare = {
+      dates,
+      nav: Object.fromEntries(
+        found.map((r) => {
+          const byDate = new Map(r.dates.map((d, i) => [d, r.series.nav[i] ?? null]));
+          return [r.spec.id, dates.map((d) => byDate.get(d) ?? null)];
+        }),
+      ),
+      runs: found.map((r) => ({
+        id: r.spec.id,
+        label: r.spec.label,
+        created_at: r.spec.created_at,
+        phase: r.spec.phase,
+        start: r.detail.summary.start,
+        end: r.detail.summary.end,
+        headline: r.summary.headline ?? {
+          sharpe_net: 0,
+          sharpe_gross: 0,
+          cagr_net: 0,
+          max_drawdown: 0,
+          avg_cost_bps_per_side: 0,
+          dsr: 0,
+          invested_day_frac: 0,
+          overall_gate: 'FAIL',
+        },
+        n_trials: r.detail.dsr_inputs.n_trials,
+        fold_sharpes: r.detail.fold_sharpes,
+        hurdles: r.detail.hurdles,
+        config_leaves: r.summary.config_leaves,
+      })),
+      downsampled: false,
+    };
+    return HttpResponse.json(body);
   }),
 
   http.get<{ id: string }>('*/api/runs/:id', async ({ params }) => {

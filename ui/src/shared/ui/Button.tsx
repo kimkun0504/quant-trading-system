@@ -2,17 +2,26 @@ import type { ButtonHTMLAttributes } from 'react';
 import { cx } from '@/shared/lib/cx';
 import styles from './Button.module.css';
 
-type Variant = 'primary' | 'secondary' | 'quiet';
+export type ButtonVariant = 'primary' | 'secondary' | 'quiet';
+export type ButtonSize = 'md' | 'sm';
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: Variant;
+  variant?: ButtonVariant;
+  size?: ButtonSize;
 }
 
 export function Button({
   variant = 'secondary',
+  size = 'md',
   className,
   type = 'button',
   ...rest
 }: ButtonProps) {
-  return <button type={type} className={cx(styles.button, styles[variant], className)} {...rest} />;
+  return (
+    <button
+      type={type}
+      className={cx(styles.button, styles[variant], size === 'sm' && styles.sm, className)}
+      {...rest}
+    />
+  );
 }

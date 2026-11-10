@@ -3,23 +3,27 @@ import { cx } from '@/shared/lib/cx';
 import { useDocumentTitle } from '@/shared/lib/useDocumentTitle';
 import styles from './Page.module.css';
 
-/**
- * The reading column + margin column grid. Direct children sit in the reading column;
- * <Annotated> and `wide` children span both.
- */
+/** One column of page rows. */
 export function Page({
   title,
   children,
   docTitle,
+  actions,
 }: {
   title?: ReactNode;
   children: ReactNode;
   docTitle: string;
+  actions?: ReactNode;
 }) {
   useDocumentTitle(docTitle);
   return (
     <div className={styles.page}>
-      {title ? <h1 className={styles.h1}>{title}</h1> : null}
+      {title ? (
+        <div className={styles.titleRow}>
+          <h1 className={styles.h1}>{title}</h1>
+          {actions}
+        </div>
+      ) : null}
       {children}
     </div>
   );
@@ -30,7 +34,7 @@ export function Flow({ children }: { children: ReactNode }) {
   return <div className={styles.flow}>{children}</div>;
 }
 
-/** Content in the reading column with a note in the margin column beside it. */
+/** Content with its explanation (an About line) under it. */
 export function Annotated({
   children,
   note,
@@ -43,12 +47,12 @@ export function Annotated({
   return (
     <div className={cx(styles.annotated, className)}>
       <div className={styles.body}>{children}</div>
-      {note ? <div className={styles.margin}>{note}</div> : null}
+      {note ? <div>{note}</div> : null}
     </div>
   );
 }
 
-/** A titled section of the reading column; `note` goes to the margin beside the heading. */
+/** A titled section; `note` (an About line) sits under the heading. */
 export function Section({
   id,
   title,
@@ -70,8 +74,8 @@ export function Section({
           {title}
         </h2>
         {lede ? <div className={styles.lede}>{lede}</div> : null}
+        {note ? <div>{note}</div> : null}
       </div>
-      {note ? <div className={styles.sectionNote}>{note}</div> : null}
       {children}
     </section>
   );

@@ -46,7 +46,6 @@
 }
 
 .message {
-  font-family: var(--font-serif);
   line-height: var(--leading-serif);
 }
 

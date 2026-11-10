@@ -55,6 +55,48 @@ def valid_run_id(run_id: object) -> bool:
 
 GATE_NAMES = set(S.GateName.__args__)  # type: ignore[attr-defined]
 DEMO_DEFAULTS = {"stocks": 300, "days": 1512}
+#: ``/api/runs/compare``: at most this many points on the shared date axis.
+COMPARE_MAX_POINTS = 2000
+#: ``/api/runs/compare``: at most this many runs per request.
+COMPARE_MAX_RUNS = 8
+
+
+def flatten_config(cfg: Any, prefix: str = "") -> dict[str, Any]:
+    """``{"portfolio": {"trade_aversion": 1.0}}`` -> ``{"portfolio.trade_aversion": 1.0}``.
+
+    Scalars (bool / int / float / str / None) are leaves; non-finite floats become
+    ``None``; lists and any other value are serialised as compact JSON so two configs
+    that differ in a list still diff as one key."""
+    out: dict[str, Any] = {}
+    if not isinstance(cfg, dict):
+        return out
+    for k, v in cfg.items():
+        key = f"{prefix}{k}"
+        if isinstance(v, dict):
+            if v:
+                out.update(flatten_config(v, f"{key}."))
+            else:
+                out[key] = "{}"
+        elif v is None or isinstance(v, (bool, int, str)):
+            out[key] = v
+        elif isinstance(v, float):
+            out[key] = v if np.isfinite(v) else None
+        else:
+            try:
+                out[key] = json.dumps(v, separators=(",", ":"), default=str)
+            except (TypeError, ValueError):
+                out[key] = str(v)
+    return out
+
+
+def thin_axis(n: int, max_points: int) -> list[int]:
+    """Indices of at most ``max_points`` evenly spaced positions of ``range(n)``, always
+    including the first and the last."""
+    if n <= max_points:
+        return list(range(n))
+    step = (n - 1) / (max_points - 1)
+    idx = sorted({round(i * step) for i in range(max_points)} | {0, n - 1})
+    return [i for i in idx if 0 <= i < n]
 
 
 class RunNotFound(LookupError):
@@ -370,8 +412,10 @@ class RunRegistry:
                 "max_drawdown": _num(b.get("max_drawdown_net")),
                 "avg_cost_bps_per_side": _num(b.get("avg_cost_bps_per_side")),
                 "dsr": _num(e.summary.get("dsr")),
+                "invested_day_frac": _num(b.get("invested_day_frac", 1.0)),
                 "overall_gate": self.overall(e),
             },
+            "config_leaves": flatten_config(e.config),
         }
 
     def list_summaries(self) -> list[dict[str, Any]]:
@@ -504,6 +548,51 @@ class RunRegistry:
             ],
             "execution_venue": e.facts.get("execution_venue"),
             "notes": [str(n) for n in e.summary.get("notes", [])],
+        }
+
+    def compare(self, run_ids: list[str], max_points: int = COMPARE_MAX_POINTS) -> dict[str, Any]:
+        """Side-by-side payload: NAV of every run on the union of their dates (thinned to
+        ``max_points``), fold Sharpes, hurdles and flattened configs."""
+        entries = [self.get(r) for r in run_ids]
+        navs: dict[str, pd.Series] = {}
+        for e in entries:
+            df = self.frames(e).series
+            nav = df["nav"] if "nav" in df else pd.Series(dtype=float)
+            navs[e.run_id] = nav[~nav.index.duplicated()].sort_index()
+        union = pd.DatetimeIndex(sorted(set().union(*(set(v.index) for v in navs.values()))))
+        keep = thin_axis(len(union), max_points)
+        axis = union[keep]
+        runs = []
+        for e in entries:
+            s = self.run_summary(e)
+            b = e.backtest
+            folds = e.summary.get("folds") or []
+            runs.append(
+                {
+                    "id": e.run_id,
+                    "label": e.label,
+                    "created_at": s["created_at"],
+                    "phase": e.phase,
+                    "start": str(b.get("start") or ""),
+                    "end": str(b.get("end") or ""),
+                    "headline": s["headline"],
+                    "n_trials": _num((e.summary.get("dsr_inputs") or {}).get("n_trials", 1.0)),
+                    "fold_sharpes": [
+                        {
+                            "label": self._fold_label(f.get("start", ""), f.get("end", "")),
+                            "sharpe_net": _num(f.get("sharpe")),
+                        }
+                        for f in folds
+                    ],
+                    "hurdles": self._hurdles(e),
+                    "config_leaves": s["config_leaves"],
+                }
+            )
+        return {
+            "dates": SR.iso_dates(axis),
+            "nav": {rid: SR.clean(v.reindex(axis)) for rid, v in navs.items()},
+            "runs": runs,
+            "downsampled": len(keep) < len(union),
         }
 
     def series(self, run_id: str, names: list[str]) -> dict[str, Any]:

@@ -13,34 +13,38 @@ html {
 
 body {
   margin: 0;
-  background: var(--color-paper);
-  color: var(--color-ink);
+  background: var(--color-canvas);
+  color: var(--color-fg);
   font-family: var(--font-sans);
-  font-size: var(--step-0);
+  font-size: var(--text-base);
   line-height: var(--leading-sans);
   font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings:
+    'tnum' 1,
+    'cv11' 1;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 h1,
 h2,
 h3,
 h4 {
-  font-family: var(--font-serif);
   font-weight: 600;
   line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
   margin: 0;
   text-wrap: balance;
 }
 
 h1 {
-  font-size: var(--step-3);
+  font-size: var(--text-2xl);
 }
 h2 {
-  font-size: var(--step-2);
+  font-size: var(--text-lg);
 }
 h3 {
-  font-size: var(--step-1);
+  font-size: var(--text-base);
 }
 
 p {
@@ -49,19 +53,21 @@ p {
 }
 
 a {
-  color: var(--color-gain);
+  color: var(--color-accent);
+  text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 0.18em;
+  text-decoration-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
 }
 
 a:hover {
-  text-decoration-thickness: 2px;
+  text-decoration-color: currentColor;
 }
 
 :focus-visible {
   outline: 2px solid var(--color-focus);
   outline-offset: 2px;
-  border-radius: 2px;
+  border-radius: var(--radius-sm);
 }
 
 table {
@@ -79,9 +85,13 @@ textarea {
 code {
   font-family: inherit;
   font-size: 0.95em;
-  background: var(--color-wash);
-  padding: 0 0.25em;
-  border-radius: 2px;
+  background: var(--color-surface-2);
+  padding: 0 0.3em;
+  border-radius: var(--radius-sm);
+}
+
+::selection {
+  background: var(--color-accent-wash);
 }
 
 @media (prefers-reduced-motion: reduce) {

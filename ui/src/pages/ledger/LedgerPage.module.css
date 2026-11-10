@@ -1,9 +1,8 @@
 .prose {
   display: grid;
   gap: var(--space-3);
-  font-family: var(--font-serif);
   line-height: var(--leading-serif);
-  font-size: 1.0625rem;
+  font-size: var(--text-base);
 }
 
 .families {

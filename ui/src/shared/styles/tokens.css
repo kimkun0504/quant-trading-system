@@ -1,41 +1,79 @@
 /*
  * Design tokens (ui/DESIGN.md). Every colour in the app comes from here.
- * Light is the default; dark applies with [data-theme='dark'] or, when no explicit
- * theme is stored, with prefers-color-scheme: dark.
+ *
+ * Light is the default; dark applies with [data-theme='dark'] or, when no explicit theme
+ * is stored, with prefers-color-scheme: dark. Surfaces are neutral; colour is reserved
+ * for data (gain / loss / caution) and for one interactive accent (links, selection,
+ * focus). The old names (paper, sheet, ink, graphite, rule) stay as aliases so charts
+ * and older components keep working.
  */
 :root {
-  /* colour — light */
-  --color-paper: #f2f4f6;
-  --color-sheet: #ffffff;
-  --color-ink: #17212b;
-  --color-graphite: #5a6573;
-  --color-rule: #d3d9e0;
+  /* ---- colour: surfaces and text (light) */
+  --color-canvas: #f4f5f7;
+  --color-surface: #ffffff;
+  --color-surface-2: #eef0f3;
+  --color-fg: #1a1f27;
+  --color-fg-muted: #5b6574;
+  --color-border: #e1e4ea;
+  --color-border-strong: #8690a0;
+  --color-accent: #4f46c9;
+  --color-accent-wash: color-mix(in srgb, var(--color-accent) 9%, var(--color-surface));
+  --color-on-accent: #ffffff;
+  --color-focus: var(--color-accent);
+
+  /* ---- colour: data (carried over from the first brief) */
   --color-gain: #1f5f8b;
   --color-loss: #9b2f52;
   --color-caution: #b8860b;
-  --color-caution-ink: #7d5b00; /* caution as text: #B8860B fails AA on paper */
-  --color-focus: #3b82c4;
-  --color-on-accent: #ffffff;
-  --color-wash: color-mix(in srgb, var(--color-gain) 6%, var(--color-sheet));
-  --color-caution-wash: color-mix(in srgb, var(--color-caution) 14%, var(--color-sheet));
-  --color-loss-wash: color-mix(in srgb, var(--color-loss) 8%, var(--color-sheet));
+  --color-caution-ink: #7d5b00; /* caution as text: #B8860B fails AA on light surfaces */
+  --color-wash: color-mix(in srgb, var(--color-gain) 7%, var(--color-surface));
+  --color-caution-wash: color-mix(in srgb, var(--color-caution) 14%, var(--color-surface));
+  --color-loss-wash: color-mix(in srgb, var(--color-loss) 8%, var(--color-surface));
   --drawdown-fill-opacity: 0.18;
 
-  /* type */
-  --font-serif: 'Source Serif 4', 'Source Serif Pro', Georgia, serif;
-  --font-sans: 'Source Sans 3', 'Source Sans Pro', system-ui, sans-serif;
-  --step--1: 0.833rem; /* 13.3 */
-  --step-0: 1rem; /* 16 */
-  --step-1: 1.2rem; /* 19.2 */
-  --step-2: 1.44rem; /* 23 */
-  --step-3: 1.728rem; /* 27.6 */
-  --step-4: 2.074rem; /* 33.2 */
-  --leading-serif: 1.55;
-  --leading-sans: 1.45;
-  --leading-tight: 1.2;
-  --measure: 72ch;
+  /* ---- colour: categorical series (compare view; 1 and 2 are gain and loss) */
+  --color-series-1: #1f5f8b;
+  --color-series-2: #9b2f52;
+  --color-series-3: #2a7f76;
+  --color-series-4: #b8860b;
+  --color-series-5: #6a4fb3;
+  --color-series-6: #b35c2a;
+  --color-series-7: #4a7a2e;
+  --color-series-8: #5b6574;
 
-  /* space */
+  /* ---- aliases for the first-generation names */
+  --color-paper: var(--color-canvas);
+  --color-sheet: var(--color-surface);
+  --color-ink: var(--color-fg);
+  --color-graphite: var(--color-fg-muted);
+  --color-rule: var(--color-border);
+
+  /* ---- type: one sans with tabular figures */
+  --font-sans:
+    'Inter Variable', 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-serif: var(--font-sans);
+  --text-xs: 0.6875rem; /* 11 */
+  --text-sm: 0.75rem; /* 12 */
+  --text-md: 0.8125rem; /* 13 */
+  --text-base: 0.875rem; /* 14 */
+  --text-lg: 1rem; /* 16 */
+  --text-xl: 1.125rem; /* 18 */
+  --text-2xl: 1.375rem; /* 22 */
+  --text-3xl: 1.75rem; /* 28 */
+  --leading-tight: 1.2;
+  --leading-sans: 1.45;
+  --leading-serif: 1.5;
+  --tracking-tight: -0.012em;
+  --measure: 68ch;
+  /* step aliases (first-generation scale) */
+  --step--1: var(--text-sm);
+  --step-0: var(--text-base);
+  --step-1: var(--text-lg);
+  --step-2: var(--text-xl);
+  --step-3: var(--text-2xl);
+  --step-4: var(--text-3xl);
+
+  /* ---- space: 8-px grid (half step for tight rows) */
   --space-1: 0.25rem;
   --space-2: 0.5rem;
   --space-3: 0.75rem;
@@ -45,18 +83,31 @@
   --space-7: 3rem;
   --space-8: 4rem;
 
-  /* layout */
-  --rail-width: 13rem;
-  --reading-max: 840px;
-  --margin-min: 240px;
-  --margin-max: 300px;
-  --gutter: 2.5rem;
-  --radius-control: 4px;
-  --hairline: 1px solid var(--color-rule);
+  /* ---- radii */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-pill: 999px;
+  --radius-control: var(--radius-sm);
 
-  /* motion */
+  /* ---- elevation: borders carry structure; shadows only for floating layers */
+  --shadow-1: 0 1px 2px rgb(16 20 28 / 0.06), 0 4px 12px rgb(16 20 28 / 0.08);
+  --shadow-2: 0 -1px 0 var(--color-border), 0 -8px 24px rgb(16 20 28 / 0.08);
+
+  /* ---- layout */
+  --sidebar-width: 13.5rem;
+  --topbar-height: 3rem;
+  --tray-height: 3.25rem;
+  --content-max: 1600px;
+  --rail-width: var(--sidebar-width);
+  --reading-max: 100%;
+  --gutter: var(--space-5);
+  --hairline: 1px solid var(--color-border);
+
+  /* ---- motion */
   --motion-draw: 600ms;
   --motion-gate-step: 70ms;
+  --motion-fast: 120ms;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 
   color-scheme: light;
@@ -64,40 +115,66 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
-    --color-paper: #10161d;
-    --color-sheet: #161e27;
-    --color-ink: #e6ebf0;
-    --color-graphite: #9aa6b4;
-    --color-rule: #2a3542;
+    --color-canvas: #13161b;
+    --color-surface: #1a1e25;
+    --color-surface-2: #232831;
+    --color-fg: #e6e9ef;
+    --color-fg-muted: #9aa4b3;
+    --color-border: #2c323c;
+    --color-border-strong: #6e7a8b;
+    --color-accent: #a9a0ff;
+    --color-accent-wash: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface));
+    --color-on-accent: #13161b;
     --color-gain: #6fa8d6;
     --color-loss: #d97a9a;
     --color-caution: #d9b25c;
     --color-caution-ink: #d9b25c;
-    --color-focus: #6fa8d6;
-    --color-on-accent: #10161d;
-    --color-wash: color-mix(in srgb, var(--color-gain) 8%, var(--color-sheet));
-    --color-caution-wash: color-mix(in srgb, var(--color-caution) 12%, var(--color-sheet));
-    --color-loss-wash: color-mix(in srgb, var(--color-loss) 10%, var(--color-sheet));
+    --color-wash: color-mix(in srgb, var(--color-gain) 10%, var(--color-surface));
+    --color-caution-wash: color-mix(in srgb, var(--color-caution) 12%, var(--color-surface));
+    --color-loss-wash: color-mix(in srgb, var(--color-loss) 10%, var(--color-surface));
     --drawdown-fill-opacity: 0.22;
+    --color-series-1: #6fa8d6;
+    --color-series-2: #d97a9a;
+    --color-series-3: #63bfb5;
+    --color-series-4: #d9b25c;
+    --color-series-5: #b09ce8;
+    --color-series-6: #e0906a;
+    --color-series-7: #8fc069;
+    --color-series-8: #9aa4b3;
+    --color-series-1: #6fa8d6;
+    --color-series-2: #d97a9a;
+    --color-series-3: #63bfb5;
+    --color-series-4: #d9b25c;
+    --color-series-5: #b09ce8;
+    --color-series-6: #e0906a;
+    --color-series-7: #8fc069;
+    --color-series-8: #9aa4b3;
+    --shadow-1: 0 1px 2px rgb(0 0 0 / 0.4), 0 6px 16px rgb(0 0 0 / 0.45);
+    --shadow-2: 0 -1px 0 var(--color-border), 0 -8px 24px rgb(0 0 0 / 0.45);
     color-scheme: dark;
   }
 }
 
 :root[data-theme='dark'] {
-  --color-paper: #10161d;
-  --color-sheet: #161e27;
-  --color-ink: #e6ebf0;
-  --color-graphite: #9aa6b4;
-  --color-rule: #2a3542;
+  --color-canvas: #13161b;
+  --color-surface: #1a1e25;
+  --color-surface-2: #232831;
+  --color-fg: #e6e9ef;
+  --color-fg-muted: #9aa4b3;
+  --color-border: #2c323c;
+  --color-border-strong: #6e7a8b;
+  --color-accent: #a9a0ff;
+  --color-accent-wash: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface));
+  --color-on-accent: #13161b;
   --color-gain: #6fa8d6;
   --color-loss: #d97a9a;
   --color-caution: #d9b25c;
   --color-caution-ink: #d9b25c;
-  --color-focus: #6fa8d6;
-  --color-on-accent: #10161d;
-  --color-wash: color-mix(in srgb, var(--color-gain) 8%, var(--color-sheet));
-  --color-caution-wash: color-mix(in srgb, var(--color-caution) 12%, var(--color-sheet));
-  --color-loss-wash: color-mix(in srgb, var(--color-loss) 10%, var(--color-sheet));
+  --color-wash: color-mix(in srgb, var(--color-gain) 10%, var(--color-surface));
+  --color-caution-wash: color-mix(in srgb, var(--color-caution) 12%, var(--color-surface));
+  --color-loss-wash: color-mix(in srgb, var(--color-loss) 10%, var(--color-surface));
   --drawdown-fill-opacity: 0.22;
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 0.4), 0 6px 16px rgb(0 0 0 / 0.45);
+  --shadow-2: 0 -1px 0 var(--color-border), 0 -8px 24px rgb(0 0 0 / 0.45);
   color-scheme: dark;
 }

@@ -1,5 +1,5 @@
-import { useId, useState } from 'react';
-import type { KeyboardEvent, ReactNode } from 'react';
+import type { ReactNode } from 'react';
+import { Tooltip } from './Tooltip';
 import styles from './Definition.module.css';
 
 /**
@@ -16,31 +16,11 @@ export function Definition({
   definition: string;
   formula?: string;
 }) {
-  const id = useId();
-  const [open, setOpen] = useState(false);
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') setOpen(false);
-  };
   return (
-    <span className={styles.wrap}>
-      <button
-        type="button"
-        className={styles.term}
-        aria-describedby={id}
-        aria-expanded={open}
-        onMouseEnter={() => setOpen(true)}
-        onMouseLeave={() => setOpen(false)}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setOpen(false)}
-        onClick={() => setOpen((o) => !o)}
-        onKeyDown={onKey}
-      >
+    <Tooltip content={definition} formula={formula}>
+      <button type="button" className={styles.term}>
         {children}
       </button>
-      <span role="tooltip" id={id} className={styles.tip} data-open={open}>
-        {definition}
-        {formula ? <span className={styles.formula}>{formula}</span> : null}
-      </span>
-    </span>
+    </Tooltip>
   );
 }

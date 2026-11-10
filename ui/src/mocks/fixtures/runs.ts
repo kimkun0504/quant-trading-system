@@ -1,28 +1,57 @@
 import type { RunSpec } from './generate';
 
 /** The runs the mock registry starts with. Each tells a different story for the UI. */
+const BASELINE: RunSpec = {
+  // Mirrors runs/demo_phase1_post_audit.txt: passes Sharpe/cost, fails decile t and DSR.
+  id: '20261104T175159Z_944dd5b4',
+  label: 'Composite baseline',
+  created_at: '2026-11-04T17:51:59Z',
+  kind: 'synthetic',
+  phase: 1,
+  use_ml: false,
+  stocks: 300,
+  days: 1512,
+  seed: 0,
+  signal_lag_days: 1,
+  status: 'done',
+  sharpeGross: 1.24,
+  sharpeNet: 0.74,
+  meanIc: 0.0369,
+  icirAnnual: 1.51,
+  decileT: 0.74,
+  nTrials: 4,
+  varTrials: 0.251,
+  pbo: null,
+};
+
 export const SEED_SPECS: RunSpec[] = [
+  BASELINE,
   {
-    // Mirrors runs/demo_phase1_post_audit.txt: passes Sharpe/cost, fails decile t and DSR.
-    id: '20261104T175159Z_944dd5b4',
-    label: 'Composite baseline',
-    created_at: '2026-11-04T17:51:59Z',
-    kind: 'synthetic',
-    phase: 1,
-    use_ml: false,
-    stocks: 300,
-    days: 1512,
-    seed: 0,
-    signal_lag_days: 1,
-    status: 'done',
-    sharpeGross: 1.24,
-    sharpeNet: 0.74,
-    meanIc: 0.0369,
-    icirAnnual: 1.51,
-    decileT: 0.74,
-    nTrials: 4,
-    varTrials: 0.251,
-    pbo: null,
+    // Same strategy, one knob: no trade aversion -> more turnover, more cost, lower net.
+    ...BASELINE,
+    id: '20261106T083015Z_5e2c9f10',
+    label: 'Composite baseline, trade aversion 0',
+    created_at: '2026-11-06T08:30:15Z',
+    sharpeGross: 1.31,
+    sharpeNet: 0.41,
+    nTrials: 5,
+    overrides: { 'portfolio.trade_aversion': 0.0 },
+    investedDayFrac: 0.998,
+  },
+  {
+    // Same strategy, one knob: a shorter horizon.
+    ...BASELINE,
+    id: '20261106T142207Z_9a7b3d44',
+    label: 'Composite baseline, horizon 10',
+    created_at: '2026-11-06T14:22:07Z',
+    sharpeGross: 1.12,
+    sharpeNet: 0.63,
+    meanIc: 0.031,
+    icirAnnual: 1.3,
+    decileT: 0.9,
+    nTrials: 6,
+    overrides: { 'alpha.horizon_days': 10 },
+    investedDayFrac: 0.97,
   },
   {
     id: '20261105T091402Z_3be1a7c0',

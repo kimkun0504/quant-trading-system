@@ -45,6 +45,9 @@ CostComponent = Literal["spread", "impact", "fees", "borrow"]
 ExposureRole = Literal["alpha_theme", "risk_only", "market"]
 JobStatus = Literal["queued", "running", "done", "failed"]
 Venue = Literal["routed", "auction", "continuous"]
+#: A scalar leaf of a flattened ``SystemConfig`` (dotted path -> value); lists and
+#: nested structures that are not sections are serialised as JSON strings.
+ConfigLeaf = Union[bool, int, float, str, None]  # noqa: UP007
 
 SERIES_NAMES: tuple[RunSeriesName, ...] = ("nav", "gross", "net", "drawdown", "turnover", "exante_vol")
 COST_COMPONENTS: tuple[CostComponent, ...] = ("spread", "impact", "fees", "borrow")
@@ -64,6 +67,7 @@ class RunHeadline(_Model):
     max_drawdown: float
     avg_cost_bps_per_side: float
     dsr: float
+    invested_day_frac: float = Field(description="share of decision days with gross exposure > 1e-4 of NAV")
     overall_gate: OverallGate
 
 
@@ -79,6 +83,9 @@ class RunSummary(_Model):
     git_sha: str
     status: RunStatus
     headline: RunHeadline | None = Field(description="null while running or after a failure")
+    config_leaves: dict[str, ConfigLeaf] = Field(
+        description="flattened SystemConfig (dotted path -> scalar); empty while running or after a failure"
+    )
 
 
 # ----------------------------------------------------------------------------- run detail
@@ -218,6 +225,34 @@ class RunDetail(_Model):
         "null for runs written before it was recorded"
     )
     notes: list[str]
+
+
+# ----------------------------------------------------------------------------- compare
+class RunCompareRun(_Model):
+    """One run of a side-by-side comparison."""
+
+    id: str
+    label: str
+    created_at: str
+    phase: Phase
+    start: str
+    end: str
+    headline: RunHeadline
+    n_trials: float = Field(description="DSR trial count from the ledger family")
+    fold_sharpes: list[FoldSharpe]
+    hurdles: Hurdles
+    config_leaves: dict[str, ConfigLeaf]
+
+
+class RunCompare(_Model):
+    """``GET /api/runs/compare?ids=``: NAV series of several runs on one shared date axis
+    (the union of their realisation dates, thinned to at most ``max_points``), plus the
+    fold tables, gates and flattened configs the compare view diffs."""
+
+    dates: list[str]
+    nav: dict[str, list[float | None]] = Field(description="run id -> NAV aligned to `dates` (null where absent)")
+    runs: list[RunCompareRun]
+    downsampled: bool = Field(description="true when the shared axis was thinned to max_points")
 
 
 # ----------------------------------------------------------------------------- series

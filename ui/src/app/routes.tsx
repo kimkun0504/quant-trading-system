@@ -3,7 +3,11 @@ import type { RouteObject } from 'react-router';
 import { AppShell } from '@/widgets/AppShell';
 import { RouteError } from './RouteError';
 
-/** Every page and run tab is its own lazy chunk; uPlot loads only with the tabs that chart. */
+/**
+ * Every page and run tab is its own lazy chunk; uPlot loads only with the pages that chart.
+ * Workspaces: / (Experiments), /compare, /signal, /portfolio, /costs, /builder; the run
+ * page keeps its tabs until the dossier (step 3); /ledger and /models stay reachable.
+ */
 export const routes: RouteObject[] = [
   {
     path: '/',
@@ -15,21 +19,38 @@ export const routes: RouteObject[] = [
       {
         errorElement: <RouteError />,
         children: [
-          { index: true, element: <Navigate to="/runs" replace /> },
           {
-            path: 'runs',
+            index: true,
             lazy: () =>
-              import('@/pages/runs/RunsPage').then((m) => ({
-                Component: m.RunsPage,
+              import('@/pages/experiments/ExperimentsPage').then((m) => ({
+                Component: m.ExperimentsPage,
+              })),
+          },
+          { path: 'runs', element: <Navigate to="/" replace /> },
+          { path: 'runs/new', element: <Navigate to="/builder" replace /> },
+          {
+            path: 'compare',
+            lazy: () =>
+              import('@/pages/compare/ComparePage').then((m) => ({
+                Component: m.ComparePage,
               })),
           },
           {
-            path: 'runs/new',
+            path: 'builder',
             lazy: () =>
               import('@/pages/new-run/NewRunPage').then((m) => ({
                 Component: m.NewRunPage,
               })),
           },
+          ...(['signal', 'portfolio', 'costs'] as const).map((key) => ({
+            path: key,
+            lazy: () =>
+              Promise.all([import('@/pages/lab/LabStubPage'), import('@/pages/lab/stubs')]).then(
+                ([m, stubs]) => ({
+                  Component: () => <m.LabStubPage stub={stubs.LAB_STUBS[key]} />,
+                }),
+              ),
+          })),
           {
             path: 'runs/:runId',
             lazy: () =>

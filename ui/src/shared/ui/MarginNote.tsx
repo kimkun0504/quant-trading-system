@@ -1,38 +1,29 @@
 import type { ReactNode } from 'react';
-import { cx } from '@/shared/lib/cx';
-import { handbookLabel, handbookUrl } from '@/shared/lib/handbook';
+import { About } from './About';
 import type { HandbookRef } from '@/shared/lib/handbook';
-import { VisuallyHidden } from './VisuallyHidden';
-import styles from './MarginNote.module.css';
+
+export { HandbookLink } from './About';
 
 /**
- * The run page's explanatory voice: a serif note in the margin column, beside the
- * figure or row it explains. Collapses under the figure below 1100 px.
+ * Compatibility wrapper from the first design: a margin note is now a collapsible
+ * "About" line under the content it explains (no margin column).
  */
 export function MarginNote({
   children,
   handbook,
   tone = 'plain',
   className,
+  label,
 }: {
   children: ReactNode;
   handbook?: HandbookRef;
   tone?: 'plain' | 'caution';
   className?: string;
+  label?: string;
 }) {
   return (
-    <div className={cx(styles.note, tone === 'caution' && styles.caution, className)}>
-      <p>{children}</p>
-      {handbook ? <HandbookLink refTo={handbook} /> : null}
-    </div>
-  );
-}
-
-export function HandbookLink({ refTo, children }: { refTo: HandbookRef; children?: ReactNode }) {
-  return (
-    <a className={styles.link} href={handbookUrl(refTo)} target="_blank" rel="noreferrer">
-      {children ?? handbookLabel(refTo)}
-      <VisuallyHidden> (handbook, opens in a new tab)</VisuallyHidden>
-    </a>
+    <About handbook={handbook} tone={tone} className={className} label={label}>
+      {children}
+    </About>
   );
 }

@@ -9,12 +9,26 @@ export function toUnixAll(dates: readonly string[]): number[] {
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-/** Axis labels: years at year boundaries, otherwise "Mon" (UTC). */
+/**
+ * Axis labels (UTC): the year the first time it appears, "Mon" inside a year that is
+ * already labelled; on spans under three years "Mon YY" everywhere but January.
+ */
 export function timeTickLabels(_u: unknown, splits: number[]): string[] {
   const span = (splits[splits.length - 1] ?? 0) - (splits[0] ?? 0);
+  const long = span > 3 * 365 * 86400;
+  let lastYear: number | null = null;
   return splits.map((s) => {
     const d = new Date(s * 1000);
-    if (span > 3 * 365 * 86400 || d.getUTCMonth() === 0) return String(d.getUTCFullYear());
-    return `${MONTHS[d.getUTCMonth()] ?? ''} ${String(d.getUTCFullYear()).slice(2)}`;
+    const year = d.getUTCFullYear();
+    const month = MONTHS[d.getUTCMonth()] ?? '';
+    if (long) {
+      if (year !== lastYear) {
+        lastYear = year;
+        return String(year);
+      }
+      return month;
+    }
+    if (d.getUTCMonth() === 0) return String(year);
+    return `${month} ${String(year).slice(2)}`;
   });
 }

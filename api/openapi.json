@@ -80,6 +80,70 @@
         }
       }
     },
+    "/api/runs/compare": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Several runs side by side: aligned NAV, fold Sharpes, gates, flattened configs",
+        "operationId": "compare_runs_api_runs_compare_get",
+        "parameters": [
+          {
+            "name": "ids",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "comma-separated run ids, 1 to 8 (duplicates ignored)",
+              "title": "Ids"
+            },
+            "description": "comma-separated run ids, 1 to 8 (duplicates ignored)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunCompare"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "The run is still running or failed before writing results"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request"
+          }
+        }
+      }
+    },
     "/api/runs/{run_id}": {
       "get": {
         "tags": [
@@ -2034,6 +2098,147 @@
         ],
         "title": "RankIcValues"
       },
+      "RunCompare": {
+        "properties": {
+          "dates": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Dates"
+          },
+          "nav": {
+            "additionalProperties": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Nav",
+            "description": "run id -> NAV aligned to `dates` (null where absent)"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/RunCompareRun"
+            },
+            "type": "array",
+            "title": "Runs"
+          },
+          "downsampled": {
+            "type": "boolean",
+            "title": "Downsampled",
+            "description": "true when the shared axis was thinned to max_points"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dates",
+          "nav",
+          "runs",
+          "downsampled"
+        ],
+        "title": "RunCompare",
+        "description": "``GET /api/runs/compare?ids=``: NAV series of several runs on one shared date axis\n(the union of their realisation dates, thinned to at most ``max_points``), plus the\nfold tables, gates and flattened configs the compare view diffs."
+      },
+      "RunCompareRun": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "phase": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Phase"
+          },
+          "start": {
+            "type": "string",
+            "title": "Start"
+          },
+          "end": {
+            "type": "string",
+            "title": "End"
+          },
+          "headline": {
+            "$ref": "#/components/schemas/RunHeadline"
+          },
+          "n_trials": {
+            "type": "number",
+            "title": "N Trials",
+            "description": "DSR trial count from the ledger family"
+          },
+          "fold_sharpes": {
+            "items": {
+              "$ref": "#/components/schemas/FoldSharpe"
+            },
+            "type": "array",
+            "title": "Fold Sharpes"
+          },
+          "hurdles": {
+            "$ref": "#/components/schemas/Hurdles"
+          },
+          "config_leaves": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "object",
+            "title": "Config Leaves"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "created_at",
+          "phase",
+          "start",
+          "end",
+          "headline",
+          "n_trials",
+          "fold_sharpes",
+          "hurdles",
+          "config_leaves"
+        ],
+        "title": "RunCompareRun",
+        "description": "One run of a side-by-side comparison."
+      },
       "RunConfig": {
         "properties": {
           "kind": {
@@ -2328,6 +2533,11 @@
             "type": "number",
             "title": "Dsr"
           },
+          "invested_day_frac": {
+            "type": "number",
+            "title": "Invested Day Frac",
+            "description": "share of decision days with gross exposure > 1e-4 of NAV"
+          },
           "overall_gate": {
             "type": "string",
             "enum": [
@@ -2346,6 +2556,7 @@
           "max_drawdown",
           "avg_cost_bps_per_side",
           "dsr",
+          "invested_day_frac",
           "overall_gate"
         ],
         "title": "RunHeadline",
@@ -2553,6 +2764,30 @@
               }
             ],
             "description": "null while running or after a failure"
+          },
+          "config_leaves": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "object",
+            "title": "Config Leaves",
+            "description": "flattened SystemConfig (dotted path -> scalar); empty while running or after a failure"
           }
         },
         "additionalProperties": false,
@@ -2568,7 +2803,8 @@
           "data_hash",
           "git_sha",
           "status",
-          "headline"
+          "headline",
+          "config_leaves"
         ],
         "title": "RunSummary"
       },

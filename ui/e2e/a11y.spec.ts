@@ -2,8 +2,12 @@ import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 
 const DEMO = '20261104T175159Z_944dd5b4';
+const SEL = `sel=${DEMO},20261106T083015Z_5e2c9f10,20261106T142207Z_9a7b3d44`;
 const PAGES = [
-  '/runs',
+  '/',
+  `/?${SEL}`,
+  `/compare?${SEL}`,
+  '/signal',
   `/runs/${DEMO}`,
   `/runs/${DEMO}/risk`,
   `/runs/${DEMO}/alpha`,
@@ -11,7 +15,7 @@ const PAGES = [
   `/runs/${DEMO}/execution`,
   `/runs/${DEMO}/validation`,
   '/runs/20261105T102233Z_c07a55e2',
-  '/runs/new',
+  '/builder',
   '/ledger',
   '/models',
 ];

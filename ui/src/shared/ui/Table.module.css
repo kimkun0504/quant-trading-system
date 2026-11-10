@@ -1,4 +1,4 @@
-/* Shared table look: hairlines, tabular figures, right-aligned numbers. */
+/* Shared table look: dense rows, hairlines, tabular figures, right-aligned numbers. */
 .scroll {
   overflow-x: auto;
   max-width: 100%;
@@ -6,37 +6,44 @@
 
 .table {
   width: 100%;
-  font-size: 0.9375rem;
-  background: var(--color-sheet);
+  font-size: var(--text-md);
+  background: var(--color-surface);
 }
 
 .caption {
   text-align: left;
   caption-side: top;
-  padding-bottom: var(--space-2);
-  color: var(--color-graphite);
-  font-size: var(--step--1);
+  padding: 0 var(--space-3) var(--space-2);
+  color: var(--color-fg-muted);
+  font-size: var(--text-sm);
 }
 
 .table th,
 .table td {
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-1) var(--space-3);
+  height: 2rem;
   border-bottom: var(--hairline);
   text-align: left;
-  vertical-align: baseline;
+  vertical-align: middle;
   white-space: nowrap;
 }
 
 .table thead th {
-  font-weight: 600;
-  color: var(--color-graphite);
-  font-size: var(--step--1);
-  border-bottom: 1px solid var(--color-graphite);
+  font-weight: 500;
+  color: var(--color-fg-muted);
+  font-size: var(--text-sm);
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border-strong);
   vertical-align: bottom;
+  height: 2rem;
 }
 
 .table tbody tr:hover {
-  background: var(--color-wash);
+  background: var(--color-surface-2);
+}
+
+.table tbody tr[aria-selected='true'] {
+  background: var(--color-accent-wash);
 }
 
 .rowHeader {
@@ -60,7 +67,7 @@
 }
 
 .sort:hover {
-  color: var(--color-ink);
+  color: var(--color-fg);
 }
 
 .arrow {
@@ -78,5 +85,17 @@
 .more {
   display: flex;
   justify-content: flex-end;
-  padding-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+
+.gain {
+  color: var(--color-gain);
+}
+
+.loss {
+  color: var(--color-loss);
+}
+
+.muted {
+  color: var(--color-fg-muted);
 }

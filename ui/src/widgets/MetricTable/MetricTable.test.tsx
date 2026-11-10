@@ -48,8 +48,9 @@ describe('MetricTable (fixture via MSW)', () => {
     const user = userEvent.setup();
     await user.tab();
     expect(term).toHaveFocus();
-    expect(term).toHaveAttribute('aria-expanded', 'true');
+    const tip = screen.getByRole('tooltip');
+    expect(tip).toHaveAttribute('data-open', 'true');
     await user.keyboard('{Escape}');
-    expect(term).toHaveAttribute('aria-expanded', 'false');
+    expect(tip).toHaveAttribute('data-open', 'false');
   });
 });

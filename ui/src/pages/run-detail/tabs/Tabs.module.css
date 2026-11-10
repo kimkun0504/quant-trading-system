@@ -1,9 +1,8 @@
 .prose {
   display: grid;
   gap: var(--space-3);
-  font-family: var(--font-serif);
   line-height: var(--leading-serif);
-  font-size: 1.0625rem;
+  font-size: var(--text-base);
 }
 
 .prose p {
@@ -15,7 +14,6 @@
   padding-left: 1.2em;
   display: grid;
   gap: var(--space-2);
-  font-family: var(--font-serif);
   line-height: var(--leading-serif);
   max-width: var(--measure);
 }
@@ -78,7 +76,7 @@
   grid-template-columns: max-content 1fr;
   gap: var(--space-1) var(--space-5);
   margin: 0;
-  font-size: 0.9375rem;
+  font-size: var(--text-md);
 }
 
 .dl dt {

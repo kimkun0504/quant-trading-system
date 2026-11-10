@@ -15,8 +15,12 @@ const themes = (args.find((a) => a.startsWith('--themes='))?.slice(9) ?? 'light,
 mkdirSync(out, { recursive: true });
 
 const RUN = '20261104T175159Z_944dd5b4';
+const SEL = `sel=${RUN},20261106T083015Z_5e2c9f10,20261106T142207Z_9a7b3d44`;
 const pages = [
-  ['runs', '/runs'],
+  ['experiments', '/'],
+  ['experiments-compare', `/?${SEL}`],
+  ['compare', `/compare?${SEL}`],
+  ['signal-lab', '/signal'],
   ['run-performance', `/runs/${RUN}`],
   ['run-risk', `/runs/${RUN}/risk`],
   ['run-alpha', `/runs/${RUN}/alpha`],
@@ -24,7 +28,7 @@ const pages = [
   ['run-execution', `/runs/${RUN}/execution`],
   ['run-validation', `/runs/${RUN}/validation`],
   ['run-suspicious', '/runs/20261105T102233Z_c07a55e2'],
-  ['new-run', '/runs/new'],
+  ['run-builder', '/builder'],
   ['ledger', '/ledger'],
   ['models', '/models'],
 ].filter(([n]) => !only || only.split(',').includes(n));
@@ -43,8 +47,14 @@ for (const theme of themes) {
     page.on('console', (m) => {
       if (m.type() === 'error') console.error(`[${theme} ${width}] console`, m.text());
     });
+    // the selection is persisted; start each context clean
+    await ctx.clearCookies();
     for (const [name, path] of pages) {
       await page.goto(base + path, { waitUntil: 'networkidle' });
+      if (!path.includes('sel='))
+        await page.evaluate(() => localStorage.removeItem('qts-selection'));
+      if (!path.includes('sel=') && (await page.url()).includes('sel='))
+        await page.goto(base + path, { waitUntil: 'networkidle' });
       await page.waitForTimeout(500);
       const file = `${out}/${name}-${theme}-${width}.png`;
       await page.screenshot({ path: file, fullPage: true });

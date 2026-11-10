@@ -1,10 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import '@fontsource/source-serif-4/latin-400.css';
-import '@fontsource/source-serif-4/latin-400-italic.css';
-import '@fontsource/source-serif-4/latin-600.css';
-import '@fontsource/source-sans-3/latin-400.css';
-import '@fontsource/source-sans-3/latin-600.css';
+import '@fontsource-variable/inter/index.css';
 import '@/shared/styles/global.css';
 import { App } from '@/app/App';
 

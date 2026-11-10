@@ -21,6 +21,8 @@ import type {
   RunStatus,
   RunSummary,
   BacktestSummary,
+  ConfigLeaf,
+  ConfigLeaves,
   FoldSharpe,
   Warmup,
 } from '@/shared/api';
@@ -61,6 +63,10 @@ export interface RunSpec {
   varTrials: number;
   pbo: number | null;
   startDate?: string;
+  /** Dotted-path overrides of the mock's default config (`portfolio.trade_aversion: 0`). */
+  overrides?: Record<string, ConfigLeaf>;
+  /** Share of decision days the book was invested (default 1). */
+  investedDayFrac?: number;
 }
 
 export interface GeneratedRun {
@@ -302,27 +308,76 @@ const INDUSTRIES = [
   'Media',
 ];
 
-function configYaml(spec: RunSpec): string {
-  return [
-    `# config of run ${spec.id}`,
-    'universe:',
-    '  top_n_by_mcap: 1000',
-    '  min_price: 5.0',
-    'alpha:',
-    '  horizon_days: 20',
-    'portfolio:',
-    '  book: long_short',
-    '  gross_leverage_max: 2.0',
-    '  risk_aversion_mode: target_vol',
-    '  risk_aversion: 2.0',
-    '  target_vol_annual: 0.10',
-    `  trade_aversion: ${spec.label.includes('aversion 2') ? '2.0' : '1.0'}`,
-    'execution:',
-    `  signal_lag_days: ${spec.signal_lag_days}`,
-    'validation:',
-    '  n_splits: 6',
-    '  dsr_threshold: 0.95',
-  ].join('\n');
+type ConfigTree = { [key: string]: ConfigLeaf | ConfigTree };
+
+/** The mock's SystemConfig: the sections and leaves the compare view diffs. */
+function configTree(spec: RunSpec): ConfigTree {
+  const tree: ConfigTree = {
+    seed: spec.seed,
+    universe: { top_n_by_mcap: Math.min(1000, spec.stocks), min_price: 5.0, min_adv_usd: 2e6 },
+    alpha: {
+      horizon_days: 20,
+      use_ml: spec.use_ml,
+      ic_window: 756,
+      themes: '["value","momentum","quality","low_risk"]',
+      lgbm: { n_estimators: 400, learning_rate: 0.03, num_leaves: 15 },
+    },
+    risk: { n_factors: 12, halflife_days: 90, shrinkage: 'ledoit_wolf' },
+    cost: { impact_coefficient: 0.3, spread_model: 'quoted', borrow_bps: 50 },
+    portfolio: {
+      book: 'long_short',
+      gross_leverage_max: 2.0,
+      risk_aversion_mode: 'target_vol',
+      risk_aversion: 2.0,
+      target_vol_annual: 0.1,
+      trade_aversion: spec.label.includes('aversion 2') ? 2.0 : 1.0,
+      max_name_weight: 0.02,
+    },
+    execution: { signal_lag_days: spec.signal_lag_days, venue: 'routed' },
+    validation: { n_splits: 6, dsr_threshold: 0.95, pbo_threshold: 0.5 },
+  };
+  for (const [path, value] of Object.entries(spec.overrides ?? {})) {
+    const parts = path.split('.');
+    let node: ConfigTree = tree;
+    for (const part of parts.slice(0, -1)) {
+      const next = node[part];
+      if (typeof next !== 'object' || next === null) {
+        const fresh: ConfigTree = {};
+        node[part] = fresh;
+        node = fresh;
+      } else node = next;
+    }
+    node[parts[parts.length - 1] ?? path] = value;
+  }
+  return tree;
+}
+
+/** Dotted-path leaves of a config tree, like the API's `config_leaves`. */
+export function flattenConfig(tree: ConfigTree, prefix = ''): ConfigLeaves {
+  const out: ConfigLeaves = {};
+  for (const [k, v] of Object.entries(tree)) {
+    if (typeof v === 'object' && v !== null) Object.assign(out, flattenConfig(v, `${prefix}${k}.`));
+    else out[`${prefix}${k}`] = v;
+  }
+  return out;
+}
+
+function yamlValue(v: ConfigLeaf): string {
+  return v === null ? 'null' : String(v);
+}
+
+function toYaml(tree: ConfigTree, indent = ''): string[] {
+  const lines: string[] = [];
+  for (const [k, v] of Object.entries(tree)) {
+    if (typeof v === 'object' && v !== null)
+      lines.push(`${indent}${k}:`, ...toYaml(v, `${indent}  `));
+    else lines.push(`${indent}${k}: ${yamlValue(v)}`);
+  }
+  return lines;
+}
+
+function configYaml(spec: RunSpec, tree: ConfigTree): string {
+  return [`# config of run ${spec.id}`, ...toYaml(tree)].join('\n');
 }
 
 export function generateRun(spec: RunSpec): GeneratedRun {
@@ -457,7 +512,7 @@ export function generateRun(spec: RunSpec): GeneratedRun {
       costsDaily.borrow.reduce((a, b) => a + b, 0),
     transfer_coefficient_mean: 0.38 + 0.12 * rng(),
     realized_vs_exante_vol_ratio: annualizedVol(gross) / mean(exanteVol),
-    invested_day_frac: 1,
+    invested_day_frac: spec.investedDayFrac ?? 1,
     breakeven_cost_bps: breakeven,
     n_delistings: Math.floor(rng() * 9),
     n_failed_solves: spec.signal_lag_days === 0 ? 2 : 0,
@@ -489,7 +544,9 @@ export function generateRun(spec: RunSpec): GeneratedRun {
     failedSolveFrac: summary.n_failed_solves / Math.max(summary.n_days, 1),
   });
 
-  const configHash = hex(mulberry32(hashString(`${spec.id}cfg`)), 16);
+  const tree = configTree(spec);
+  const config_leaves = flattenConfig(tree);
+  const configHash = hex(mulberry32(hashString(JSON.stringify(config_leaves))), 16);
   const dataHash = mockDataHash(spec);
   const gitSha = hex(mulberry32(hashString(spec.created_at)), 40);
 
@@ -555,7 +612,7 @@ export function generateRun(spec: RunSpec): GeneratedRun {
       days: spec.days,
       seed: spec.seed,
       signal_lag_days: spec.signal_lag_days,
-      config_yaml: configYaml(spec),
+      config_yaml: configYaml(spec, tree),
     },
     hurdles,
     ic_report,
@@ -598,9 +655,11 @@ export function generateRun(spec: RunSpec): GeneratedRun {
             max_drawdown: mdd,
             avg_cost_bps_per_side: costBps,
             dsr,
+            invested_day_frac: summary.invested_day_frac,
             overall_gate: hurdles.overall,
           }
         : null,
+    config_leaves: spec.status === 'done' ? config_leaves : {},
   };
 
   // --- exposures: alpha themes tilt, risk-only styles stay inside their bands

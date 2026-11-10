@@ -22,6 +22,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/runs/compare': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Several runs side by side: aligned NAV, fold Sharpes, gates, flattened configs */
+    get: operations['compare_runs_api_runs_compare_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/runs/{run_id}': {
     parameters: {
       query?: never;
@@ -730,6 +747,64 @@ export interface components {
       rank_ic: (number | null)[];
     };
     /**
+     * RunCompare
+     * @description ``GET /api/runs/compare?ids=``: NAV series of several runs on one shared date axis
+     *     (the union of their realisation dates, thinned to at most ``max_points``), plus the
+     *     fold tables, gates and flattened configs the compare view diffs.
+     */
+    RunCompare: {
+      /** Dates */
+      dates: string[];
+      /**
+       * Nav
+       * @description run id -> NAV aligned to `dates` (null where absent)
+       */
+      nav: {
+        [key: string]: (number | null)[];
+      };
+      /** Runs */
+      runs: components['schemas']['RunCompareRun'][];
+      /**
+       * Downsampled
+       * @description true when the shared axis was thinned to max_points
+       */
+      downsampled: boolean;
+    };
+    /**
+     * RunCompareRun
+     * @description One run of a side-by-side comparison.
+     */
+    RunCompareRun: {
+      /** Id */
+      id: string;
+      /** Label */
+      label: string;
+      /** Created At */
+      created_at: string;
+      /**
+       * Phase
+       * @enum {integer}
+       */
+      phase: 1 | 2;
+      /** Start */
+      start: string;
+      /** End */
+      end: string;
+      headline: components['schemas']['RunHeadline'];
+      /**
+       * N Trials
+       * @description DSR trial count from the ledger family
+       */
+      n_trials: number;
+      /** Fold Sharpes */
+      fold_sharpes: components['schemas']['FoldSharpe'][];
+      hurdles: components['schemas']['Hurdles'];
+      /** Config Leaves */
+      config_leaves: {
+        [key: string]: boolean | number | string | null;
+      };
+    };
+    /**
      * RunConfig
      * @description Subset of ``SystemConfig`` the UI reads directly; the full YAML is in ``config_yaml``.
      */
@@ -839,6 +914,11 @@ export interface components {
       /** Dsr */
       dsr: number;
       /**
+       * Invested Day Frac
+       * @description share of decision days with gross exposure > 1e-4 of NAV
+       */
+      invested_day_frac: number;
+      /**
        * Overall Gate
        * @enum {string}
        */
@@ -928,6 +1008,13 @@ export interface components {
       status: 'running' | 'done' | 'failed';
       /** @description null while running or after a failure */
       headline: components['schemas']['RunHeadline'] | null;
+      /**
+       * Config Leaves
+       * @description flattened SystemConfig (dotted path -> scalar); empty while running or after a failure
+       */
+      config_leaves: {
+        [key: string]: boolean | number | string | null;
+      };
     };
     /** ValidationError */
     ValidationError: {
@@ -1067,6 +1154,56 @@ export interface operations {
       };
       /** @description Too many runs are already queued */
       429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+    };
+  };
+  compare_runs_api_runs_compare_get: {
+    parameters: {
+      query: {
+        /** @description comma-separated run ids, 1 to 8 (duplicates ignored) */
+        ids: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['RunCompare'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description The run is still running or failed before writing results */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Invalid request */
+      422: {
         headers: {
           [name: string]: unknown;
         };

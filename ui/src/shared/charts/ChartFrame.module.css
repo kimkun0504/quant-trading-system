@@ -10,7 +10,6 @@
 }
 
 .title {
-  font-family: var(--font-serif);
   font-weight: 600;
   font-size: var(--step-1);
 }

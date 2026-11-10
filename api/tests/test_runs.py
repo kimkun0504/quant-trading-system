@@ -233,3 +233,67 @@ def test_nan_serialised_as_null(client, run_id, run_dir):
         assert r.status_code == 200 and r.json()["summary"]["transfer_coefficient_mean"] is None
     finally:
         f.write_text(original)
+
+
+# ----------------------------------------------------------------------------- compare
+def test_list_runs_carries_flat_config_and_invested_days(client, run_id, summary, run_dir):
+    import yaml
+
+    rows = {r["id"]: r for r in client.get("/api/runs").json()}
+    row = S.RunSummary.model_validate(rows[run_id])
+    assert row.headline is not None
+    assert close(row.headline.invested_day_frac, summary["backtest"]["invested_day_frac"])
+    cfg = yaml.safe_load((run_dir / "config.yaml").read_text())
+    leaves = row.config_leaves
+    assert leaves["portfolio.trade_aversion"] == cfg["portfolio"]["trade_aversion"]
+    assert leaves["alpha.horizon_days"] == cfg["alpha"]["horizon_days"]
+    assert all("." in k or k in cfg for k in leaves)
+    assert all(not isinstance(v, (dict, list)) for v in leaves.values())
+
+
+def test_flatten_config_and_thin_axis():
+    from qts_api.services.registry import flatten_config, thin_axis
+
+    flat = flatten_config({"a": {"b": 1, "c": [1, 2]}, "d": float("nan"), "e": {}, "f": None, "g": True})
+    assert flat == {"a.b": 1, "a.c": "[1,2]", "d": None, "e": "{}", "f": None, "g": True}
+    assert thin_axis(5, 10) == [0, 1, 2, 3, 4]
+    idx = thin_axis(10_000, 2000)
+    assert len(idx) <= 2000 and idx[0] == 0 and idx[-1] == 9999 and idx == sorted(set(idx))
+
+
+def test_compare_two_runs(client, run_id, summary):
+    r = client.get("/api/runs/compare", params={"ids": f"{run_id},{OLD_RUN_ID},{run_id}"})
+    assert r.status_code == 200, r.text
+    c = S.RunCompare.model_validate(r.json())
+    assert [x.id for x in c.runs] == [run_id, OLD_RUN_ID]  # duplicates dropped, order kept
+    n = summary["backtest"]["n_days"]
+    assert len(c.dates) == n and not c.downsampled
+    assert set(c.nav) == {run_id, OLD_RUN_ID}
+    assert all(len(v) == n for v in c.nav.values())
+    assert close(c.nav[run_id][-1], summary["backtest"]["final_nav"])
+    first = c.runs[0]
+    assert close(first.headline.sharpe_net, summary["backtest"]["sharpe_net"])
+    assert close(first.n_trials, summary["dsr_inputs"]["n_trials"])
+    assert [f.sharpe_net for f in first.fold_sharpes] == pytest.approx([f["sharpe"] for f in summary["folds"]])
+    assert first.hurdles.overall in ("PASS", "FAIL") and first.hurdles.gates
+    assert first.config_leaves == c.runs[1].config_leaves  # the old run is a copy
+    assert first.start == summary["backtest"]["start"]
+
+
+def test_compare_downsamples(client, run_id, monkeypatch):
+    from qts_api.services import registry as R
+
+    monkeypatch.setattr(R, "COMPARE_MAX_POINTS", 50)
+    reg = client.app.state.registry
+    c = S.RunCompare.model_validate(reg.compare([run_id], max_points=50))
+    assert c.downsampled and len(c.dates) <= 50 and len(c.nav[run_id]) == len(c.dates)
+    assert c.dates[0] < c.dates[-1]
+
+
+def test_compare_errors(client, run_id):
+    assert client.get("/api/runs/compare", params={"ids": ""}).status_code == 422
+    assert client.get("/api/runs/compare").status_code == 422
+    too_many = ",".join(f"{run_id}{i}" for i in range(9))
+    assert client.get("/api/runs/compare", params={"ids": too_many}).status_code == 422
+    r = client.get("/api/runs/compare", params={"ids": f"{run_id},nope"})
+    assert r.status_code == 404 and r.headers["content-type"].startswith("application/problem+json")

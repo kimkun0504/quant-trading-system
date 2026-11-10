@@ -16,8 +16,22 @@ export interface ChartTokens {
   loss: string;
   caution: string;
   drawdownFillOpacity: number;
+  /** Categorical palette for several runs on one chart (index 0 = series 1). */
+  series: string[];
+  accent: string;
   font: string;
 }
+
+const SERIES_FALLBACK = [
+  '#1f5f8b',
+  '#9b2f52',
+  '#2a7f76',
+  '#b8860b',
+  '#6a4fb3',
+  '#b35c2a',
+  '#4a7a2e',
+  '#5b6574',
+];
 
 function read(name: string, fallback: string): string {
   if (typeof document === 'undefined') return fallback;
@@ -36,7 +50,9 @@ export function readChartTokens(theme: ResolvedTheme): ChartTokens {
     loss: read('--color-loss', '#9b2f52'),
     caution: read('--color-caution', '#b8860b'),
     drawdownFillOpacity: Number(read('--drawdown-fill-opacity', '0.18')),
-    font: '13px "Source Sans 3", system-ui, sans-serif',
+    series: SERIES_FALLBACK.map((fb, i) => read(`--color-series-${i + 1}`, fb)),
+    accent: read('--color-accent', '#4f46c9'),
+    font: '12px "Inter Variable", Inter, system-ui, sans-serif',
   };
 }
 

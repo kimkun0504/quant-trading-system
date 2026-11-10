@@ -2,18 +2,18 @@ import { expect, test } from '@playwright/test';
 
 const DEMO = '20261104T175159Z_944dd5b4';
 
-test('runs list → run detail → every tab renders', async ({ page }) => {
+test('experiments → run detail → every tab renders', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
 
-  await page.goto('/runs');
-  await expect(page.getByRole('heading', { level: 1, name: 'Runs' })).toBeVisible();
-  await page.getByRole('link', { name: 'Composite baseline' }).click();
+  await page.goto('/');
+  await expect(page.getByRole('heading', { level: 1, name: 'Experiments' })).toBeVisible();
+  await page.getByRole('link', { name: 'Composite baseline', exact: true }).click();
 
   await expect(page).toHaveURL(new RegExp(`/runs/${DEMO}$`));
   await expect(page.getByText(/not yet distinguishable from luck/)).toBeVisible();
   await expect(page.getByRole('list', { name: 'Hurdle gates' }).getByRole('listitem')).toHaveCount(
-    9,
+    10,
   );
   await expect(page.getByRole('img', { name: /Net asset value from/ })).toBeVisible();
   await expect(page.getByRole('table', { name: 'Key metrics' })).toBeVisible();
@@ -45,8 +45,8 @@ test('suspicious run is flagged before anything else', async ({ page }) => {
   await expect(page.getByText(/is implausibly high/)).toBeVisible();
 });
 
-test('new run form submits and shows progress through to the run', async ({ page }) => {
-  await page.goto('/runs/new');
+test('run builder submits and shows progress through to the run', async ({ page }) => {
+  await page.goto('/builder');
   await page.getByLabel('Seed').fill('7');
   await page.getByRole('button', { name: 'Launch run' }).click();
   await expect(page.getByRole('heading', { name: 'Running the pipeline' })).toBeVisible();
@@ -58,8 +58,8 @@ test('new run form submits and shows progress through to the run', async ({ page
 });
 
 test('keyboard: skip link reaches main content', async ({ page }) => {
-  await page.goto('/runs');
-  await expect(page.getByRole('heading', { level: 1, name: 'Runs' })).toBeVisible();
+  await page.goto('/');
+  await expect(page.getByRole('heading', { level: 1, name: 'Experiments' })).toBeVisible();
   await page.keyboard.press('Tab');
   const skip = page.getByRole('link', { name: 'Skip to content' });
   await expect(skip).toBeFocused();
@@ -67,10 +67,13 @@ test('keyboard: skip link reaches main content', async ({ page }) => {
   await expect(page.locator('#main')).toBeFocused();
 });
 
-test('theme toggle switches to dark and persists', async ({ page }) => {
-  await page.goto('/runs');
-  await page.getByRole('radio', { name: 'Dark' }).check();
+test('theme toggle switches to dark, persists, and switches back', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Switch to dark theme' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await page.getByRole('button', { name: 'Switch to light theme' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
 });

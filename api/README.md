@@ -52,6 +52,7 @@ API runs share one registry and one ledger.
 | Method | Path                               | Response (`schemas.py`)  | Errors        |
 | ------ | ---------------------------------- | ------------------------ | ------------- |
 | GET    | `/api/runs`                        | `RunSummary[]`           |               |
+| GET    | `/api/runs/compare?ids=a,b,c`      | `RunCompare`             | 404, 409, 422 |
 | GET    | `/api/runs/{id}`                   | `RunDetail`              | 404, 409      |
 | GET    | `/api/runs/{id}/series?names=`     | `ColumnarSeries`         | 404, 409, 422 |
 | GET    | `/api/runs/{id}/costs`             | `RunCosts`               | 404, 409      |
@@ -74,6 +75,15 @@ job failed returns **409** on every `/api/runs/{id}*` endpoint (it is listed by 
 `status: "running" | "failed"` and `headline: null`); an unknown id is **404**.
 
 **Numbers:** a value that is not finite in Python (NaN/inf) is serialised as `null`.
+
+**Compare.** `GET /api/runs/compare?ids=` takes 1 to 8 run ids (duplicates dropped, order
+kept) and returns their NAV on one shared axis — the union of the runs' realisation dates,
+thinned to at most 2,000 evenly spaced points (first and last always kept; `downsampled`
+says when) — plus, per run, the headline numbers, the DSR trial count, fold Sharpes, hurdles
+and `config_leaves`. `config_leaves` (also on every `RunSummary`) is the run's `config.yaml`
+flattened to dotted paths → scalars (`portfolio.trade_aversion: 1.0`); lists are compact JSON
+strings so a differing list still diffs as one key. The UI clusters runs into families and
+builds the config diff from it. `RunHeadline` also carries `invested_day_frac`.
 
 ## Architecture
 

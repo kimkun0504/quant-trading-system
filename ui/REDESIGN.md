@@ -8,7 +8,7 @@ stays. Every step below ships on its own with tests green and the mock server up
 ## Purpose
 
 An **analytics / research terminal** for testing and comparing strategies, not a trading
-terminal. The unit of thought is the *comparison* ("what changed when I changed X, and is it
+terminal. The unit of thought is the _comparison_ ("what changed when I changed X, and is it
 real or noise?"), not the single run.
 
 ## Visual direction
@@ -30,7 +30,7 @@ real or noise?"), not the single run.
 
 ## Workspaces
 
-1. **Experiments** (home). Runs as rows, grouped into *families* (same strategy, different
+1. **Experiments** (home). Runs as rows, grouped into _families_ (same strategy, different
    knob; family = ledger family / config-diff clustering). Select 2+ → side-by-side: NAV
    overlaid, fold Sharpe as paired bars, gates grid, **config diff** showing only differing
    keys (`portfolio.trade_aversion: 1.0 → 0.0`). DSR with trial count front and centre.

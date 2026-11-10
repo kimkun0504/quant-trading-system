@@ -7,6 +7,7 @@ import type {
   LaunchRunResponse,
   Ledger,
   ColumnarSeries,
+  RunCompare,
   RunCosts,
   RunDetail,
   RunExposures,
@@ -29,6 +30,8 @@ export const api = {
       { names: names.join(',') },
       signal,
     ),
+  compareRuns: (ids: readonly RunId[], signal?: AbortSignal) =>
+    apiGet<RunCompare>('/runs/compare', { ids: ids.join(',') }, signal),
   getRunCosts: (id: RunId, signal?: AbortSignal) =>
     apiGet<RunCosts>(`/runs/${encodeURIComponent(id)}/costs`, undefined, signal),
   getRunExposures: (id: RunId, signal?: AbortSignal) =>

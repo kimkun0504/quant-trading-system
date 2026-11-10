@@ -12,7 +12,7 @@
   row-gap: 0.1rem;
   padding: var(--space-1) 0;
   border-bottom: var(--hairline);
-  font-size: 0.9375rem;
+  font-size: var(--text-md);
 }
 
 .name {

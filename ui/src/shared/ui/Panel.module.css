@@ -1,0 +1,42 @@
+.panel {
+  background: var(--color-surface);
+  border: var(--hairline);
+  border-radius: var(--radius-md);
+  min-width: 0;
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: var(--hairline);
+}
+
+.title {
+  font-size: var(--text-base);
+  font-weight: 600;
+}
+
+.subtitle {
+  color: var(--color-fg-muted);
+  font-size: var(--text-sm);
+  margin-left: var(--space-2);
+  font-weight: 400;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.body {
+  padding: var(--space-4);
+}
+
+.flush {
+  padding: 0;
+}

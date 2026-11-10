@@ -1,0 +1,184 @@
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-5);
+  color: var(--color-fg-muted);
+  font-size: var(--text-md);
+}
+
+.trials {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border: var(--hairline);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  color: var(--color-fg);
+}
+
+.trialsN {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: var(--tracking-tight);
+}
+
+.familyRow th {
+  background: var(--color-canvas);
+  border-bottom: var(--hairline);
+  padding: 0;
+  height: 2.25rem;
+}
+
+.familyToggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  height: 2.25rem;
+  padding: 0 var(--space-3);
+  border: 0;
+  background: none;
+  text-align: left;
+  font-weight: 600;
+  font-size: var(--text-md);
+  color: var(--color-fg);
+  cursor: pointer;
+}
+
+.familyToggle:hover {
+  background: var(--color-surface-2);
+}
+
+.familyChevron {
+  flex: none;
+  transition: transform var(--motion-fast);
+  color: var(--color-fg-muted);
+}
+
+.familyToggle[aria-expanded='true'] .familyChevron {
+  transform: rotate(90deg);
+}
+
+.familyMeta {
+  margin-left: var(--space-2);
+  font-weight: 400;
+  color: var(--color-fg-muted);
+  font-size: var(--text-sm);
+}
+
+.familyKnobs {
+  margin-left: auto;
+  font-weight: 400;
+  color: var(--color-fg-muted);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40%;
+}
+
+.checkCell {
+  width: 2rem;
+  padding-right: 0 !important;
+}
+
+.check {
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin: 0;
+  cursor: pointer;
+}
+
+.check input {
+  margin: 0;
+  width: 0.9rem;
+  height: 0.9rem;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+.name {
+  display: grid;
+  gap: 0;
+  min-width: 14rem;
+  max-width: 26rem;
+  white-space: normal;
+}
+
+.nameLink {
+  color: var(--color-fg);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.nameLink:hover {
+  text-decoration: underline;
+}
+
+.descriptor {
+  font-size: var(--text-xs);
+  color: var(--color-fg-muted);
+}
+
+.flag {
+  margin-left: var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-caution-ink);
+}
+
+.dsrTerm {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: help;
+  text-decoration: underline dotted var(--color-border-strong);
+  text-underline-offset: 0.25em;
+}
+
+.skeleton {
+  display: grid;
+  gap: 2px;
+}
+
+.compare {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.compareHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+}
+
+.compareTitle {
+  font-size: var(--text-lg);
+}
+
+.compareHint {
+  color: var(--color-fg-muted);
+  font-size: var(--text-sm);
+}
+
+.sortButton {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sortButton:hover {
+  color: var(--color-fg);
+}

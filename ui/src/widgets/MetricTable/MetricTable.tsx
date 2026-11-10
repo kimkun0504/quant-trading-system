@@ -10,9 +10,9 @@ export interface MetricRow {
 }
 
 /**
- * Key metrics with a margin note per row. Rows are subgrids of the page grid, so each
- * note lines up with its metric in the margin column (and drops under it below 1100 px).
- * ARIA table roles keep it a table for assistive technology.
+ * Key metrics as a dense table: the label explains itself on hover (definition and
+ * formula), the value is right-aligned, and the reading column says what the value
+ * means for this run with a link to the handbook section.
  */
 export function MetricTable({
   label,
@@ -24,34 +24,32 @@ export function MetricTable({
   ctx: MetricContext;
 }) {
   return (
-    <div role="table" aria-label={label} className={styles.table}>
-      <div role="rowgroup" className={styles.group}>
-        <div role="row" className={`${styles.row} ${styles.head}`}>
-          <span role="columnheader" className={styles.label}>
+    <table aria-label={label} className={styles.table}>
+      <thead>
+        <tr>
+          <th scope="col" className={styles.label}>
             Metric
-          </span>
-          <span role="columnheader" className={styles.value}>
+          </th>
+          <th scope="col" className={styles.value}>
             Value
-          </span>
-          <span role="columnheader" className={styles.note}>
-            What it means for this run
-          </span>
-        </div>
-      </div>
-      <div role="rowgroup" className={styles.group}>
+          </th>
+          <th scope="col" className={styles.note}>
+            Reading for this run
+          </th>
+        </tr>
+      </thead>
+      <tbody>
         {rows.map(({ key, value }) => {
           const def = metric(key);
           return (
-            <div role="row" key={key} className={styles.row} data-metric={key}>
-              <span role="rowheader" className={styles.label}>
+            <tr key={key} data-metric={key}>
+              <th scope="row" className={styles.label}>
                 <Definition definition={def.definition} formula={def.formula}>
                   {def.label}
                 </Definition>
-              </span>
-              <span role="cell" className={styles.value}>
-                {def.format(value)}
-              </span>
-              <span role="cell" className={styles.note}>
+              </th>
+              <td className={styles.value}>{def.format(value)}</td>
+              <td className={styles.note}>
                 {def.interpret(value, ctx)}{' '}
                 <a
                   href={handbookUrl(def.handbook)}
@@ -64,11 +62,11 @@ export function MetricTable({
                     : {handbookLabel(def.handbook)} (opens in a new tab)
                   </VisuallyHidden>
                 </a>
-              </span>
-            </div>
+              </td>
+            </tr>
           );
         })}
-      </div>
-    </div>
+      </tbody>
+    </table>
   );
 }

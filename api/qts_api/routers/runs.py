@@ -14,7 +14,14 @@ from qts_api.routers._common import problems
 from qts_api.routers.config import warmup_info
 from qts_api.services.config_schema import ConfigError, validate_overrides
 from qts_api.services.jobs import JobManager, QueueFull, default_label
-from qts_api.services.registry import RUN_ID_MAX_LEN, RunNotFound, RunRegistry, RunUnreadable, valid_run_id
+from qts_api.services.registry import (
+    COMPARE_MAX_RUNS,
+    RUN_ID_MAX_LEN,
+    RunNotFound,
+    RunRegistry,
+    RunUnreadable,
+    valid_run_id,
+)
 from qts_api.settings import Settings
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
@@ -44,6 +51,7 @@ def _pending_summary(j: dict[str, Any]) -> dict[str, Any]:
         "git_sha": str(j.get("git_sha", "unknown")),
         "status": "failed" if j.get("status") == "failed" else "running",
         "headline": None,
+        "config_leaves": {},
     }
 
 
@@ -86,6 +94,34 @@ def list_runs(registry: Registry, jobs: Jobs) -> list[dict[str, Any]]:
     have = {r["id"] for r in done}
     pending = [_pending_summary(j) for j in jobs.all() if j.get("status") != "done" and j.get("run_id") not in have]
     return sorted(done + pending, key=lambda r: r["created_at"], reverse=True)
+
+
+@router.get(
+    "/compare",
+    response_model=S.RunCompare,
+    responses=problems(404, 409, 422),
+    summary="Several runs side by side: aligned NAV, fold Sharpes, gates, flattened configs",
+)
+def compare_runs(
+    registry: Registry,
+    jobs: Jobs,
+    ids: Annotated[
+        str,
+        Query(description=f"comma-separated run ids, 1 to {COMPARE_MAX_RUNS} (duplicates ignored)"),
+    ],
+) -> dict[str, Any]:
+    seen: list[str] = []
+    for rid in (x.strip() for x in ids.split(",")):
+        if rid and rid not in seen:
+            seen.append(rid)
+    if not seen or len(seen) > COMPARE_MAX_RUNS:
+        issue = {
+            "loc": ["query", "ids"],
+            "msg": f"give 1 to {COMPARE_MAX_RUNS} run ids, comma-separated",
+            "type": "value_error",
+        }
+        raise Problem(422, summarize([issue]), type_="validation-error", errors=[issue])
+    return registry.compare([resolve(registry, jobs, rid) for rid in seen])
 
 
 @router.get("/{run_id}", response_model=S.RunDetail, responses=problems(404, 409), summary="One run")

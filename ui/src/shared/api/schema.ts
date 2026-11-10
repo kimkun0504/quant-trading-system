@@ -46,8 +46,15 @@ export interface RunHeadline {
   max_drawdown: number;
   avg_cost_bps_per_side: number;
   dsr: number;
+  /** Share of decision days with gross exposure > 1e-4 of NAV. */
+  invested_day_frac: number;
   overall_gate: OverallGate;
 }
+
+/** A scalar leaf of a flattened `SystemConfig`; lists arrive as compact JSON strings. */
+export type ConfigLeaf = number | boolean | string | null;
+/** `{"portfolio.trade_aversion": 1.0, ...}`: dotted path to scalar. */
+export type ConfigLeaves = Record<string, ConfigLeaf>;
 
 export interface RunSummary {
   id: RunId;
@@ -61,6 +68,8 @@ export interface RunSummary {
   git_sha: string;
   status: RunStatus;
   headline: RunHeadline | null;
+  /** Flattened config; empty while running or after a failure. */
+  config_leaves: ConfigLeaves;
 }
 
 /** `BacktestResult.summary()` (qts/backtest/result.py). */
@@ -199,6 +208,34 @@ export interface RunDetail {
   /** Routing venue used by the execution layer, e.g. "closing auction (LOC/MOC)"; null for runs written before it was recorded. */
   execution_venue: string | null;
   notes: string[];
+}
+
+/** One run of `GET /api/runs/compare`. */
+export interface RunCompareRun {
+  id: RunId;
+  label: string;
+  created_at: IsoDateTime;
+  phase: Phase;
+  start: IsoDate;
+  end: IsoDate;
+  headline: RunHeadline;
+  /** DSR trial count from the ledger family. */
+  n_trials: number;
+  fold_sharpes: FoldSharpe[];
+  hurdles: Hurdles;
+  config_leaves: ConfigLeaves;
+}
+
+/**
+ * Several runs side by side: NAV on one shared date axis (the union of the runs' dates,
+ * thinned to ≤ 2,000 points), fold Sharpes, gates and flattened configs.
+ */
+export interface RunCompare {
+  dates: IsoDate[];
+  /** run id → NAV aligned to `dates` (null where the run has no value). */
+  nav: Record<RunId, (number | null)[]>;
+  runs: RunCompareRun[];
+  downsampled: boolean;
 }
 
 /** Columnar time series: `series[name][i]` belongs to `dates[i]`. */
