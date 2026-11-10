@@ -244,7 +244,19 @@ export interface ColumnarSeries<N extends string = string> {
   series: Record<N, (number | null)[]>;
 }
 
-export type RunSeriesName = 'nav' | 'gross' | 'net' | 'drawdown' | 'turnover' | 'exante_vol';
+/**
+ * `gross` / `net` are daily returns; `gross_exposure` / `net_exposure` are the post-trade
+ * book's Σ|w| and Σw (fraction of NAV) aligned like `turnover` (decision t → realisation t+1).
+ */
+export type RunSeriesName =
+  | 'nav'
+  | 'gross'
+  | 'net'
+  | 'drawdown'
+  | 'turnover'
+  | 'exante_vol'
+  | 'gross_exposure'
+  | 'net_exposure';
 
 export type CostComponent = 'spread' | 'impact' | 'fees' | 'borrow';
 
@@ -438,6 +450,26 @@ export interface ApiErrorBody {
   detail: string;
   /** Per-field issues of a 422. */
   errors?: ValidationIssue[];
+}
+
+export type RunFileKind = 'json' | 'yaml' | 'parquet' | 'text' | 'other';
+
+/** One file of the run directory (`GET /api/runs/{id}/files`). */
+export interface RunFile {
+  name: string;
+  size_bytes: number;
+  /** RFC 3339, UTC. */
+  modified_at: IsoDateTime;
+  kind: RunFileKind;
+  /** What the file holds, for known artifacts; empty otherwise. */
+  description: string;
+  /** `/api/runs/{id}/files/{name}` (relative to the API origin). */
+  download_url: string;
+}
+
+export interface RunFiles {
+  run_id: RunId;
+  files: RunFile[];
 }
 
 export interface Health {

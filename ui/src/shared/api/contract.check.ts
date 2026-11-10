@@ -79,6 +79,8 @@ export type SchemaContract = [
   Assert<Same<G['ValidationIssue'], S.ValidationIssue>>,
   Assert<Same<G['ApiErrorBody'], S.ApiErrorBody>>,
   Assert<Same<G['Health'], S.Health>>,
+  Assert<Same<G['RunFile'], S.RunFile>>,
+  Assert<Same<G['RunFiles'], S.RunFiles>>,
   Assert<Same<G['Warmup'], S.Warmup>>,
   // the request body: everything the form sends is accepted, and nothing more is required
   Assert<Sub<S.LaunchRunRequest, G['LaunchRunRequest']>>,
@@ -96,6 +98,7 @@ export type EndpointContract = [
   Assert<Same<Json<'/api/runs/{run_id}/exposures', 'get'>, S.RunExposures>>,
   Assert<Same<Json<'/api/runs/{run_id}/holdings', 'get'>, S.RunHoldings>>,
   Assert<Same<Json<'/api/runs/{run_id}/ic', 'get'>, S.RunIc>>,
+  Assert<Same<Json<'/api/runs/{run_id}/files', 'get'>, S.RunFiles>>,
   Assert<Same<Json<'/api/runs', 'post'>, S.LaunchRunResponse>>,
   Assert<Sub<S.LaunchRunRequest, Body<'/api/runs', 'post'>>>,
   Assert<Same<Json<'/api/jobs/{job_id}', 'get'>, S.Job>>,

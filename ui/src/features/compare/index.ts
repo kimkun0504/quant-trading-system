@@ -1,1 +1,1 @@
-export { ComparePanel } from './ComparePanel';
+export { ComparePanel, ConfigDiff } from './ComparePanel';

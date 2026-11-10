@@ -59,6 +59,8 @@ API runs share one registry and one ledger.
 | GET    | `/api/runs/{id}/exposures`         | `RunExposures`           | 404, 409      |
 | GET    | `/api/runs/{id}/holdings?date=`    | `RunHoldings`            | 404, 409      |
 | GET    | `/api/runs/{id}/ic`                | `RunIc`                  | 404, 409      |
+| GET    | `/api/runs/{id}/files`             | `RunFiles`               | 404, 409      |
+| GET    | `/api/runs/{id}/files/{name}`      | the file (download)      | 404, 409      |
 | POST   | `/api/runs`                        | `LaunchRunResponse` 202  | 422           |
 | GET    | `/api/jobs/{job_id}`               | `Job`                    | 404           |
 | DELETE | `/api/jobs/{job_id}`               | `Job` (cancel)           | 404           |

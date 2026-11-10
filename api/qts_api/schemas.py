@@ -40,7 +40,7 @@ GateName = Literal[
     "suspect",
     "failed_solves",
 ]
-RunSeriesName = Literal["nav", "gross", "net", "drawdown", "turnover", "exante_vol"]
+RunSeriesName = Literal["nav", "gross", "net", "drawdown", "turnover", "exante_vol", "gross_exposure", "net_exposure"]
 CostComponent = Literal["spread", "impact", "fees", "borrow"]
 ExposureRole = Literal["alpha_theme", "risk_only", "market"]
 JobStatus = Literal["queued", "running", "done", "failed"]
@@ -49,7 +49,16 @@ Venue = Literal["routed", "auction", "continuous"]
 #: nested structures that are not sections are serialised as JSON strings.
 ConfigLeaf = Union[bool, int, float, str, None]  # noqa: UP007
 
-SERIES_NAMES: tuple[RunSeriesName, ...] = ("nav", "gross", "net", "drawdown", "turnover", "exante_vol")
+SERIES_NAMES: tuple[RunSeriesName, ...] = (
+    "nav",
+    "gross",
+    "net",
+    "drawdown",
+    "turnover",
+    "exante_vol",
+    "gross_exposure",
+    "net_exposure",
+)
 COST_COMPONENTS: tuple[CostComponent, ...] = ("spread", "impact", "fees", "borrow")
 
 
@@ -498,6 +507,26 @@ class ApiErrorBody(_Model):
 class JobCounts(_Model):
     queued: int
     running: int
+
+
+# ----------------------------------------------------------------------------- files
+RunFileKind = Literal["json", "yaml", "parquet", "text", "other"]
+
+
+class RunFile(_Model):
+    """One file of the run directory (top level only)."""
+
+    name: str
+    size_bytes: int
+    modified_at: str = Field(description="RFC 3339, UTC")
+    kind: RunFileKind
+    description: str = Field(description="what the file holds, for known artifacts; empty otherwise")
+    download_url: str = Field(description="``/api/runs/{id}/files/{name}``")
+
+
+class RunFiles(_Model):
+    run_id: str
+    files: list[RunFile]
 
 
 class Health(_Model):

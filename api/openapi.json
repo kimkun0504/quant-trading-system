@@ -236,10 +236,10 @@
                   "type": "null"
                 }
               ],
-              "description": "comma-separated subset of nav, gross, net, drawdown, turnover, exante_vol (default: all)",
+              "description": "comma-separated subset of nav, gross, net, drawdown, turnover, exante_vol, gross_exposure, net_exposure (default: all)",
               "title": "Names"
             },
-            "description": "comma-separated subset of nav, gross, net, drawdown, turnover, exante_vol (default: all)"
+            "description": "comma-separated subset of nav, gross, net, drawdown, turnover, exante_vol, gross_exposure, net_exposure (default: all)"
           }
         ],
         "responses": {
@@ -517,6 +517,135 @@
                   "$ref": "#/components/schemas/RunIc"
                 }
               }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "The run is still running or failed before writing results"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/files": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "The files in the run directory, with download links",
+        "operationId": "get_files_api_runs__run_id__files_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunFiles"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "The run is still running or failed before writing results"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/files/{name}": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Download one file of the run directory",
+        "operationId": "get_file_api_runs__run_id__files__name__get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file",
+            "content": {
+              "application/octet-stream": {}
             }
           },
           "404": {
@@ -2506,6 +2635,78 @@
           "latest"
         ],
         "title": "RunExposures"
+      },
+      "RunFile": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "title": "Size Bytes"
+          },
+          "modified_at": {
+            "type": "string",
+            "title": "Modified At",
+            "description": "RFC 3339, UTC"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "json",
+              "yaml",
+              "parquet",
+              "text",
+              "other"
+            ],
+            "title": "Kind"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "description": "what the file holds, for known artifacts; empty otherwise"
+          },
+          "download_url": {
+            "type": "string",
+            "title": "Download Url",
+            "description": "``/api/runs/{id}/files/{name}``"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "size_bytes",
+          "modified_at",
+          "kind",
+          "description",
+          "download_url"
+        ],
+        "title": "RunFile",
+        "description": "One file of the run directory (top level only)."
+      },
+      "RunFiles": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/RunFile"
+            },
+            "type": "array",
+            "title": "Files"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id",
+          "files"
+        ],
+        "title": "RunFiles"
       },
       "RunHeadline": {
         "properties": {

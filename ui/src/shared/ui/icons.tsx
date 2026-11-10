@@ -110,4 +110,20 @@ export const Icons = {
       <path d="M3 8.5 6.5 12 13 4.5" />
     </Icon>
   ),
+  Copy: (p: IconProps) => (
+    <Icon {...p}>
+      <rect x="5.5" y="5.5" width="8" height="8" rx="1" />
+      <path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2" />
+    </Icon>
+  ),
+  Download: (p: IconProps) => (
+    <Icon {...p}>
+      <path d="M8 2.5v8M4.5 7 8 10.5 11.5 7M2.5 13.5h11" />
+    </Icon>
+  ),
+  External: (p: IconProps) => (
+    <Icon {...p}>
+      <path d="M9 2.5h4.5V7M13.5 2.5 7 9M11 9.5v3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h3" />
+    </Icon>
+  ),
 };

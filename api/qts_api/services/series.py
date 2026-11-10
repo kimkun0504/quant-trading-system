@@ -61,10 +61,17 @@ def return_series_frame(
     returns: pd.DataFrame,
     trades: pd.DataFrame,
     exante_vol: pd.Series | None,
+    weights: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """All ``RunSeriesName`` columns on the realisation-date axis."""
+    """All ``RunSeriesName`` columns on the realisation-date axis.
+
+    ``gross_exposure`` / ``net_exposure`` are the post-trade book's sum of |w| and sum of w
+    (fractions of NAV) by decision date, aligned positionally like ``turnover``; a day
+    with gross below ``INVESTED_GROSS_EPS`` is an empty book (the UI draws those spans)."""
     if returns is None or not len(returns):
-        return pd.DataFrame(columns=["nav", "gross", "net", "drawdown", "turnover", "exante_vol"])
+        return pd.DataFrame(
+            columns=["nav", "gross", "net", "drawdown", "turnover", "exante_vol", "gross_exposure", "net_exposure"]
+        )
     idx = pd.DatetimeIndex(returns.index)
     net = returns["net"].astype(float) if "net" in returns else pd.Series(np.nan, index=idx)
     gross = returns["gross"].astype(float) if "gross" in returns else pd.Series(np.nan, index=idx)
@@ -75,6 +82,11 @@ def return_series_frame(
         else pd.Series(np.nan, index=idx)
     )
     ev = positional(exante_vol, idx) if exante_vol is not None and len(exante_vol) else pd.Series(np.nan, index=idx)
+    if weights is not None and len(weights):
+        gross_x = positional(weights.abs().sum(axis=1), idx)
+        net_x = positional(weights.sum(axis=1), idx)
+    else:
+        gross_x = net_x = pd.Series(np.nan, index=idx)
     return pd.DataFrame(
         {
             "nav": nav.reindex(idx).astype(float) if nav is not None and len(nav) else np.nan,
@@ -83,6 +95,8 @@ def return_series_frame(
             "drawdown": dd,
             "turnover": turnover,
             "exante_vol": ev,
+            "gross_exposure": gross_x,
+            "net_exposure": net_x,
         },
         index=idx,
     )

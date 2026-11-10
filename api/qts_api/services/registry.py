@@ -59,6 +59,33 @@ DEMO_DEFAULTS = {"stocks": 300, "days": 1512}
 COMPARE_MAX_POINTS = 2000
 #: ``/api/runs/compare``: at most this many runs per request.
 COMPARE_MAX_RUNS = 8
+#: What the known run-directory artifacts hold (``/api/runs/{id}/files``).
+FILE_DESCRIPTIONS: dict[str, str] = {
+    "manifest.json": "Run manifest: git sha, config and data hashes, library versions, timings, seeds",
+    "summary.json": "Backtest summary, IC report, DSR inputs, cost sensitivity and the pipeline's notes",
+    "hurdles.json": "Hurdle gates with values, thresholds and reasons",
+    "config.yaml": "The SystemConfig the run used",
+    "extras.json": "Run facts recorded at save time (label, universe size, venue, exposure roles)",
+    "nav.parquet": "Net asset value by realisation date",
+    "returns.parquet": "Gross and net daily returns",
+    "weights.parquet": "Post-trade weights by decision date (fraction of NAV)",
+    "trades.parquet": "Trades by decision date (fraction of NAV)",
+    "costs.parquet": "Spread, impact, fees and borrow in USD by decision date",
+    "ic.parquet": "Rank IC per formation date",
+    "exante_vol.parquet": "The risk model's ex-ante portfolio volatility by decision date",
+    "exposures.parquet": "Net book exposure to each style factor by decision date",
+    "holdings.parquet": "Month-end positions with alpha, specific vol and industry",
+    "report.txt": "The printed report card",
+}
+FILE_KINDS: dict[str, str] = {
+    ".json": "json",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".parquet": "parquet",
+    ".txt": "text",
+    ".md": "text",
+    ".log": "text",
+}
 
 
 def flatten_config(cfg: Any, prefix: str = "") -> dict[str, Any]:
@@ -180,7 +207,7 @@ class Frames:
     def series(self) -> pd.DataFrame:
         if self._series is None:
             r = self.record
-            self._series = SR.return_series_frame(r.nav, r.returns, r.trades, self.exante_vol)
+            self._series = SR.return_series_frame(r.nav, r.returns, r.trades, self.exante_vol, r.weights)
         return self._series
 
 
@@ -692,6 +719,37 @@ class RunRegistry:
             ]
         positions.sort(key=lambda p: -p["weight"])
         return {"date": chosen, "available_dates": avail_iso, "positions": positions}
+
+    def files(self, run_id: str) -> dict[str, Any]:
+        """The regular files directly inside the run directory, by name."""
+        e = self.get(run_id)
+        out = []
+        for f in sorted(e.path.iterdir(), key=lambda x: x.name):
+            if not f.is_file() or f.name.startswith("."):
+                continue
+            st = f.stat()
+            out.append(
+                {
+                    "name": f.name,
+                    "size_bytes": int(st.st_size),
+                    "modified_at": pd.Timestamp(st.st_mtime, unit="s", tz="UTC").isoformat(timespec="seconds"),
+                    "kind": FILE_KINDS.get(f.suffix.lower(), "other"),
+                    "description": FILE_DESCRIPTIONS.get(f.name, ""),
+                    "download_url": f"/api/runs/{run_id}/files/{f.name}",
+                }
+            )
+        return {"run_id": run_id, "files": out}
+
+    def file_path(self, run_id: str, name: str) -> Path:
+        """Path of one file of the run directory; ``RunNotFound`` for anything that is not a
+        plain file name listed by :meth:`files` (no separators, no ``..``, no hidden files)."""
+        e = self.get(run_id)
+        if not name or "/" in name or "\\" in name or name.startswith(".") or ".." in name:
+            raise RunNotFound(f"{run_id}/{name}")
+        p = e.path / name
+        if not p.is_file() or p.resolve().parent != e.path.resolve():
+            raise RunNotFound(f"{run_id}/{name}")
+        return p
 
     def ic(self, run_id: str) -> dict[str, Any]:
         e = self.get(run_id)

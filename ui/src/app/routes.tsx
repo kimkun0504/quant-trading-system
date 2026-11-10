@@ -4,9 +4,10 @@ import { AppShell } from '@/widgets/AppShell';
 import { RouteError } from './RouteError';
 
 /**
- * Every page and run tab is its own lazy chunk; uPlot loads only with the pages that chart.
- * Workspaces: / (Experiments), /compare, /signal, /portfolio, /costs, /builder; the run
- * page keeps its tabs until the dossier (step 3); /ledger and /models stay reachable.
+ * Every page is its own lazy chunk; uPlot loads only with the pages that chart.
+ * Workspaces: / (Experiments), /compare, /signal, /portfolio, /costs, /builder; a run is
+ * one page, the dossier (/runs/:id, sections as #anchors; the old tab paths redirect);
+ * /ledger and /models stay reachable.
  */
 export const routes: RouteObject[] = [
   {
@@ -54,53 +55,17 @@ export const routes: RouteObject[] = [
           {
             path: 'runs/:runId',
             lazy: () =>
-              import('@/pages/run-detail/RunDetailPage').then((m) => ({
-                Component: m.RunDetailPage,
+              import('@/pages/run-dossier/RunDossierPage').then((m) => ({
+                Component: m.RunDossierPage,
               })),
-            children: [
-              {
-                index: true,
-                lazy: () =>
-                  import('@/pages/run-detail/tabs/PerformanceTab').then((m) => ({
-                    Component: m.PerformanceTab,
-                  })),
-              },
-              {
-                path: 'risk',
-                lazy: () =>
-                  import('@/pages/run-detail/tabs/RiskTab').then((m) => ({
-                    Component: m.RiskTab,
-                  })),
-              },
-              {
-                path: 'alpha',
-                lazy: () =>
-                  import('@/pages/run-detail/tabs/AlphaTab').then((m) => ({
-                    Component: m.AlphaTab,
-                  })),
-              },
-              {
-                path: 'costs',
-                lazy: () =>
-                  import('@/pages/run-detail/tabs/CostsTab').then((m) => ({
-                    Component: m.CostsTab,
-                  })),
-              },
-              {
-                path: 'execution',
-                lazy: () =>
-                  import('@/pages/run-detail/tabs/ExecutionTab').then((m) => ({
-                    Component: m.ExecutionTab,
-                  })),
-              },
-              {
-                path: 'validation',
-                lazy: () =>
-                  import('@/pages/run-detail/tabs/ValidationTab').then((m) => ({
-                    Component: m.ValidationTab,
-                  })),
-              },
-            ],
+          },
+          {
+            // the six tabs of the first design: each one is a section of the dossier now
+            path: 'runs/:runId/:tab',
+            lazy: () =>
+              import('@/pages/run-dossier/RunTabRedirect').then((m) => ({
+                Component: m.RunTabRedirect,
+              })),
           },
           {
             path: 'models',

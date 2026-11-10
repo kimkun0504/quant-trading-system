@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Response
+from fastapi.responses import FileResponse
 from qts.core.manifest import git_info, new_run_id
 
 from qts_api import schemas as S
@@ -187,6 +188,47 @@ def get_holdings(
 @router.get("/{run_id}/ic", response_model=S.RunIc, responses=problems(404, 409))
 def get_ic(run_id: str, registry: Registry, jobs: Jobs) -> dict[str, Any]:
     return registry.ic(resolve(registry, jobs, run_id))
+
+
+@router.get(
+    "/{run_id}/files",
+    response_model=S.RunFiles,
+    responses=problems(404, 409),
+    summary="The files in the run directory, with download links",
+)
+def get_files(run_id: str, registry: Registry, jobs: Jobs) -> dict[str, Any]:
+    return registry.files(resolve(registry, jobs, run_id))
+
+
+MEDIA_TYPES = {
+    "json": "application/json",
+    "yaml": "application/yaml",
+    "parquet": "application/vnd.apache.parquet",
+    "text": "text/plain; charset=utf-8",
+}
+
+
+@router.get(
+    "/{run_id}/files/{name}",
+    response_class=FileResponse,
+    responses={**problems(404, 409), 200: {"content": {"application/octet-stream": {}}, "description": "The file"}},
+    summary="Download one file of the run directory",
+)
+def get_file(run_id: str, name: str, registry: Registry, jobs: Jobs) -> FileResponse:
+    rid = resolve(registry, jobs, run_id)
+    try:
+        path = registry.file_path(rid, name)
+    except RunNotFound as e:
+        raise Problem(404, f"No file {name!r} in run {run_id}", type_="file-not-found") from e
+    from qts_api.services.registry import FILE_KINDS
+
+    kind = FILE_KINDS.get(path.suffix.lower(), "other")
+    return FileResponse(
+        path,
+        media_type=MEDIA_TYPES.get(kind, "application/octet-stream"),
+        filename=f"{rid}_{path.name}",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @router.post(

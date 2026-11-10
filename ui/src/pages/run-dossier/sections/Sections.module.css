@@ -1,0 +1,218 @@
+/* Shared styles of the dossier sections. */
+.pair {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.pairEven {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.stack {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.prose {
+  display: grid;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+  line-height: var(--leading-serif);
+}
+
+.prose p {
+  max-width: var(--measure);
+}
+
+.muted {
+  color: var(--color-fg-muted);
+}
+
+.facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-1) var(--space-4);
+  font-size: var(--text-md);
+}
+
+.facts dt {
+  color: var(--color-fg-muted);
+}
+
+.facts dd {
+  margin: 0;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.gateName {
+  display: grid;
+  gap: 0.1rem;
+  white-space: normal;
+  min-width: 11rem;
+}
+
+.gateTest {
+  font-size: var(--text-sm);
+  color: var(--color-fg-muted);
+  font-weight: 400;
+}
+
+.reason {
+  white-space: normal !important;
+  min-width: 18rem;
+  max-width: 48ch;
+  color: var(--color-fg-muted);
+  font-size: var(--text-sm);
+}
+
+.list {
+  margin: 0;
+  padding-left: 1.2em;
+  display: grid;
+  gap: var(--space-1);
+  font-size: var(--text-md);
+  line-height: var(--leading-serif);
+  max-width: var(--measure);
+}
+
+.exposure {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.exposure .bar {
+  position: relative;
+  height: 0.6rem;
+  background: var(--color-surface-2);
+  border-radius: 2px;
+}
+
+.exposure .bar span {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  border-radius: 2px;
+}
+
+.exposure .pos {
+  background: var(--color-gain);
+}
+
+.exposure .neg {
+  background: var(--color-loss);
+}
+
+.exposure .zero {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 1px;
+  background: var(--color-border-strong);
+}
+
+.exposure .theme {
+  font-weight: 500;
+}
+
+.exposure .val {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.search input,
+.search select {
+  max-width: 18rem;
+  min-height: 1.75rem;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: var(--text-md);
+}
+
+.search label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-fg-muted);
+}
+
+.groupRow th {
+  background: var(--color-surface-2);
+  font-weight: 600;
+  color: var(--color-fg);
+  font-size: var(--text-sm);
+}
+
+.key {
+  font-weight: 400;
+  color: var(--color-fg-muted);
+  white-space: nowrap;
+}
+
+.key mark,
+.value mark {
+  background: var(--color-accent-wash);
+  color: inherit;
+  border-radius: 2px;
+}
+
+.value {
+  white-space: nowrap;
+}
+
+.value code {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+}
+
+.fileName {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 500;
+}
+
+.download {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  white-space: nowrap;
+}
+
+.count {
+  font-size: var(--text-sm);
+  color: var(--color-fg-muted);
+}
+
+@media (max-width: 1099px) {
+  .pair,
+  .pairEven {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* An About line inside a flush panel keeps the panel's padding. */
+.inset {
+  margin: var(--space-2) var(--space-4) var(--space-3);
+}

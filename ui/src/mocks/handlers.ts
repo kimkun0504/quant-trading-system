@@ -5,11 +5,12 @@ import type {
   LaunchRunRequest,
   LaunchRunResponse,
   RunCompare,
+  RunFiles,
   RunSeriesName,
 } from '@/shared/api';
 import { CONFIG_SCHEMA } from './fixtures/configSchema';
 import { cancelJob, db, launch, listSummaries, pollJob } from './db';
-import { mockWarmup } from './fixtures/generate';
+import { mockWarmup, runFileBody, runFiles } from './fixtures/generate';
 
 /**
  * MSW handlers implementing the API contract in shared/api/schema.ts.
@@ -23,6 +24,8 @@ const SERIES_NAMES: readonly RunSeriesName[] = [
   'drawdown',
   'turnover',
   'exante_vol',
+  'gross_exposure',
+  'net_exposure',
 ];
 
 function notFound(detail: string) {
@@ -153,6 +156,27 @@ export const handlers = [
     await delay();
     const r = findRun(params.id);
     return 'error' in r ? r.error : HttpResponse.json(r.run.ic);
+  }),
+
+  http.get<{ id: string }>('*/api/runs/:id/files', async ({ params }) => {
+    await delay();
+    const r = findRun(params.id);
+    if ('error' in r) return r.error;
+    return HttpResponse.json<RunFiles>({ run_id: params.id, files: runFiles(r.run) });
+  }),
+
+  http.get<{ id: string; name: string }>('*/api/runs/:id/files/:name', async ({ params }) => {
+    await delay();
+    const r = findRun(params.id);
+    if ('error' in r) return r.error;
+    const body = runFileBody(r.run, params.name);
+    if (body === null) return notFound(`No file '${params.name}' in run ${params.id}`);
+    return new HttpResponse(body.text, {
+      headers: {
+        'Content-Type': body.type,
+        'Content-Disposition': `attachment; filename="${params.id}_${params.name}"`,
+      },
+    });
   }),
 
   http.post('*/api/runs', async ({ request }) => {

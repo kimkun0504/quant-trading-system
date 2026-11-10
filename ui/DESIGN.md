@@ -121,7 +121,7 @@ handbook link; replaces margin notes) · `EmptyState`, `ErrorState`, `Skeleton`.
 
 - Everything left-aligned; numbers right-aligned in their columns. Sidebar 216 px, content up
   to 1600 px. Below 900 px the sidebar becomes an icon row and the top bar stacks under it.
-- Keyboard: `/` focuses search, `c` opens Compare; checkboxes, sort buttons, family toggles,
+- Keyboard: `/` focuses search, `c` opens Compare, `j` / `k` step through a dossier's sections; checkboxes, sort buttons, family toggles,
   disclosure lines and tooltips are all reachable by Tab.
 
 ## Principles

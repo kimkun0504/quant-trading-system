@@ -21,13 +21,10 @@ const pages = [
   ['experiments-compare', `/?${SEL}`],
   ['compare', `/compare?${SEL}`],
   ['signal-lab', '/signal'],
-  ['run-performance', `/runs/${RUN}`],
-  ['run-risk', `/runs/${RUN}/risk`],
-  ['run-alpha', `/runs/${RUN}/alpha`],
-  ['run-costs', `/runs/${RUN}/costs`],
-  ['run-execution', `/runs/${RUN}/execution`],
-  ['run-validation', `/runs/${RUN}/validation`],
-  ['run-suspicious', '/runs/20261105T102233Z_c07a55e2'],
+  ['dossier', `/runs/${RUN}`],
+  ['dossier-portfolio', '/runs/20261106T142207Z_9a7b3d44#portfolio'],
+  ['dossier-config', `/runs/${RUN}#config`],
+  ['dossier-suspicious', '/runs/20261105T102233Z_c07a55e2'],
   ['run-builder', '/builder'],
   ['ledger', '/ledger'],
   ['models', '/models'],
@@ -57,7 +54,8 @@ for (const theme of themes) {
         await page.goto(base + path, { waitUntil: 'networkidle' });
       await page.waitForTimeout(500);
       const file = `${out}/${name}-${theme}-${width}.png`;
-      await page.screenshot({ path: file, fullPage: true });
+      // a page opened on a section keeps that viewport; the rest are captured whole
+      await page.screenshot({ path: file, fullPage: !path.includes('#') });
       console.log(file);
     }
     await ctx.close();

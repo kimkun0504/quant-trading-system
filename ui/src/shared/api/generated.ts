@@ -141,6 +141,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/runs/{run_id}/files': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** The files in the run directory, with download links */
+    get: operations['get_files_api_runs__run_id__files_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/runs/{run_id}/files/{name}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Download one file of the run directory */
+    get: operations['get_file_api_runs__run_id__files__name__get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/jobs/{job_id}': {
     parameters: {
       query?: never;
@@ -897,6 +931,43 @@ export interface components {
       latest: components['schemas']['ExposureSnapshot'] | null;
     };
     /**
+     * RunFile
+     * @description One file of the run directory (top level only).
+     */
+    RunFile: {
+      /** Name */
+      name: string;
+      /** Size Bytes */
+      size_bytes: number;
+      /**
+       * Modified At
+       * @description RFC 3339, UTC
+       */
+      modified_at: string;
+      /**
+       * Kind
+       * @enum {string}
+       */
+      kind: 'json' | 'yaml' | 'parquet' | 'text' | 'other';
+      /**
+       * Description
+       * @description what the file holds, for known artifacts; empty otherwise
+       */
+      description: string;
+      /**
+       * Download Url
+       * @description ``/api/runs/{id}/files/{name}``
+       */
+      download_url: string;
+    };
+    /** RunFiles */
+    RunFiles: {
+      /** Run Id */
+      run_id: string;
+      /** Files */
+      files: components['schemas']['RunFile'][];
+    };
+    /**
      * RunHeadline
      * @description Headline numbers shown in the runs list.
      */
@@ -1265,7 +1336,7 @@ export interface operations {
   get_series_api_runs__run_id__series_get: {
     parameters: {
       query?: {
-        /** @description comma-separated subset of nav, gross, net, drawdown, turnover, exante_vol (default: all) */
+        /** @description comma-separated subset of nav, gross, net, drawdown, turnover, exante_vol, gross_exposure, net_exposure (default: all) */
         names?: string | null;
       };
       header?: never;
@@ -1482,6 +1553,105 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['RunIc'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description The run is still running or failed before writing results */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_files_api_runs__run_id__files_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        run_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['RunFiles'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description The run is still running or failed before writing results */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_file_api_runs__run_id__files__name__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        run_id: string;
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The file */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/octet-stream': unknown;
         };
       };
       /** @description Not found */

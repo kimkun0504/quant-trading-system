@@ -1,0 +1,83 @@
+.section {
+  display: grid;
+  gap: var(--space-4);
+  scroll-margin-top: calc(
+    var(--topbar-height) + var(--dossier-header-height, 0px) + var(--space-3)
+  );
+  padding-top: var(--space-4);
+  border-top: var(--hairline);
+}
+
+.section:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'title lab'
+    'lede lab';
+  align-items: baseline;
+  column-gap: var(--space-4);
+  row-gap: var(--space-1);
+}
+
+.title {
+  grid-area: title;
+  justify-self: start;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-lg);
+  outline: none;
+}
+
+.title:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 4px;
+  border-radius: 2px;
+}
+
+.index {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--color-fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.lede {
+  grid-area: lede;
+  color: var(--color-fg-muted);
+  font-size: var(--text-md);
+  max-width: var(--measure);
+}
+
+.lab {
+  grid-area: lab;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.body {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+/* Two panels side by side where a section pairs a chart with a table. */
+.pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-4);
+}
+
+@media (max-width: 1099px) {
+  .pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

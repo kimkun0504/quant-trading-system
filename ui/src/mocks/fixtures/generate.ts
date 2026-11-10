@@ -14,6 +14,7 @@ import type {
   RunCosts,
   RunDetail,
   RunExposures,
+  RunFile,
   RunHoldings,
   RunIc,
   RunKind,
@@ -421,6 +422,23 @@ export function generateRun(spec: RunSpec): GeneratedRun {
   const costBps = (tradingUsd / tradedUsd) * 1e4;
   const breakeven = (mean(gross) / mean(turnover)) * 1e4;
   const grossExposure = 2.0 - 0.02 * rng();
+  // --- book exposure by day: gross near the target, net near zero; the days the book was
+  // empty (invested_day_frac < 1) come as a few contiguous gaps so the dossier can draw them
+  const investedFrac = spec.investedDayFrac ?? 1;
+  const emptyDays = new Set<number>();
+  if (investedFrac < 1) {
+    const total = Math.round(n * (1 - investedFrac));
+    const gaps = Math.max(1, Math.min(3, Math.round(total / 4)));
+    for (let g = 0; g < gaps; g++) {
+      const len = Math.max(1, Math.round(total / gaps));
+      const start = Math.floor(((g + 0.5) / gaps) * n) - Math.floor(len / 2);
+      for (let k = 0; k < len && start + k < n; k++) emptyDays.add(Math.max(0, start + k));
+    }
+  }
+  const grossExposureSeries = ar1(rng, n, grossExposure, 0.9, 0.015).map((x, i) =>
+    emptyDays.has(i) ? 0 : x,
+  );
+  const netExposureSeries = ar1(rng, n, 0.0, 0.9, 0.006).map((x, i) => (emptyDays.has(i) ? 0 : x));
 
   // --- IC (sampled every H = 20 days)
   const H = 20;
@@ -499,8 +517,8 @@ export function generateRun(spec: RunSpec): GeneratedRun {
     calmar_net: cagrNet / Math.abs(mdd),
     sortino_net: sortino(net),
     hit_rate_net: hitRate(net),
-    avg_gross_exposure: grossExposure,
-    avg_net_exposure: 0.03 * (rng() - 0.3),
+    avg_gross_exposure: mean(grossExposureSeries),
+    avg_net_exposure: mean(netExposureSeries),
     avg_daily_turnover: mean(turnover),
     effective_holding_days: grossExposure / (mean(turnover) / 2),
     avg_cost_bps_per_side: costBps,
@@ -512,7 +530,7 @@ export function generateRun(spec: RunSpec): GeneratedRun {
       costsDaily.borrow.reduce((a, b) => a + b, 0),
     transfer_coefficient_mean: 0.38 + 0.12 * rng(),
     realized_vs_exante_vol_ratio: annualizedVol(gross) / mean(exanteVol),
-    invested_day_frac: spec.investedDayFrac ?? 1,
+    invested_day_frac: 1 - emptyDays.size / n,
     breakeven_cost_bps: breakeven,
     n_delistings: Math.floor(rng() * 9),
     n_failed_solves: spec.signal_lag_days === 0 ? 2 : 0,
@@ -721,10 +739,143 @@ export function generateRun(spec: RunSpec): GeneratedRun {
       drawdown,
       turnover,
       exante_vol: exanteVol,
+      gross_exposure: grossExposureSeries,
+      net_exposure: netExposureSeries,
     },
     costs: { daily: { dates, series: costsDaily }, nav: navPrev, cost_sensitivity },
     exposures,
     ic: { ic: { dates: icDates, series: { rank_ic: icSeries } }, decay, horizon_days: H },
     holdingsFor,
   };
+}
+
+/** `GET /api/runs/{id}/files`: the run directory as the pipeline writes it. */
+const RUN_FILES: readonly {
+  name: string;
+  kind: RunFile['kind'];
+  description: string;
+  size: number;
+}[] = [
+  {
+    name: 'config.yaml',
+    kind: 'yaml',
+    description: 'The SystemConfig the run used',
+    size: 3_912,
+  },
+  {
+    name: 'costs.parquet',
+    kind: 'parquet',
+    description: 'Spread, impact, fees and borrow in USD by decision date',
+    size: 61_440,
+  },
+  {
+    name: 'exante_vol.parquet',
+    kind: 'parquet',
+    description: "The risk model's ex-ante portfolio volatility by decision date",
+    size: 19_874,
+  },
+  {
+    name: 'exposures.parquet',
+    kind: 'parquet',
+    description: 'Net book exposure to each style factor by decision date',
+    size: 84_215,
+  },
+  {
+    name: 'extras.json',
+    kind: 'json',
+    description: 'Run facts recorded at save time (label, universe size, venue, exposure roles)',
+    size: 1_204,
+  },
+  {
+    name: 'holdings.parquet',
+    kind: 'parquet',
+    description: 'Month-end positions with alpha, specific vol and industry',
+    size: 112_330,
+  },
+  {
+    name: 'hurdles.json',
+    kind: 'json',
+    description: 'Hurdle gates with values, thresholds and reasons',
+    size: 2_871,
+  },
+  { name: 'ic.parquet', kind: 'parquet', description: 'Rank IC per formation date', size: 5_120 },
+  {
+    name: 'manifest.json',
+    kind: 'json',
+    description: 'Run manifest: git sha, config and data hashes, library versions, timings, seeds',
+    size: 1_588,
+  },
+  {
+    name: 'nav.parquet',
+    kind: 'parquet',
+    description: 'Net asset value by realisation date',
+    size: 14_336,
+  },
+  {
+    name: 'returns.parquet',
+    kind: 'parquet',
+    description: 'Gross and net daily returns',
+    size: 22_118,
+  },
+  {
+    name: 'summary.json',
+    kind: 'json',
+    description:
+      "Backtest summary, IC report, DSR inputs, cost sensitivity and the pipeline's notes",
+    size: 9_733,
+  },
+  {
+    name: 'trades.parquet',
+    kind: 'parquet',
+    description: 'Trades by decision date (fraction of NAV)',
+    size: 1_480_204,
+  },
+  {
+    name: 'weights.parquet',
+    kind: 'parquet',
+    description: 'Post-trade weights by decision date (fraction of NAV)',
+    size: 1_902_577,
+  },
+];
+
+export function runFiles(run: GeneratedRun): RunFile[] {
+  const n = run.dates.length;
+  return RUN_FILES.map((f) => ({
+    name: f.name,
+    kind: f.kind,
+    description: f.description,
+    size_bytes: f.kind === 'parquet' ? Math.round((f.size * n) / 1000) : f.size,
+    modified_at: run.spec.created_at.replace('Z', '+00:00'),
+    download_url: `/api/runs/${run.spec.id}/files/${f.name}`,
+  }));
+}
+
+/** The downloadable body of a run file; JSON/YAML are real, parquet is a placeholder. */
+export function runFileBody(
+  run: GeneratedRun,
+  name: string,
+): { text: string; type: string } | null {
+  const f = RUN_FILES.find((x) => x.name === name);
+  if (!f) return null;
+  if (name === 'manifest.json')
+    return { text: JSON.stringify(run.detail.manifest, null, 2), type: 'application/json' };
+  if (name === 'hurdles.json')
+    return { text: JSON.stringify(run.detail.hurdles, null, 2), type: 'application/json' };
+  if (name === 'summary.json')
+    return {
+      text: JSON.stringify(
+        { backtest: run.detail.summary, ic_report: run.detail.ic_report, notes: run.detail.notes },
+        null,
+        2,
+      ),
+      type: 'application/json',
+    };
+  if (name === 'extras.json')
+    return {
+      text: JSON.stringify({ run: { label: run.spec.label, venue: run.detail.execution_venue } }),
+      type: 'application/json',
+    };
+  if (name === 'config.yaml')
+    return { text: run.detail.config.config_yaml, type: 'application/yaml' };
+  return { text: `PAR1 (mock placeholder for ${name})`, type: 'application/vnd.apache.parquet' };
 }

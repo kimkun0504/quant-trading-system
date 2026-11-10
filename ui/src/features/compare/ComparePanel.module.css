@@ -3,9 +3,11 @@
   gap: var(--space-4);
 }
 
+/* One column: every panel spans the width (charts read better wide; the gates grid and
+   config diff grow a column per run). */
 .grid {
   display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
 }
 
@@ -101,12 +103,6 @@
   display: flex;
   align-items: center;
   gap: var(--space-3);
-}
-
-@media (max-width: 1099px) {
-  .grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 
 .gateTerm {

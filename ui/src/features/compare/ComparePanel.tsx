@@ -266,7 +266,8 @@ function GatesGrid({ runs }: { runs: readonly RunCompareRun[] }) {
   );
 }
 
-function ConfigDiff({ runs }: { runs: readonly RunCompareRun[] }) {
+/** The keys that differ across the compared runs, one column per run. Reused by the dossier. */
+export function ConfigDiff({ runs }: { runs: readonly RunCompareRun[] }) {
   const rows = useMemo(() => configDiff(runs.map((r) => r.config_leaves)), [runs]);
   if (rows.length === 0)
     return (
@@ -345,7 +346,7 @@ export function ComparePanel({ ids }: { ids: readonly string[] }) {
             is a constant growth rate and the curves are directly comparable at any height.
           </About>
         </Panel>
-        <Panel>
+        <Panel className={styles.full}>
           <FoldBars runs={data.runs} />
           <About
             label="About this chart"
@@ -355,7 +356,7 @@ export function ComparePanel({ ids }: { ids: readonly string[] }) {
             the rest is noise with a good year.
           </About>
         </Panel>
-        <Panel title="Gates" flush className={cx(data.runs.length > 2 && styles.full)}>
+        <Panel title="Gates" flush className={styles.full}>
           <GatesGrid runs={data.runs} />
         </Panel>
         <Panel

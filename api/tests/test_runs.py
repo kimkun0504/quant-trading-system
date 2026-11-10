@@ -297,3 +297,55 @@ def test_compare_errors(client, run_id):
     assert client.get("/api/runs/compare", params={"ids": too_many}).status_code == 422
     r = client.get("/api/runs/compare", params={"ids": f"{run_id},nope"})
     assert r.status_code == 404 and r.headers["content-type"].startswith("application/problem+json")
+
+
+# ----------------------------------------------------------------------------- exposure series
+def test_exposure_series(client, run_id, run_dir, summary):
+    s = client.get(f"/api/runs/{run_id}/series", params={"names": "gross_exposure,net_exposure"}).json()
+    W = pd.read_parquet(run_dir / "weights.parquet")
+    n = summary["backtest"]["n_days"]
+    gx = s["series"]["gross_exposure"]
+    nx = s["series"]["net_exposure"]
+    assert len(gx) == len(nx) == n
+    assert close(gx[0], W.abs().sum(axis=1).iloc[0], 1e-9)
+    assert close(nx[0], W.sum(axis=1).iloc[0], 1e-9)
+    invested = [v for v in gx if v is not None and v > 1e-4]
+    assert close(len(invested) / n, summary["backtest"]["invested_day_frac"], 1e-6)
+    assert close(np.mean([v for v in nx if v is not None]), summary["backtest"]["avg_net_exposure"], 1e-6)
+
+
+# ----------------------------------------------------------------------------- files
+def test_files_listing_and_download(client, run_id, run_dir):
+    r = client.get(f"/api/runs/{run_id}/files")
+    body = S.RunFiles.model_validate(r.json())
+    assert body.run_id == run_id
+    names = {f.name for f in body.files}
+    assert {"manifest.json", "summary.json", "hurdles.json", "config.yaml", "nav.parquet"} <= names
+    by_name = {f.name: f for f in body.files}
+    assert by_name["weights.parquet"].kind == "parquet" and by_name["weights.parquet"].description
+    assert by_name["config.yaml"].kind == "yaml"
+    assert by_name["manifest.json"].size_bytes == (run_dir / "manifest.json").stat().st_size
+    assert by_name["manifest.json"].download_url == f"/api/runs/{run_id}/files/manifest.json"
+    assert all(f.modified_at.endswith("+00:00") for f in body.files)
+
+    d = client.get(by_name["manifest.json"].download_url)
+    assert d.status_code == 200 and d.headers["content-type"].startswith("application/json")
+    assert "attachment" in d.headers["content-disposition"] and run_id in d.headers["content-disposition"]
+    assert d.json()["run_id"] == run_id
+    y = client.get(by_name["config.yaml"].download_url)
+    assert y.status_code == 200 and y.text == (run_dir / "config.yaml").read_text()
+    pq = client.get(by_name["nav.parquet"].download_url)
+    assert pq.status_code == 200 and pq.headers["content-type"] == "application/vnd.apache.parquet"
+    assert len(pq.content) == (run_dir / "nav.parquet").stat().st_size
+
+
+@pytest.mark.parametrize("name", ["missing.json", "..%2Fmanifest.json", ".hidden", "sub%2Fmanifest.json"])
+def test_file_download_rejects_unknown_and_traversal(client, run_id, name):
+    r = client.get(f"/api/runs/{run_id}/files/{name}")
+    assert r.status_code == 404
+    assert r.headers["content-type"].startswith("application/problem+json")
+
+
+def test_files_unknown_run_404(client):
+    assert client.get("/api/runs/nope/files").status_code == 404
+    assert client.get("/api/runs/nope/files/manifest.json").status_code == 404

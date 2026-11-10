@@ -11,6 +11,7 @@ import type {
   RunCosts,
   RunDetail,
   RunExposures,
+  RunFiles,
   RunHoldings,
   RunIc,
   RunId,
@@ -40,6 +41,8 @@ export const api = {
     apiGet<RunHoldings>(`/runs/${encodeURIComponent(id)}/holdings`, { date }, signal),
   getRunIc: (id: RunId, signal?: AbortSignal) =>
     apiGet<RunIc>(`/runs/${encodeURIComponent(id)}/ic`, undefined, signal),
+  getRunFiles: (id: RunId, signal?: AbortSignal) =>
+    apiGet<RunFiles>(`/runs/${encodeURIComponent(id)}/files`, undefined, signal),
   launchRun: (body: LaunchRunRequest) => apiPost<LaunchRunResponse>('/runs', body),
   getJob: (jobId: string, signal?: AbortSignal) =>
     apiGet<Job>(`/jobs/${encodeURIComponent(jobId)}`, undefined, signal),

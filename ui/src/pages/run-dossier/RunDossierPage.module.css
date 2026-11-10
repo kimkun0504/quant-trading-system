@@ -1,0 +1,49 @@
+.loading {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.dossier {
+  display: grid;
+  gap: var(--space-5);
+  min-width: 0;
+}
+
+/* The header slot is the sticky element's measured box; the sticky itself lives inside. */
+.headerSlot {
+  position: sticky;
+  top: var(--topbar-height);
+  z-index: 20;
+  margin: calc(-1 * var(--space-5)) calc(-1 * var(--space-5)) 0;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 11rem;
+  gap: var(--space-6);
+  align-items: start;
+}
+
+.sections {
+  display: grid;
+  gap: var(--space-6);
+  min-width: 0;
+}
+
+@media (max-width: 1099px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-4);
+  }
+
+  .layout > :last-child {
+    order: -1;
+  }
+}
+
+@media (max-width: 899px) {
+  .headerSlot {
+    position: static;
+    margin: calc(-1 * var(--space-4)) calc(-1 * var(--space-4)) 0;
+  }
+}

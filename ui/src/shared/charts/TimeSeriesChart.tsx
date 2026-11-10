@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import type uPlot from 'uplot';
 import { date as fmtDate } from '@/shared/lib/format';
-import { useChartTokens } from './tokens';
+import { useChartTokens, withAlpha } from './tokens';
 import type { ChartTokens } from './tokens';
 import { UplotChart } from './uplot/UplotChart';
 import { cursorBase, timeAxis, valueAxis } from './uplot/axes';
@@ -23,6 +23,13 @@ export interface RefLine {
   dashed?: boolean;
 }
 
+/** A shaded date range behind the lines (index positions into `dates`, inclusive). */
+export interface Span {
+  from: number;
+  to: number;
+  color?: TokenColor;
+}
+
 /** One or more lines on one shared y-scale (never dual-axis), with a crosshair readout. */
 export function TimeSeriesChart({
   dates,
@@ -31,6 +38,7 @@ export function TimeSeriesChart({
   height = 200,
   ariaLabel,
   refLines = [],
+  spans = [],
 }: {
   dates: readonly string[];
   series: readonly LineSeries[];
@@ -38,6 +46,7 @@ export function TimeSeriesChart({
   height?: number;
   ariaLabel: string;
   refLines?: readonly RefLine[];
+  spans?: readonly Span[];
 }) {
   const t = useChartTokens();
   const [idx, setIdx] = useState<number | null>(null);
@@ -68,6 +77,28 @@ export function TimeSeriesChart({
         })),
       ],
       hooks: {
+        drawClear: [
+          (u: uPlot) => {
+            if (!spans.length) return;
+            const ctx = u.ctx;
+            const x0 = xs[0];
+            const last = xs[xs.length - 1];
+            if (x0 === undefined || last === undefined) return;
+            ctx.save();
+            for (const sp of spans) {
+              const a = xs[Math.max(0, Math.min(sp.from, xs.length - 1))];
+              const b = xs[Math.max(0, Math.min(sp.to, xs.length - 1))];
+              if (a === undefined || b === undefined) continue;
+              const left = u.valToPos(a, 'x', true);
+              const right = u.valToPos(b, 'x', true);
+              const minW = 2 * devicePixelRatio;
+              const w = Math.max(minW, right - left);
+              ctx.fillStyle = withAlpha(colorOf(sp.color ?? 'caution', t), 0.22);
+              ctx.fillRect(left, u.bbox.top, w, u.bbox.height);
+            }
+            ctx.restore();
+          },
+        ],
         draw: [
           (u: uPlot) => {
             const ctx = u.ctx;
@@ -88,7 +119,7 @@ export function TimeSeriesChart({
         ],
       },
     }),
-    [t, series, format, refLines, colorOf],
+    [t, series, format, refLines, spans, xs, colorOf],
   );
 
   let i = idx ?? dates.length - 1;
