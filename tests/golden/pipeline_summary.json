@@ -18,34 +18,34 @@
     "start": "2020-06-12",
     "end": "2020-09-04",
     "n_days": 60,
-    "final_nav": 1035510.2178573005,
-    "cagr_gross": 0.18343207850436904,
-    "cagr_net": 0.15783968851867014,
-    "ann_vol_gross": 0.0690941179699687,
-    "ann_vol_net": 0.06892272717007517,
-    "sharpe_gross": 2.472299454252344,
-    "sharpe_net": 2.1608748135211036,
-    "sharpe_net_lo": 8.330000087259407,
-    "sharpe_t_stat_net": 1.049548307949519,
-    "newey_west_t_net": 1.1833936476082354,
-    "max_drawdown_net": -0.018729671072994614,
-    "calmar_net": 8.427253628935928,
-    "sortino_net": 3.339902156035834,
-    "hit_rate_net": 0.6,
-    "avg_gross_exposure": 1.2626034686616892,
-    "avg_net_exposure": 0.04999998834520673,
-    "avg_daily_turnover": 0.10560634254325031,
-    "effective_holding_days": 23.911508310111184,
-    "avg_cost_bps_per_side": 6.807102033236476,
-    "avg_daily_cost_bps_of_nav": 0.8685700368331236,
-    "total_costs_usd": 5298.41300967072,
-    "transfer_coefficient_mean": 0.7932589099039,
-    "realized_vs_exante_vol_ratio": 0.970953266821642,
-    "breakeven_cost_bps": 62.76728573364138,
+    "final_nav": 1034967.7740795463,
+    "cagr_gross": 0.1789583102230985,
+    "cagr_net": 0.15529441739470662,
+    "ann_vol_gross": 0.0677580063986451,
+    "ann_vol_net": 0.06763535545165858,
+    "sharpe_gross": 2.463785867015492,
+    "sharpe_net": 2.168166593285763,
+    "sharpe_net_lo": 7.425045228912648,
+    "sharpe_t_stat_net": 1.0530572896879764,
+    "newey_west_t_net": 1.199510872578929,
+    "max_drawdown_net": -0.018980840523913467,
+    "calmar_net": 8.181640702320596,
+    "sortino_net": 3.3739453533257557,
+    "hit_rate_net": 0.5833333333333334,
+    "avg_gross_exposure": 1.2423251460268943,
+    "avg_net_exposure": 0.050000032279681604,
+    "avg_daily_turnover": 0.09564685951947491,
+    "effective_holding_days": 25.977332706338178,
+    "avg_cost_bps_per_side": 6.993379462896993,
+    "avg_daily_cost_bps_of_nav": 0.80541667963625,
+    "total_costs_usd": 4909.049748578678,
+    "transfer_coefficient_mean": 0.7898036908439366,
+    "realized_vs_exante_vol_ratio": 0.9615518263653907,
+    "breakeven_cost_bps": 67.82971103178535,
     "n_delistings": 0,
     "n_failed_solves": 0,
     "vol_target_caps_share": 1.0,
-    "mean_risk_aversion": 0.2994101026755737
+    "mean_risk_aversion": 0.23807861063082872
   },
   "ic_report": {
     "n": 3,
@@ -61,7 +61,7 @@
     "sharpe": 1.8687834190541532,
     "t_stat": 1.1236812777422283
   },
-  "dsr": 0.8495494319925174,
+  "dsr": 0.8510655802676674,
   "hurdles": {
     "overall": false,
     "status": {
@@ -79,16 +79,16 @@
   "backtest": {
     "n_nav": 61,
     "nav_quartiles": [
-      1001192.586687294,
-      1017636.4946301469,
-      1025854.1036678301
+      1001355.9881044568,
+      1016982.8767579538,
+      1025786.2420101915
     ],
-    "sum_abs_weights": 75.75620811970138,
+    "sum_abs_weights": 74.53950876161366,
     "sum_costs_by_kind": {
-      "spread": 14.577823562418153,
-      "impact": 2728.1469190145476,
-      "fees": 1639.7325460770749,
-      "borrow": 915.9557210166801
+      "spread": 13.618236588542779,
+      "impact": 2460.152617824161,
+      "fees": 1599.9594714515715,
+      "borrow": 835.3194227144027
     }
   }
 }

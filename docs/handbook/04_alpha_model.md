@@ -8,7 +8,7 @@ The alpha model turns raw market and accounting data into one number per stock p
 **What changed (Nov 2026)**
 - **Labels are aligned to the trade.** With the default one-day execution lag $L$ (`ExecutionConfig.signal_lag_days = 1`) the label of signal date $s$ is the return from close $s+L$ to close $s+L+h$; the walk-forward embargo and the trailing-IC window grow by $L$ (§4, §7, §8).
 - **Causal halt/delisting rule.** Whether a price gap is a delisting (−30%) or a temporary halt is decided only with data available when the label is realised; `label_realisation` tells every consumer when a label row may be used (§4). The old rule looked at later prices.
-- **D1 roles:** the label is residualised on exactly the styles the optimizer neutralises (`qts.core.roles`); the low-risk premium is intentionally excluded from the ML target (§4). **D5:** one IC-shrink convention, applied to `default_ic` too (§8).
+- **D1 roles:** the label is residualised on exactly the styles the optimizer neutralises (`qts.core.roles`); the low-risk premium is intentionally excluded from the ML target (§4). **D5:** one IC-shrink convention, applied to `default_ic` too (§8). **D6 (2026-11-09):** the IC estimate is a sample-size-weighted blend of the trailing three-year OOS IC and the prior, floored at a quarter of the shrunk prior, after the first real-data run showed the old zero floor emptying the book on half of all dates (§8).
 - **Evaluation:** Newey–West lags $\max(h, \lfloor 4(T/100)^{2/9}\rfloor)$; IC decay at the secondary horizons (5, 20, 60 days); the pipeline scores the signal that was actually traded (§9).
 - **ML:** hyper-parameters live in `AlphaConfig.lgbm` / `AlphaConfig.mlp`; MLP early stopping is time-contiguous; the rank-IC metric is vectorised (§6).
 - **Features** use every name's full pre-entry history for rolling statistics, while cross-sections are taken over eligible names only (§3). Per-sleeve half-lives (`components_half_life`) are attached to the output (§8).
@@ -858,18 +858,21 @@ Multiplying back by $\sigma_i$ gives $\mathbb{E}[\epsilon_i \mid z_i] = \text{IC
 The IC used (design decision D5, one convention everywhere) is
 
 $$
-\text{IC}_t = \max\!\left(0,\ \texttt{ic\_shrink}\cdot \widehat{\text{IC}}_{t}\right), \qquad \widehat{\text{IC}}_t = \begin{cases}\overline{\text{IC}}^{\text{OOS}}_{t} & \text{if at least } \texttt{ic\_min\_obs} \text{ realised dates}\\ \texttt{default\_ic} & \text{otherwise}\end{cases}
+\text{IC}_t = \max\!\left(\texttt{ic\_floor\_frac}\cdot\texttt{ic\_shrink}\cdot\texttt{default\_ic},\ \texttt{ic\_shrink}\cdot \widehat{\text{IC}}_{t}\right), \qquad \widehat{\text{IC}}_t = \frac{n_t\,\overline{\text{IC}}^{\text{OOS}}_{t} + k\,\texttt{default\_ic}}{n_t + k}
 $$
 
 where:
-- $\overline{\text{IC}}^{\text{OOS}}_t$ (`AlphaModel.trailing_ic`) is the mean daily rank IC of the combined score against its label over the trailing `ic_window` = 252 signal dates whose labels are **realised by $t$**: the window ends at position $t - h - L$ (label of $s$ complete at $s + h + L$) and each row must also satisfy `label_realisation[s] <= t` (halts resolved);
-- `ic_min_obs` = 60 realised dates;
+- $\overline{\text{IC}}^{\text{OOS}}_t$ (`AlphaModel.trailing_ic`) is the mean daily rank IC of the combined score against its label over the trailing `ic_window` = 756 signal dates (three years) whose labels are **realised by $t$**: the window ends at position $t - h - L$ (label of $s$ complete at $s + h + L$) and each row must also satisfy `label_realisation[s] <= t` (halts resolved); $n_t$ is the number of such dates (`trailing_ic_obs`), set to 0 below `ic_min_obs` = 60 so that the prior alone applies;
+- $k$ = `ic_prior_obs` = 252 is the weight of the prior, in dates: the blend is a precision-weighted average, so three years of realised IC count three times the prior and sixty days count a quarter of it;
 - `ic_shrink` = 0.5 is the fraction of the estimate **kept**;
-- `default_ic` = 0.03 is a **pre-shrink** prior, shrunk the same way: $0.5 \times 0.03 = 0.015$.
+- `default_ic` = 0.03 is a **pre-shrink** prior, shrunk the same way: with no realised IC, $0.5 \times 0.03 = 0.015$;
+- `ic_floor_frac` = 0.25: $\text{IC}_t$ never drops below a quarter of the shrunk prior ($0.00375$).
 
 `AlphaOutput.ic_estimate` is $\text{IC}_t$, the value actually used; the portfolio layer must not shrink again.
 
-**Why 50%.** Backtest-to-live haircuts are severe (median 73% Sharpe deterioration across 215 bank alternative-beta indices, live; the plan expects live Sharpe 0.25–0.5× backtest), and a trailing IC carries selection bias (we kept signals that looked good). Halving it stops the optimizer trading aggressively on an overstated forecast. A negative trailing IC floors alpha at zero rather than flipping its sign.
+**Why 50%.** Backtest-to-live haircuts are severe (median 73% Sharpe deterioration across 215 bank alternative-beta indices, live; the plan expects live Sharpe 0.25–0.5× backtest), and a trailing IC carries selection bias (we kept signals that looked good). Halving it stops the optimizer trading aggressively on an overstated forecast.
+
+**Why a blend and a floor, not $\max(0,\cdot)$ (D6).** Until 2026-11-09 the rule was $\text{IC}_t = \max(0, \texttt{ic\_shrink}\cdot\overline{\text{IC}}^{\text{OOS}}_t)$ over a one-year window. The first real-data run (Sharadar, ~1,000 US names, 2000–2026) showed what that does to a weak signal: the composite's trailing one-year IC was negative on 49% of dates, so the forecast was *exactly zero for every stock* on those dates, the optimizer unwound the entire book (with a zero forecast any risk is pure cost) and the NAV sat flat for years (2004–2008, 2011, 2014–15, 2017, 2019–20). Even on the synthetic market, whose planted signal is positive by construction, the old rule produced a zero forecast on 21% of dates. A one-year IC of a signal with true IC 0.01 has a standard error of about 0.01, so it is negative a third of the time by chance alone; using it as an on/off switch for the whole book is not sizing, it is noise. The blend treats the trailing mean as evidence weighted by its sample size against a prior, which is the Bayesian answer, and the floor keeps a weak or temporarily unlucky signal invested at a fraction of its prior size, so that the live monitoring of a later phase, not a single noisy estimate, decides whether to stop trading it. Details, the real-data IC table and the golden change: `docs/notes/ic_floor_fix_2026-11-09.md`.
 
 <callout icon="⚠️" color="yellow_bg">
 What D5 fixed (finding #4). There used to be two conventions. `AlphaModel` multiplied by `ic_shrink` (fraction kept) but used `default_ic` *unshrunk*, so before 60 IC observations existed the model used 0.03, twice the shrunk value of a measured 0.03. Meanwhile `qts/portfolio/alpha_scaling.py::shrink_ic(ic, shrink)` multiplied by `1 - shrink` (fraction removed): at 0.3 the alpha model kept 30% and `shrink_ic` kept 70%. Now `shrink_ic(ic_est, keep=0.5, floor=0.0, cap=0.1)` uses "fraction kept" too, the inverse argument is deleted, and `default_ic` is shrunk. Test: `tests/test_alpha.py::test_default_ic_is_shrunk_like_estimated_ic`.
@@ -891,7 +894,7 @@ $\sigma_i$ = `idio_vol_252` × $\sqrt{h}$ (`AlphaModel.resid_vol_h_`): the daily
 
 ### In the code
 
-`AlphaModel(cfg, composite_weight=None, ml_factory=None, use_ml=True, dynamic_weights=None, ic_window=None, delisting_return=None, signal_lag_days=0)`; `None` means "take it from `AlphaConfig`" (`composite_weight` 0.5, `dynamic_weights` True, `ic_window` 252; the delisting haircut from `CostConfig`). `.fit(md, risk_exposures_fn)`; `.as_of(date)` → `AlphaOutput`; `.ic_used(date)`, `.trailing_ic(date)`, `.half_life_as_of(date)`, `.component_half_lives_as_of(date)`. Config: `ic_shrink` (0.5), `default_ic` (0.03), `ic_window` (252), `ic_min_obs` (60), `horizon_days` (20), `half_life_lookback_days` (504).
+`AlphaModel(cfg, composite_weight=None, ml_factory=None, use_ml=True, dynamic_weights=None, ic_window=None, delisting_return=None, signal_lag_days=0)`; `None` means "take it from `AlphaConfig`" (`composite_weight` 0.5, `dynamic_weights` True, `ic_window` 756; the delisting haircut from `CostConfig`). `.fit(md, risk_exposures_fn)`; `.as_of(date)` → `AlphaOutput`; `.ic_used(date)`, `.trailing_ic(date)`, `.half_life_as_of(date)`, `.component_half_lives_as_of(date)`. Config: `ic_shrink` (0.5), `default_ic` (0.03), `ic_window` (756), `ic_min_obs` (60), `ic_prior_obs` (252), `ic_floor_frac` (0.25), `horizon_days` (20), `half_life_lookback_days` (504).
 
 ### Pitfalls & checks
 
@@ -967,7 +970,10 @@ where $h$ is the number of consecutive observations that share label days (`over
 | `factor_momentum_max_tilt` | 0.25 | 0 to switch off; above 0.25 reintroduces crowding risk |
 | `composite_weight` | 0.5 | Raise if ML incremental IC fails the gate in a fold majority |
 | `ic_shrink` | 0.5 | Fraction of the IC kept; lower (more shrink) as more trials are logged |
-| `default_ic` | 0.03 | Pre-shrink prior before 60 realised IC dates; lower it for an untested signal |
+| `default_ic` | 0.03 | Pre-shrink prior; applies alone below 60 realised IC dates and is blended in with weight `ic_prior_obs` afterwards; lower it for an untested signal |
+| `ic_window` | 756 | Trailing signal dates for the OOS IC mean (was 252; D6) |
+| `ic_prior_obs` | 252 | Weight of `default_ic` in the IC blend, in dates (D6) |
+| `ic_floor_frac` | 0.25 | `IC_used` floor as a fraction of the shrunk prior (D6) |
 | `delisting_gap_days` | 63 | Days without a close before a gap counts as a delisting (no vendor dates); shorter resolves labels sooner but calls long halts delistings |
 | `secondary_horizons` | [5, 60] | Horizons reported in the IC-decay section; never trained on |
 | `lgbm.min_data_in_leaf` | 200 | Raise if OOS IC ≪ validation IC |

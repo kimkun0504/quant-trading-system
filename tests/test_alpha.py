@@ -368,9 +368,14 @@ def test_default_ic_is_shrunk_like_estimated_ic(md):
     out = am.as_of(early)
     assert out.ic_estimate == pytest.approx(0.015)
     late = md.dates[-5]
-    ic_hat = am.trailing_ic(late)
-    assert np.isfinite(ic_hat)
-    assert am.as_of(late).ic_estimate == pytest.approx(max(0.0, 0.5 * ic_hat))
+    ic_tr, n = am.trailing_ic_obs(late)
+    assert np.isfinite(ic_tr) and n >= acfg.ic_min_obs
+    # D6: precision-weighted blend with the prior, then shrunk, then floored
+    k = acfg.ic_prior_obs
+    blend = (n * ic_tr + k * 0.03) / (n + k)
+    assert am.ic_hat(late) == pytest.approx(blend)
+    floor = acfg.ic_floor_frac * 0.5 * 0.03
+    assert am.as_of(late).ic_estimate == pytest.approx(max(floor, 0.5 * blend))
     # per-sleeve half-lives are PIT-cached and cover every sleeve
     hl = am.component_half_lives_as_of(late)
     assert {"combined", "composite", "theme_value"} <= set(hl)
@@ -567,3 +572,39 @@ def test_benchmark_alpha_fit_composite_lgbm(capsys):
             f"\n[benchmark] alpha fit composite+LGBM 300x1512: new {times['new']:.1f}s, "
             f"legacy {times['legacy']:.1f}s, speed-up {times['legacy'] / times['new']:.2f}x"
         )
+
+
+def test_ic_used_blends_toward_prior_and_never_empties_the_book(md):
+    """D6: a negative trailing IC shrinks IC_used toward the floor instead of 0,
+    and the blend weights the trailing mean by its number of observations."""
+    acfg = AlphaConfig(
+        train_min_days=504,
+        model_seeds=1,
+        ic_shrink=0.5,
+        default_ic=0.03,
+        ic_window=126,
+        ic_min_obs=20,
+        ic_prior_obs=100,
+        ic_floor_frac=0.25,
+    )
+    am = AlphaModel(acfg, use_ml=False).fit(md)
+    late = md.dates[-5]
+    ic_tr, n = am.trailing_ic_obs(late)
+    assert np.isfinite(ic_tr) and 20 <= n <= 126
+    want = (n * ic_tr + 100 * 0.03) / (n + 100)
+    assert am.ic_hat(late) == pytest.approx(want)
+    # force a very negative trailing IC: the floor binds, the book is not emptied
+    am.oos_ic_ = am.oos_ic_ * 0.0 - 0.2
+    assert am.trailing_ic(late) == pytest.approx(-0.2)
+    assert am.ic_hat(late) < 0
+    assert am.ic_used(late) == pytest.approx(0.25 * 0.5 * 0.03)
+    assert am.as_of(late).expected_return.abs().sum() > 0
+    # fewer than ic_min_obs realised IC dates -> prior only (0.03 x 0.5), as under D5
+    early = md.dates[30]
+    assert am.trailing_ic_obs(early)[1] < acfg.ic_min_obs
+    assert am.ic_hat(early) == pytest.approx(0.03)
+    assert am.ic_used(early) == pytest.approx(0.015)
+    # a strongly positive trailing IC is pulled toward the prior by the blend
+    am.oos_ic_ = am.oos_ic_ * 0.0 + 0.1
+    assert 0.03 < am.ic_hat(late) < 0.1
+    assert am.ic_hat(late) == pytest.approx((n * 0.1 + 100 * 0.03) / (n + 100))

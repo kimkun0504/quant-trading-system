@@ -237,15 +237,22 @@ class AlphaConfig(_ConfigBase):
     momentum_vol_scalar_bounds: tuple[float, float] = (0.5, 1.5)
     momentum_vol_window: int = 63
     momentum_crash_market_lookback_days: int = 504  # review item 8
-    # Grinold IC (design decision D5): ``ic_shrink`` is the fraction *kept*
-    # (0.5 => half).  IC_used = max(0, ic_shrink * IC_hat) where IC_hat is the
-    # trailing OOS rank IC; when IC_hat is unavailable (fewer than
-    # ``ic_min_obs`` realised dates) IC_hat := ``default_ic``, which is stated
-    # *pre-shrink* and shrunk the same way (0.03 x 0.5 = 0.015).
+    # Grinold IC (design decisions D5 and D6): ``ic_shrink`` is the fraction
+    # *kept* (0.5 => half).  IC_hat is a precision-weighted blend of the
+    # trailing OOS rank IC (n realised dates in the window) and the pre-shrink
+    # prior ``default_ic`` (weight ``ic_prior_obs`` dates):
+    #     IC_hat = (n * IC_trailing + ic_prior_obs * default_ic) / (n + ic_prior_obs)
+    # with n := 0 below ``ic_min_obs`` (prior only).  IC_used =
+    # max(ic_floor_frac * ic_shrink * default_ic, ic_shrink * IC_hat): a bad
+    # trailing year shrinks positions instead of liquidating the book (the old
+    # max(0, .) floor emptied the book on ~half of the real-data dates;
+    # docs/notes/ic_floor_fix_2026-11-09.md).
     ic_shrink: float = 0.5
     default_ic: float = 0.03
-    ic_window: int = 252  # trailing dates for IC_hat
-    ic_min_obs: int = 60  # min realised IC dates for IC_hat
+    ic_window: int = 756  # trailing dates for IC_trailing (3 years; was 252)
+    ic_min_obs: int = 60  # min realised IC dates before the trailing mean counts
+    ic_prior_obs: int = 252  # weight of ``default_ic`` in the blend, in dates
+    ic_floor_frac: float = 0.25  # IC_used >= this fraction of the shrunk prior
     # combined score = zscore(w * composite + (1 - w) * ML) where both exist
     composite_weight: float = 0.5
     dynamic_weights: bool = True  # factor-momentum / crash / vol theme weights

@@ -39,8 +39,10 @@ alpha:
   momentum_crash_market_lookback_days: 504
   ic_shrink: 0.5
   default_ic: 0.03
-  ic_window: 252
+  ic_window: 756
   ic_min_obs: 60
+  ic_prior_obs: 252
+  ic_floor_frac: 0.25
   composite_weight: 0.5
   dynamic_weights: true
   half_life_lookback_days: 504

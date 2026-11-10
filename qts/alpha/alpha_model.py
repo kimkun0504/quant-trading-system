@@ -19,15 +19,21 @@ Point-in-time guarantees in ``as_of(date)``:
   with a price) receive a score; ineligible / dead names are absent from the
   output, never zero-filled.
 
-Grinold scaling and the IC-shrink convention (design decision D5)
------------------------------------------------------------------
+Grinold scaling and the IC-shrink convention (design decisions D5, D6)
+----------------------------------------------------------------------
 ``expected_return = IC_used * sigma_resid,h * z`` with
-``IC_used = max(0, ic_shrink * IC_hat)``: ``ic_shrink`` is the fraction of the
-estimated IC that is *kept* (0.5 => half).  ``IC_hat`` is the trailing OOS rank
-IC over ``cfg.ic_window`` realised dates (needs ``cfg.ic_min_obs``); when it is
-unavailable ``IC_hat := cfg.default_ic``, which is stated **pre-shrink** and is
-shrunk the same way (0.03 x 0.5 = 0.015).  ``AlphaOutput.ic_estimate`` is
-``IC_used``.  The portfolio layer must not shrink again.
+``IC_used = max(ic_floor_frac * ic_shrink * default_ic, ic_shrink * IC_hat)``:
+``ic_shrink`` is the fraction of the estimated IC that is *kept* (0.5 => half).
+``IC_hat`` (D6) is the precision-weighted blend
+``(n * IC_trailing + k * default_ic) / (n + k)`` of the trailing OOS rank IC
+over ``cfg.ic_window`` realised dates (``n`` of them; ``n := 0`` below
+``cfg.ic_min_obs``) and the pre-shrink prior ``cfg.default_ic`` weighted as
+``k = cfg.ic_prior_obs`` dates.  With no realised IC the prior is shrunk the
+same way (0.03 x 0.5 = 0.015).  The floor (a quarter of the shrunk prior by
+default) means a negative trailing IC shrinks positions rather than emptying
+the book, which the former ``max(0, .)`` floor did on about half of the
+real-data dates (docs/notes/ic_floor_fix_2026-11-09.md).  ``AlphaOutput.ic_estimate``
+is ``IC_used``.  The portfolio layer must not shrink again.
 
 Signal half-life and Garleanu-Pedersen shrink (handbook fix #5)
 ---------------------------------------------------------------
@@ -192,29 +198,47 @@ class AlphaModel:
         return zscore(num / den.replace(0, np.nan))
 
     # ------------------------------------------------------------------ as_of
-    def trailing_ic(self, date: pd.Timestamp) -> float:
-        """Mean OOS rank IC over the trailing ``ic_window`` dates whose labels are
-        fully realised by ``date``: label at s needs ``s + h + L <= date`` and
-        its row decided (``label_ready_[s] <= date``; halts / delistings)."""
+    def trailing_ic_obs(self, date: pd.Timestamp) -> tuple[float, int]:
+        """``(mean, n)`` of the OOS rank IC over the trailing ``ic_window`` dates
+        whose labels are fully realised by ``date``: label at s needs
+        ``s + h + L <= date`` and its row decided (``label_ready_[s] <= date``;
+        halts / delistings).  ``n`` is the number of realised IC dates; the mean
+        is NaN when ``n < ic_min_obs``."""
         h = self.cfg.horizon_days + self.signal_lag_days
         dates = self.combined_score_.index
         pos = dates.searchsorted(date, side="right") - 1
         end = pos - h
         if end < 0:
-            return float("nan")
+            return float("nan"), 0
         win = self.oos_ic_.iloc[max(0, end - self.ic_window + 1) : end + 1]
         ready = self.label_ready_.reindex(win.index)
         cutoff = dates[pos]
         ic = win[(ready.notna() & (ready <= cutoff)).to_numpy()].dropna()
-        return float(ic.mean()) if len(ic) >= int(self.cfg.ic_min_obs) else float("nan")
+        n = len(ic)
+        return (float(ic.mean()) if n >= int(self.cfg.ic_min_obs) else float("nan")), n
+
+    def trailing_ic(self, date: pd.Timestamp) -> float:
+        """Mean trailing OOS rank IC (NaN below ``ic_min_obs`` realised dates)."""
+        return self.trailing_ic_obs(date)[0]
+
+    def ic_hat(self, date: pd.Timestamp) -> float:
+        """D6: precision-weighted blend of the trailing OOS IC and the pre-shrink
+        prior, ``(n IC_trailing + k default_ic) / (n + k)`` with
+        ``k = ic_prior_obs``; ``n := 0`` (prior only) below ``ic_min_obs``."""
+        mean, n = self.trailing_ic_obs(date)
+        k = float(self.cfg.ic_prior_obs)
+        prior = float(self.cfg.default_ic)
+        if not np.isfinite(mean) or n <= 0:
+            return prior
+        return (n * mean + k * prior) / (n + k)
 
     def ic_used(self, date: pd.Timestamp) -> float:
-        """D5: ``max(0, ic_shrink * IC_hat)``, ``IC_hat`` = trailing OOS IC or,
-        when unavailable, the pre-shrink prior ``default_ic``."""
-        ic_hat = self.trailing_ic(date)
-        if not np.isfinite(ic_hat):
-            ic_hat = float(self.cfg.default_ic)
-        return max(float(self.cfg.ic_shrink) * ic_hat, 0.0)
+        """D5/D6: ``max(ic_floor_frac * ic_shrink * default_ic, ic_shrink * IC_hat)``.
+        The floor keeps a weak or temporarily negative signal invested at a
+        fraction of its prior size instead of liquidating the book."""
+        keep = float(self.cfg.ic_shrink)
+        floor = float(self.cfg.ic_floor_frac) * keep * float(self.cfg.default_ic)
+        return max(keep * self.ic_hat(date), floor)
 
     def _sleeve_scores(self) -> dict[str, Wide]:
         out: dict[str, Wide] = {"combined": self.combined_score_, "composite": self.composite_score_}
