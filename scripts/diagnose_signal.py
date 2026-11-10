@@ -47,8 +47,8 @@ def _fmt(df: pd.DataFrame, cols: list[str]) -> str:
         return df[cols].to_string()
 
 
-def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+def add_data_args(ap: argparse.ArgumentParser) -> None:
+    """The data / config flags shared with ``qts run`` (and scripts/diagnose_constraints.py)."""
     ap.add_argument("--store")
     ap.add_argument("--synthetic", action="store_true")
     ap.add_argument("--start")
@@ -59,17 +59,25 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--runs-root", default="runs")
     ap.add_argument("--config")
     ap.add_argument("--ml", action="store_true")
-    a = ap.parse_args(argv)
 
+
+def load_config(a: argparse.Namespace) -> SystemConfig:
+    """``--config`` (or defaults) with the stage cache switched on by ``--cache``,
+    exactly as ``qts run`` does."""
     cfg = SystemConfig.from_yaml(a.config) if a.config else SystemConfig()
     if a.cache:
         cfg = cfg.with_overrides({"cache.enabled": True, "cache.root": f"{a.runs_root}/_cache"})
+    return cfg
 
+
+def load_market(a: argparse.Namespace):
+    """``MarketData`` from ``--store`` (with the peak-market-cap prefilter) or
+    ``--synthetic``; ``None`` when neither was given."""
     if a.synthetic:
         from qts.data.synthetic import SyntheticSpec, generate
 
-        md = generate(SyntheticSpec(n_stocks=120, n_days=900, seed=0))
-    elif a.store:
+        return generate(SyntheticSpec(n_stocks=120, n_days=900, seed=0))
+    if a.store:
         from qts.data.store import ParquetStore
 
         store = ParquetStore(a.store)
@@ -78,8 +86,18 @@ def main(argv: list[str] | None = None) -> int:
             tickers = store.tickers_by_market_cap(
                 a.start, a.end, min_mcap_ever=a.min_mcap_ever, max_names=a.max_names
             )
-        md = store.as_market_data(universe_tickers=tickers, start=a.start, end=a.end)
-    else:
+        return store.as_market_data(universe_tickers=tickers, start=a.start, end=a.end)
+    return None
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    add_data_args(ap)
+    a = ap.parse_args(argv)
+
+    cfg = load_config(a)
+    md = load_market(a)
+    if md is None:
         print("give --store or --synthetic", file=sys.stderr)
         return 2
     print(

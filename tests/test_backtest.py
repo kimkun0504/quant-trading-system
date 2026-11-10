@@ -373,3 +373,87 @@ def test_breakeven_and_sensitivity():
     assert cs["net_cagr"].is_monotonic_decreasing
     ts = turnover_stats(to)
     assert ts["mean_daily"] == pytest.approx(0.05) and ts["one_sided_mean_daily"] == pytest.approx(0.025)
+
+
+# --------------------------------------------------------------------------- invested-day vol ratio
+def _result_with_empty_days(n_days: int = 200, n_invested: int = 60, seed: int = 0) -> BacktestResult:
+    """``BacktestResult`` whose book is a real 2-name L/S book on ``n_invested`` days
+    and solver noise (|w| ~ 1e-8, gross 2e-8) on the rest.  The noise days carry a
+    positive recorded forecast that does not vanish with the book (the degenerate
+    case the invested-day mask guards against: a positive ``exante_var`` paired
+    with a ~0 realised return passes the naive ``v > 0`` filter and drags the
+    ratio toward 0)."""
+    rng = np.random.default_rng(seed)
+    dates = pd.bdate_range("2020-01-01", periods=n_days + 1)
+    invested = np.zeros(n_days, dtype=bool)
+    invested[:n_invested] = True
+    sig = 0.01  # daily vol of the invested book
+    w = np.where(invested[:, None], np.array([[1.0, -1.0]]), np.array([[1e-8, 1e-8]]))
+    ret = np.where(invested, rng.normal(0.0, sig, n_days), rng.normal(0.0, 1e-10, n_days))
+    exv = np.where(invested, sig**2, sig**2)  # positive forecast on the empty days
+    nav = 1e6 * np.concatenate([[1.0], np.cumprod(1.0 + ret)])
+    dec = dates[:-1]
+    zeros = pd.DataFrame(0.0, index=dec, columns=["spread", "impact", "fees", "borrow", "total"])
+    return BacktestResult(
+        nav=pd.Series(nav, index=dates),
+        returns=pd.DataFrame({"gross": ret, "net": ret}, index=dates[1:]),
+        weights=pd.DataFrame(w, index=dec, columns=["A", "B"]),
+        trades=pd.DataFrame(0.0, index=dec, columns=["A", "B"]),
+        costs=zeros,
+        exante_var=pd.Series(exv, index=dec),
+        turnover=pd.Series(0.0, index=dec),
+        transfer_coefficient=pd.Series(np.nan, index=dec),
+    )
+
+
+def test_vol_ratio_ignores_empty_book_days():
+    """Regression: a run whose book was empty on most days printed
+    ``realized/ex-ante vol 0.00`` because the noise days' positive forecast
+    passed the ``v > 0`` filter.  The ratio is now over invested days only."""
+    from qts.portfolio.diagnostics import realized_vs_exante_risk
+
+    res = _result_with_empty_days()
+    g = res.gross_returns
+    naive = realized_vs_exante_risk(g, res.exante_var.shift(1).reindex(g.index))["ratio"]
+    assert naive < 0.7  # the old computation is dragged toward 0 by the 140 empty days
+    s = res.summary()
+    assert s["invested_day_frac"] == pytest.approx(60 / 200)
+    assert 0.7 < s["realized_vs_exante_vol_ratio"] < 1.3
+    rv = res.realized_vs_exante()
+    assert rv["n_invested_days"] == 60
+    assert rv["ratio"] == s["realized_vs_exante_vol_ratio"]
+
+
+def test_vol_ratio_nan_with_too_few_invested_days():
+    res = _result_with_empty_days(n_days=120, n_invested=10)
+    s = res.summary()
+    assert s["invested_day_frac"] == pytest.approx(10 / 120)
+    assert np.isnan(s["realized_vs_exante_vol_ratio"])
+    assert "invested_day_frac" in s and "realized_vs_exante_vol_ratio" in s
+
+
+def test_simulator_empty_block_reports_invested_fraction(md, risk_model, alpha_model):
+    """Alpha forced to zero for the first 50 of 80 decision days: the book stays
+    empty (exact zeros), then is built; ``invested_day_frac`` counts the built
+    days and the vol ratio is estimated on them."""
+    cfg = make_cfg()
+    cm = SimpleCostModel(cfg.cost)
+    opt = SinglePeriodOptimizer(cfg.portfolio, cm)
+    sim = DailyBarSimulator(cfg, cm)
+    dates = md.dates[-81:]
+    first_live = dates[49]  # signal lag 1: decision day 50 reads the signal of day 49
+
+    def gated_alpha(t):
+        a = alpha_model.as_of(t)
+        if t < first_live:
+            return dataclasses.replace(a, expected_return=a.expected_return * 0.0, score=a.score * 0.0)
+        return a
+
+    res = sim.run(md, dates, gated_alpha, risk_model.as_of, opt, nav0=1e6)
+    s = res.summary()
+    inv = res.invested_days()
+    assert not inv.iloc[:50].any() and inv.iloc[50:].all()
+    assert s["invested_day_frac"] == pytest.approx(30 / 80)
+    assert 0.5 < s["realized_vs_exante_vol_ratio"] < 2.0
+    # 30 invested decision days; the forecast of the last one has no realised return in the panel
+    assert res.realized_vs_exante()["n_invested_days"] == 29

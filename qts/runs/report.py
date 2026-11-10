@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from qts.validation import HurdleReport
@@ -10,9 +12,30 @@ if TYPE_CHECKING:
     from qts.pipeline import PipelineResult
 
 
+def _pct(v: object) -> str:
+    x = float(v) if isinstance(v, (int, float)) else float("nan")
+    return f"{100 * x:.0f}%" if math.isfinite(x) else "n/a"
+
+
+def _vol_ratio_text(s: Mapping[str, object], rv: Mapping[str, float] | None = None) -> str:
+    """``realized_vs_exante_vol_ratio`` over invested days (with the two annual
+    vols when ``rv`` is given), or why it is undefined."""
+    v = s.get("realized_vs_exante_vol_ratio", float("nan"))
+    x = float(v) if isinstance(v, (int, float)) else float("nan")
+    if math.isfinite(x):
+        if rv and math.isfinite(rv.get("realized_vol_annual", float("nan"))):
+            return f"{x:.2f} ({100 * rv['realized_vol_annual']:.1f}% / {100 * rv['exante_vol_annual']:.1f}%)"
+        return f"{x:.2f}"
+    f = s.get("invested_day_frac", float("nan"))
+    fx = float(f) if isinstance(f, (int, float)) else float("nan")
+    return "n/a (too few invested days)" if math.isfinite(fx) else "n/a"
+
+
 def format_result(res: PipelineResult) -> str:
     s = res.summary
     icr = res.ic_report
+    bt = getattr(res, "backtest", None)
+    rv = bt.realized_vs_exante() if bt is not None and hasattr(bt, "realized_vs_exante") else None
     lines = [
         "=== Backtest summary ===",
         f"period            {s['start']} -> {s['end']}  ({s['n_days']} days)"
@@ -22,7 +45,8 @@ def format_result(res: PipelineResult) -> str:
         f"max drawdown      {100 * s['max_drawdown_net']:.1f}%   calmar {s['calmar_net']:.2f}",
         f"turnover/day      {100 * s['avg_daily_turnover']:.2f}%   effective holding {s['effective_holding_days']:.0f} d",
         f"cost per side     {s['avg_cost_bps_per_side']:.1f} bp   gross exp {s['avg_gross_exposure']:.2f}  net exp {s['avg_net_exposure']:+.2f}",
-        f"transfer coeff    {s.get('transfer_coefficient_mean', float('nan')):.2f}   realized/ex-ante vol {s.get('realized_vs_exante_vol_ratio', float('nan')):.2f}",
+        f"transfer coeff    {s.get('transfer_coefficient_mean', float('nan')):.2f}   "
+        f"realized/ex-ante vol {_vol_ratio_text(s, rv)}   invested {_pct(s.get('invested_day_frac'))} of days",
         f"sizing            mean gamma {s.get('mean_risk_aversion', float('nan')):.2f}   "
         f"vol target capped on {100 * s.get('vol_target_caps_share', float('nan')):.0f}% of solves",
         "",

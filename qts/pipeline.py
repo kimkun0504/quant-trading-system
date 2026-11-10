@@ -163,6 +163,7 @@ from qts.alpha.evaluation import (
 from qts.alpha.targets import forward_returns, residualize_forward_returns
 from qts.backtest import BacktestResult, BacktestSpec, BacktestSummary, DailyBarSimulator
 from qts.backtest import metrics as M
+from qts.backtest.result import INVESTED_GROSS_EPS, MIN_INVESTED_DAYS_FOR_VOL_RATIO
 from qts.core.config import SystemConfig
 from qts.core.manifest import RunManifest, hash_market_data
 from qts.core.roles import ALPHA_THEME_STYLES, RISK_ONLY_STYLES
@@ -1097,6 +1098,16 @@ class ResearchPipeline:
         if np.isfinite(ehd) and ehd < 0.6 * cfg.portfolio.effective_holding_days_target:
             notes.append(
                 f"effective holding {ehd:.0f}d < target {cfg.portfolio.effective_holding_days_target}d: raise trade_aversion"
+            )
+        inv = summ.get("invested_day_frac", np.nan)
+        if np.isfinite(inv) and inv < 0.5:
+            notes.append(
+                f"book empty (gross <= {INVESTED_GROSS_EPS:g}) on {100 * (1 - inv):.0f}% of days: "
+                "check the alpha / IC floor; realized/ex-ante vol is over invested days only"
+            )
+        if not np.isfinite(summ.get("realized_vs_exante_vol_ratio", np.nan)) and np.isfinite(inv):
+            notes.append(
+                f"realized/ex-ante vol undefined: < {MIN_INVESTED_DAYS_FOR_VOL_RATIO} invested days with a forecast"
             )
         if pbo is None:
             notes.append("PBO skipped: set SystemConfig.pipeline_pbo_configs to run a CSCV grid")

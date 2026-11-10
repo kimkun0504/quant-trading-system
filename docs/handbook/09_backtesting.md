@@ -379,7 +379,8 @@ This tests "is the mean daily return different from zero?" while allowing for au
 | `avg_gross_exposure`, `avg_net_exposure` | mean $\sum\lvert w\rvert$ and $\sum w$ of post-trade books |
 | `total_costs_usd` | sum of all booked costs including borrow and delisting liquidations |
 | `transfer_coefficient_mean` | mean per-solve TC (→ see **Portfolio construction › Diagnostics**) |
-| `realized_vs_exante_vol_ratio` | realised gross vol / mean ex-ante vol, forecast at $t$ aligned to the return $t\to t+1$ |
+| `realized_vs_exante_vol_ratio` | realised gross vol / mean ex-ante vol over **invested** decision days only (post-trade gross exposure > `INVESTED_GROSS_EPS` = 1e-4 of NAV), forecast at $t$ aligned to the return $t\to t+1$; NaN when fewer than `MIN_INVESTED_DAYS_FOR_VOL_RATIO` = 20 such days have a forecast. An empty-book day holds solver-noise weights (|w| ~ 1e-9–1e-6), whose positive forecast and ~0 return would otherwise pass the `v > 0` filter; `BacktestResult.realized_vs_exante()` also returns the two annual vols and `n_invested_days` |
+| `invested_day_frac` | share of decision days whose post-trade gross exposure exceeds 1e-4 of NAV (`BacktestResult.invested_days()`); the report card prints it next to the vol ratio and the pipeline adds a note below 0.5 |
 | `breakeven_cost_bps` | per-side breakeven from `gross_after_borrow` (above) |
 | `n_delistings`, `n_failed_solves` | counts from `diagnostics` |
 | `mean_risk_aversion` | mean annual $\gamma$ over the solve log (`sizing_summary`); NaN if no solve reported one |
@@ -411,7 +412,7 @@ Before believing a result, answer these in order. Each question maps to a field 
 2. **Where does the money come from?** Run `brinson_like_attribution`, and look at `exposures.parquet` in the run directory. Steady PnL from `market` or an industry is an unintended bet, not alpha.
 3. **How much do costs take, and how fragile is that?** Compare gross and net Sharpe, then read the slope of the cost-sensitivity table. If 2× costs kill the strategy, the cost model has to be right to within a factor of two, and it has never been calibrated on your own fills.
 4. **Is turnover consistent with the signal?** Effective holding days far below the signal half-life means you are paying to trade noise.
-5. **Is the risk real and sized as intended?** `realized_vs_exante_vol_ratio` near 1. Well above 1 means the book is riskier than it was sized to be. A high `vol_target_caps_share` means the book could not reach its vol target.
+5. **Is the risk real and sized as intended?** `realized_vs_exante_vol_ratio` near 1. Well above 1 means the book is riskier than it was sized to be. A high `vol_target_caps_share` means the book could not reach its vol target. Read it together with `invested_day_frac`: the ratio is estimated on invested days only, so a run whose book was empty on half the days (an alpha that is exactly zero, e.g. an IC floor) still gets an honest ratio for the days it held risk, and `n/a (too few invested days)` instead of a noise number when it barely traded.
 6. **Did the machinery work every day?** `n_failed_solves` (above 2% of rebalances the `failed_solves` gate fails the run), `n_delistings`, `n_out_of_model_name_days`, `n_no_signal_days` and `forced_exits` should all be small and explainable.
 7. **Is it consistent?** Fold Sharpes: one great block and three flat ones is a regime bet.
 8. **How many things did you try?** The DSR only knows about trials logged in the ledger. Running variants outside the pipeline and reporting the best is exactly the snooping the gates exist to catch.

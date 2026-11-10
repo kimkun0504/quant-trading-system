@@ -21,6 +21,16 @@ from qts.portfolio.diagnostics import effective_holding_days, realized_vs_exante
 
 COST_COLUMNS = ["spread", "impact", "fees", "borrow", "total"]
 
+#: A decision day counts as *invested* when the post-trade gross exposure exceeds
+#: this fraction of NAV.  Below it the book is empty up to solver noise (an empty
+#: optimizer solve returns |w| ~ 1e-9..1e-6 per name): its ex-ante variance and
+#: realised return are both numerically meaningless, so such days are excluded
+#: from ``realized_vs_exante_vol_ratio`` and counted in ``invested_day_frac``.
+INVESTED_GROSS_EPS = 1e-4
+#: Minimum number of invested return days for ``realized_vs_exante_vol_ratio``
+#: (fewer -> NaN; the report card says so instead of printing a noise ratio).
+MIN_INVESTED_DAYS_FOR_VOL_RATIO = 20
+
 
 class SizingSummary(TypedDict):
     """:meth:`BacktestResult.sizing_summary`."""
@@ -59,6 +69,7 @@ class BacktestSummary(SizingSummary):
     total_costs_usd: float
     transfer_coefficient_mean: float
     realized_vs_exante_vol_ratio: float
+    invested_day_frac: float
     breakeven_cost_bps: float
     n_delistings: int
     n_failed_solves: int
@@ -130,12 +141,9 @@ class BacktestResult:
         gb = self.gross_after_borrow_returns.dropna()
         traded = float(self.traded_usd.sum())
         trading_cost = float((self.costs["spread"] + self.costs["impact"] + self.costs["fees"]).sum())
-        rv = (
-            realized_vs_exante_risk(g, self.exante_var.shift(1).reindex(g.index), q)
-            if len(self.exante_var)
-            else {"ratio": float("nan")}
-        )
         gross_w = self.weights.abs().sum(axis=1)
+        invested = self.invested_days()
+        rv = self.realized_vs_exante(g)
         out: BacktestSummary = {
             "start": str(self.nav.index[0].date()) if len(self.nav) else "",
             "end": str(self.nav.index[-1].date()) if len(self.nav) else "",
@@ -167,6 +175,7 @@ class BacktestResult:
             if len(self.transfer_coefficient.dropna())
             else float("nan"),
             "realized_vs_exante_vol_ratio": rv["ratio"],
+            "invested_day_frac": float(invested.mean()) if len(invested) else float("nan"),
             # per-side breakeven net of borrow (borrow is not a per-side cost; audit 2 #1)
             "breakeven_cost_bps": M.breakeven_cost_bps(gb, self.turnover_on_return_dates().reindex(gb.index)),
             "n_delistings": len(cast(list[object], self.diagnostics.get("delistings", []))),
@@ -174,6 +183,44 @@ class BacktestResult:
             **self.sizing_summary(),
         }
         return out
+
+    def invested_days(self, eps: float = INVESTED_GROSS_EPS) -> pd.Series:
+        """Boolean by decision date: post-trade gross exposure ``> eps``
+        (:data:`INVESTED_GROSS_EPS`)."""
+        return (self.weights.abs().sum(axis=1) > eps).rename("invested")
+
+    def realized_vs_exante(
+        self,
+        gross_returns: pd.Series | None = None,
+        min_days: int = MIN_INVESTED_DAYS_FOR_VOL_RATIO,
+    ) -> dict[str, float]:
+        """:func:`qts.portfolio.diagnostics.realized_vs_exante_risk` over the
+        *invested* days only (:meth:`invested_days`), with the forecast made on
+        decision date ``t`` aligned to the return ``t -> t+1``; adds
+        ``n_invested_days``.  All-NaN with fewer than ``min_days`` such days.
+
+        Why the mask: on an empty-book day the optimizer returns weights of
+        solver-noise size, so the recorded ex-ante variance is tiny but positive
+        and the gross return ~0 -- a forecast that passes the ``v > 0`` filter
+        but carries no information.  Written after a real-data run whose book
+        was empty on most days printed ``realized/ex-ante vol 0.00`` (not
+        reproduced synthetically: pure noise days barely move either side, so
+        the report card now also prints the two annual vols to show which side
+        is degenerate)."""
+        g = self.gross_returns.dropna() if gross_returns is None else gross_returns
+        nan = {
+            "ratio": float("nan"),
+            "bias_stat": float("nan"),
+            "realized_vol_annual": float("nan"),
+            "exante_vol_annual": float("nan"),
+        }
+        if not len(self.exante_var) or not len(g):
+            return {**nan, "n_invested_days": 0.0}
+        inv = self.invested_days().reindex(self.exante_var.index).fillna(False).astype(bool)
+        exv = self.exante_var.where(inv).shift(1).reindex(g.index)
+        n_inv = int((exv.notna() & (exv > 0) & g.notna()).sum())
+        out = realized_vs_exante_risk(g, exv, self.periods_per_year, min_obs=min_days)
+        return {**out, "n_invested_days": float(n_inv)}
 
     def sizing_summary(self) -> SizingSummary:
         """From ``diagnostics["solve_log"]``: ``vol_target_caps_share`` = share of the

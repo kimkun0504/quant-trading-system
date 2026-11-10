@@ -110,18 +110,26 @@ def factor_exposure_report(w: pd.Series, risk: RiskModelOutput) -> pd.DataFrame:
 
 
 def realized_vs_exante_risk(
-    returns: pd.Series, exante_var_series: pd.Series, periods_per_year: int = 252
+    returns: pd.Series,
+    exante_var_series: pd.Series,
+    periods_per_year: int = 252,
+    min_obs: int = 5,
 ) -> dict[str, float]:
     """Compare realised return vol with the model's ex-ante forecast.
 
     ``exante_var_series[t]`` must be the forecast daily variance of the
     position that earns ``returns[t]``.  Returns the realised/ex-ante vol
     ratio and the bias statistic ``std(r_t / sigma_t)`` (1 = unbiased).
+    Days with a missing or non-positive forecast are dropped; with fewer
+    than ``min_obs`` usable days every statistic is NaN.  Callers that know
+    which days the book was actually invested should mask the forecast to
+    those days first (an empty book has a forecast of ~0 and a return of ~0,
+    and both are solver noise -- see ``BacktestResult.summary``).
     """
     r = pd.Series(returns, dtype=float)
     v = pd.Series(exante_var_series, dtype=float).reindex(r.index)
     m = r.notna() & v.notna() & (v > 0)
-    if m.sum() < 5:
+    if m.sum() < max(int(min_obs), 2):
         return {
             "ratio": float("nan"),
             "bias_stat": float("nan"),

@@ -274,8 +274,16 @@ export interface components {
       total_costs_usd: number;
       /** Transfer Coefficient Mean */
       transfer_coefficient_mean: number;
-      /** Realized Vs Exante Vol Ratio */
+      /**
+       * Realized Vs Exante Vol Ratio
+       * @description realised / ex-ante vol over invested days only; NaN (null) with too few
+       */
       realized_vs_exante_vol_ratio: number;
+      /**
+       * Invested Day Frac
+       * @description share of decision days with gross exposure > 1e-4 of NAV
+       */
+      invested_day_frac: number;
       /** Breakeven Cost Bps */
       breakeven_cost_bps: number;
       /** N Delistings */

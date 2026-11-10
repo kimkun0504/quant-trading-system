@@ -820,7 +820,13 @@
           },
           "realized_vs_exante_vol_ratio": {
             "type": "number",
-            "title": "Realized Vs Exante Vol Ratio"
+            "title": "Realized Vs Exante Vol Ratio",
+            "description": "realised / ex-ante vol over invested days only; NaN (null) with too few"
+          },
+          "invested_day_frac": {
+            "type": "number",
+            "title": "Invested Day Frac",
+            "description": "share of decision days with gross exposure > 1e-4 of NAV"
           },
           "breakeven_cost_bps": {
             "type": "number",
@@ -864,6 +870,7 @@
           "total_costs_usd",
           "transfer_coefficient_mean",
           "realized_vs_exante_vol_ratio",
+          "invested_day_frac",
           "breakeven_cost_bps",
           "n_delistings",
           "n_failed_solves"

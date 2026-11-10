@@ -457,6 +457,7 @@ export function generateRun(spec: RunSpec): GeneratedRun {
       costsDaily.borrow.reduce((a, b) => a + b, 0),
     transfer_coefficient_mean: 0.38 + 0.12 * rng(),
     realized_vs_exante_vol_ratio: annualizedVol(gross) / mean(exanteVol),
+    invested_day_frac: 1,
     breakeven_cost_bps: breakeven,
     n_delistings: Math.floor(rng() * 9),
     n_failed_solves: spec.signal_lag_days === 0 ? 2 : 0,

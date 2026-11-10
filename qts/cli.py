@@ -8,6 +8,11 @@ Commands
 ``run``              real data: ``--store PATH`` (ParquetStore) or ``--yfinance T1 T2 ...``;
                      ``--min-mcap-ever USD`` / ``--max-names N`` pre-filter a large store by
                      peak market cap before anything is pivoted
+``--set KEY=VALUE``  (``demo`` and ``run``, repeatable) dotted-path config override applied
+                     after ``--config`` is loaded, e.g. ``--set portfolio.risk_aversion=5
+                     --set portfolio.risk_aversion_mode=target_vol``; VALUE is parsed as a
+                     YAML scalar (``0``, ``0.0``, ``true``, ``null``, bare words are strings);
+                     unknown keys are an error (exit 2)
 ``data sharadar sync``      fill a ParquetStore from the Sharadar bundle (``--store``,
                      ``--raw``, ``--tables``, ``--since``, ``--from-files DIR``, ``--dry-run``)
 ``data sharadar validate``  sanity checks of a Sharadar-filled store (PASS/WARN per check)
@@ -49,6 +54,49 @@ def _load_config(path: str | None):
     return SystemConfig.from_yaml(path) if path else SystemConfig()
 
 
+class ConfigOverrideError(ValueError):
+    """A ``--set KEY=VALUE`` could not be parsed or applied."""
+
+
+def parse_set_overrides(items: Sequence[str] | None) -> dict[str, object]:
+    """``["a.b=1", "c=target_vol"]`` -> ``{"a.b": 1, "c": "target_vol"}``.
+
+    Values are parsed as YAML scalars (``yaml.safe_load``): ``0`` -> int, ``0.0``
+    -> float, ``true``/``false`` -> bool, ``null``/``~``/empty -> None, anything
+    else a string.  Quote a value to force a string (``--set x='"1"'``).
+    Raises :class:`ConfigOverrideError` on a missing ``=`` or an empty key."""
+    import yaml
+
+    out: dict[str, object] = {}
+    for item in items or ():
+        key, sep, raw = item.partition("=")
+        key = key.strip()
+        if not sep or not key:
+            raise ConfigOverrideError(f"--set expects KEY=VALUE, got {item!r}")
+        try:
+            val = yaml.safe_load(raw.strip()) if raw.strip() else None
+        except yaml.YAMLError as e:
+            raise ConfigOverrideError(f"--set {key}: cannot parse value {raw!r} as YAML: {e}") from e
+        if isinstance(val, (dict, list)):
+            raise ConfigOverrideError(f"--set {key}: value must be a scalar, got {type(val).__name__}")
+        out[key] = val
+    return out
+
+
+def _apply_set_overrides(cfg, items: Sequence[str] | None):
+    """``cfg.with_overrides(parse_set_overrides(items))`` with unknown keys and
+    section validation failures re-raised as :class:`ConfigOverrideError`."""
+    ov = parse_set_overrides(items)
+    if not ov:
+        return cfg
+    try:
+        return cfg.with_overrides(ov)
+    except KeyError as e:
+        raise ConfigOverrideError(f"--set: {e.args[0] if e.args else e}") from e
+    except (TypeError, ValueError) as e:
+        raise ConfigOverrideError(f"--set: invalid value: {e}") from e
+
+
 def _set_signal_lag(cfg, lag: int | None):
     """``(cfg with execution.signal_lag_days = lag, warning)``; the warning is a
     text when the field does not exist (older ExecutionConfig), else ``None``."""
@@ -61,6 +109,15 @@ def _set_signal_lag(cfg, lag: int | None):
 
 def _add_pipeline_args(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--config", default=None, help="SystemConfig YAML (default: built-in defaults)")
+    ap.add_argument(
+        "--set",
+        dest="set_overrides",
+        action="append",
+        metavar="KEY=VALUE",
+        default=None,
+        help="dotted config override applied after --config (repeatable), e.g. "
+        "--set portfolio.risk_aversion=5; VALUE is a YAML scalar; unknown keys are an error",
+    )
     ap.add_argument("--ml", action="store_true", help="include the walk-forward ML sleeve (phase 2)")
     ap.add_argument(
         "--signal-lag",
@@ -163,11 +220,20 @@ def cmd_demo(a: argparse.Namespace) -> int:
     print(
         f"synthetic market: {md.close.shape[1]} stocks x {md.close.shape[0]} days  ({time.time() - t0:.1f}s)"
     )
-    cfg = _load_config(a.config).with_overrides({"seed": a.seed})
+    try:
+        cfg = _apply_set_overrides(_load_config(a.config).with_overrides({"seed": a.seed}), a.set_overrides)
+    except ConfigOverrideError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     return _run_pipeline(md, cfg, a)
 
 
 def cmd_run(a: argparse.Namespace) -> int:
+    try:  # fail before any data is loaded
+        cfg = _apply_set_overrides(_load_config(a.config), a.set_overrides)
+    except ConfigOverrideError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     if a.store:
         from qts.data.store import ParquetStore
 
@@ -198,7 +264,7 @@ def cmd_run(a: argparse.Namespace) -> int:
     from qts.data.universe import survivorship_check
 
     survivorship_check(md)
-    return _run_pipeline(md, _load_config(a.config), a)
+    return _run_pipeline(md, cfg, a)
 
 
 def cmd_data(a: argparse.Namespace) -> int:

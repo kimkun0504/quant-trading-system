@@ -110,7 +110,10 @@ class BacktestSummary(_Model):
     avg_daily_cost_bps_of_nav: float
     total_costs_usd: float
     transfer_coefficient_mean: float
-    realized_vs_exante_vol_ratio: float
+    realized_vs_exante_vol_ratio: float = Field(
+        description="realised / ex-ante vol over invested days only; NaN (null) with too few"
+    )
+    invested_day_frac: float = Field(description="share of decision days with gross exposure > 1e-4 of NAV")
     breakeven_cost_bps: float
     n_delistings: int
     n_failed_solves: int

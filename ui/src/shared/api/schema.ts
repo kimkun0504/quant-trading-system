@@ -90,7 +90,10 @@ export interface BacktestSummary {
   avg_daily_cost_bps_of_nav: number;
   total_costs_usd: number;
   transfer_coefficient_mean: number;
+  /** Realised / ex-ante vol over invested days only (null with too few). */
   realized_vs_exante_vol_ratio: number;
+  /** Share of decision days with gross exposure > 1e-4 of NAV. */
+  invested_day_frac: number;
   breakeven_cost_bps: number;
   n_delistings: number;
   n_failed_solves: number;

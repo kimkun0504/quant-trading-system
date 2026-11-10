@@ -92,6 +92,7 @@ cd ui && npm ci && cd ..
 | Flag | Default | Meaning |
 |---|---|---|
 | `--config PATH` | built-in defaults | a `SystemConfig` YAML file, loaded strictly |
+| `--set KEY=VALUE` | none | dotted-path config override applied *after* `--config` (repeatable): `--set portfolio.risk_aversion=5 --set portfolio.max_adv_participation=0.10`. The value is parsed as a YAML scalar, so `0` is an int, `0.0` a float, `true`/`false` booleans, `null` is `None` and a bare word (`target_vol`) a string; quote to force a string. An unknown key (`portfolio.risk_averzion`) or a value a section rejects stops the command with exit code 2 before any data is loaded. The override changes the config hash like an edited YAML would |
 | `--ml` | off | add the walk-forward ML sleeve (phase 2; slower) |
 | `--signal-lag N` | config (1) | execution delay in days (`ExecutionConfig.signal_lag_days`) |
 | `--compare-lag` | off | run lag 0 and lag 1 and print both |
@@ -332,10 +333,10 @@ cost per side     10.5 bp   gross exp 2.00  net exp +0.04
 Average cost per dollar traded, one side, in basis points; average gross exposure (cap 2.0) and net exposure (target 0 ± 0.05).
 
 ```text
-transfer coeff    0.53   realized/ex-ante vol 1.04
+transfer coeff    0.53   realized/ex-ante vol 1.04 (6.8% / 6.5%)   invested 100% of days
 ```
 
-The transfer coefficient is the mean correlation between the alpha and the positions; 1 would mean the book is the forecast, and constraints and costs pull it down. Realised ÷ ex-ante volatility checks the risk model: near 1 is good, well above 1 means it under-forecasts.
+The transfer coefficient is the mean correlation between the alpha and the positions; 1 would mean the book is the forecast, and constraints and costs pull it down. Realised ÷ ex-ante volatility checks the risk model: near 1 is good, well above 1 means it under-forecasts; the two percentages are the annualised realised and mean ex-ante vol it is built from. Both are computed over **invested** days only (post-trade gross exposure above 1e-4 of NAV), and `invested N% of days` (`invested_day_frac`) says how many days that was. A run whose alpha is exactly zero on many days (an IC floor, no signal) shows a low invested share and a note in `NOTES:`; with fewer than 20 invested days the ratio prints `n/a (too few invested days)` rather than a noise number.
 
 ### Alpha IC
 
