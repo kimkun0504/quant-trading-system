@@ -15,9 +15,14 @@ Expected datasets in the store (see qts/data/store.py docstring):
     optional:  spread_bps, short_interest_ratio, borrow_fee, book_to_price,
                earnings_yield, gross_profitability, asset_growth.
 
-Example (after loading Norgate/Sharadar panels into ./data/store, e.g. with
-qts.data.loaders.norgate_to_store and sharadar_sf1_to_store):
-    python scripts/run_real.py --store data/store --start 2006-01-01 --ml
+Filling the store from the Sharadar bundle (qts/data/sharadar.py; key in .env as
+NASDAQ_DATA_LINK_API_KEY, or --from-files DIR with the website's bulk exports):
+    qts data sharadar sync --store data/store
+    qts data sharadar validate --store data/store
+
+Example run (``--max-names`` / ``--min-mcap-ever`` pre-filter a large store by peak
+market cap before anything is pivoted; the universe rules still apply on top):
+    python scripts/run_real.py --store data/store --start 2000-01-01 --max-names 3000 --ml
 
 Prototype with yfinance (survivorship-biased; for plumbing only):
     python scripts/run_real.py --yfinance AAPL MSFT ... --start 2015-01-01

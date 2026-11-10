@@ -1,0 +1,6 @@
+date,action,ticker,name,contraticker,contraname,note
+2019-01-02,added,AAA,Alpha Bank,,,
+2020-01-10,added,BBB,Beta Software,CCC,Gamma Diners,
+2020-01-21,removed,AAA,Alpha Bank,,,
+2020-01-31,current,BBB,Beta Software,,,
+2010-01-04,historical,CCC,Gamma Diners,,,

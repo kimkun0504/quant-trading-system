@@ -13,6 +13,7 @@ This page covers everything that happens before a model sees a number: which dat
 - FINRA's publication lag is counted in NYSE sessions (`qts/data/calendar.py`); the short-interest ratio uses shares as of the settlement date.
 - Sharadar defaults are now `dimension="ART"`, `lag_days=1`; B/P and E/P are split-consistent; late restatements of older periods no longer replace the current period.
 - Labels tell halts from delistings causally (`delisting_dates`, else a 63-day gap rule); the synthetic generator can plant splits, halts and delistings, and its alpha timing and realised IC band are documented.
+- First real source: `qts/data/sharadar.py` loads the Sharadar Core US Equities Bundle (prices, caps, PIT fundamentals, corporate actions, S&P 500 membership) into the store, keyed on permanent identifiers, with `qts data sharadar sync` / `validate` (→ see **Real data: Sharadar**).
 </callout>
 
 ## The data a strategy needs
@@ -618,6 +619,95 @@ Every latent style is observable through a characteristic: an earlier version wi
 
 Results on the synthetic market are plumbing checks, not evidence about alpha.
 
+## Real data: Sharadar
+
+### What it is
+
+The **Sharadar Core US Equities Bundle** (sold through Nasdaq Data Link) is the first real data source wired into the system. One subscription carries delisting-complete daily prices for every US-listed stock since 1998, point-in-time fundamentals keyed on the SEC filing date, a security master with a permanent identifier, daily market capitalisations, corporate actions and the history of S&P 500 membership. `qts/data/sharadar.py` downloads its tables, maps them onto the store's dataset names and checks the result; `qts data sharadar sync` and `qts data sharadar validate` are the commands (→ see **Operating guide › Loading Sharadar**).
+
+| Table | Rows | What the loader makes of it | Store datasets |
+|---|---|---|---|
+| `TICKERS` | ~30k | security master, kept universe, panel ids, industry labels, delisting dates | `security_master`, `industry`, `delisting_dates` |
+| `SEP` | ~20M | adjusted and as-traded closes, actual shares traded | `prices_close`, `prices_close_raw`, `prices_volume` |
+| `DAILY` | ~15M | market cap and valuation ratios (USD millions) | `sharadar_marketcap`, `sharadar_ev`, `sharadar_pb`, `sharadar_pe`, `sharadar_ps`; derived `market_cap`, `shares_outstanding` |
+| `SF1` | ~3M | as-reported fundamentals (`ART` and `ARQ` kept) | `sharadar_sf1`; derived `book_to_price`, `earnings_yield`, `gross_profitability`, `asset_growth` |
+| `ACTIONS` | ~300k | splits, dividends, listings, delistings, mergers (reference) | `corporate_actions` |
+| `SP500` | ~2k | index additions and removals since 1957 | `sp500_membership` (+ `sp500_membership_panel`) |
+| `METRICS`, `EVENTS`, `SFP`, `INDICATORS` | optional | stored verbatim (`--tables`) | `sharadar_<table>` |
+
+Row counts are order-of-magnitude expectations for the full history; the first real download fixes them.
+
+### The kept universe
+
+`TICKERS` has one row per security *and per table it appears in*, so the loader keeps the `SEP` rows and then filters on two columns (both configurable through `MasterFilters`):
+
+- `category` in {`Domestic Common Stock`, `Domestic Common Stock Primary Class`}. ADRs are foreign issuers with different filings, currencies and settlement; Canadian listings, preferred stock, ETFs, ETNs, closed-end funds, units and warrants are not the common-equity cross-section the alpha and risk models describe; a **secondary share class** (`... Secondary Class`) would put one company's capitalisation into the panel twice, so only the primary class is kept.
+- `exchange` in {`NYSE`, `NASDAQ`, `NYSEMKT`, `BATS`}. OTC names have no closing auction and unreliable prints; `NYSEARCA` is where ETFs list; `INDEX` rows are not stocks.
+
+What survives is roughly 8,000–10,000 names alive at any date and perhaps 20,000 over the history, delisted companies included.
+
+### Identifiers: one id per company, not per ticker string
+
+Sharadar writes a company's whole history under its **latest** ticker, and a ticker can later be reused by a different company (a different `permaticker`, with a disjoint `[firstpricedate, lastpricedate]`). The build plan's "symbol-mapping layer on permanent identifiers" is therefore needed from day one, and the loader implements it as follows:
+
+- The panel **id** is the Sharadar ticker when exactly one kept `permaticker` ever used it, and `TICKER.PERMATICKER` (for example `DDD.100004` and `DDD.100005`) for **every** holder when several did. Most names keep their plain ticker; a reused ticker is split into as many ids as it had holders, and no price series ever merges two companies.
+- Price and valuation rows (`SEP`, `DAILY`) are resolved by `(ticker, date)` against each holder's price-date range; the alive holder's range is open-ended. A print dated while nobody held the ticker is a data error and is dropped (counted in the sync report).
+- Filings (`SF1`) are resolved by `(ticker, datekey)`. A company files before its first price date (IPO filings), so a filing in a gap is assigned to the **next** holder; the sync report counts these too.
+- Rows whose ticker is not in the kept master are dropped and counted (ETFs, ADRs, OTC names with prices in `SEP`).
+
+<callout icon="⚠️" color="yellow_bg">
+Sharadar tickers may themselves contain a dot (`BRK.A`). An id's suffix is a permaticker only when it is all digits; `security_master` holds the full mapping (`id`, `permaticker`, `ticker`, `name`, exchange, category, both industry labels, price-date range, delisting flag, CUSIPs, location).
+</callout>
+
+### Adjustments and units
+
+The three price fields are not interchangeable, and the loader uses each for one thing:
+
+- `closeadj` is split- **and** dividend-adjusted → `prices_close` (returns, momentum, volatility, labels).
+- `closeunadj` is the price on the tape → `prices_close_raw` (the \$5 screen, dollar volume, per-share fees).
+- `open`, `high`, `low`, `close`, `volume` are **split-adjusted but not dividend-adjusted**. The store wants actual shares traded, so the loader undoes the split adjustment:
+
+$$
+V^{\text{actual}}_t = V^{\text{SEP}}_t \times \frac{\text{close}_t}{\text{closeunadj}_t}
+$$
+
+where:
+- $V^{\text{SEP}}_t$ is the vendor's split-adjusted volume;
+- $\text{close}_t$ is the vendor's split-adjusted close and $\text{closeunadj}_t$ the as-traded close.
+
+Before an $m$-for-1 split, $\text{close}_t = \text{closeunadj}_t / m$ and the adjusted volume is $m$ times the shares that actually changed hands, so the ratio undoes the adjustment exactly. **Worked example:** a stock trades 1,000 shares at \$100 the day before a 2-for-1 split. Sharadar shows `close = 50`, `closeunadj = 100`, `volume = 2000`; the loader stores $2000 \times 50 / 100 = 1000$ shares. Where `closeunadj` is missing or zero the vendor volume is kept and the row counted (`validate` reports the fraction).
+
+`DAILY.marketcap` and `DAILY.ev` are in **USD millions** (`DAILY_USD_SCALE = 1e6`): `market_cap = marketcap × 10⁶` and `shares_outstanding = market_cap / closeunadj` on the same day, so cap, raw price and share count are consistent across splits. On days without a `DAILY` row the latest SF1 `sharesbas` filed on or before the date is carried forward and `market_cap = closeunadj × shares`. `validate` checks the unit two ways: the largest market cap in the store must be in the $10^{11}$–$2 \times 10^{13}$ USD range, and the implied share count must match SF1's `sharesbas` at filing dates (median ratio near 1).
+
+SF1 amounts are plain USD and shares. The fundamentals panels are built by `sharadar_sf1_to_pit_fundamentals` with the defaults described above (`ART`, `lag_days = 1`, totals on one share basis), so a value is visible from `datekey + 1` calendar day snapped to the next trading day, never earlier. When a filing predates the first price in the shares panel (a company's first filings, or filings before 1998) the filing's own `sharesbas` supplies the share count, which is known at its `datekey`. `validate` re-derives `gross_profitability` for a sample of 50 names from the stored SF1 rows and confirms nothing appears before `datekey + 1`.
+
+### Industries
+
+`TICKERS.famaindustry` already carries the Fama–French 48 industry as a long name ("Banking", "Business Services", "Pharmaceutical Products"). `FF48_NAMES` uses the short names ("Banks", "BusSv", "Drugs"), so `map_famaindustry` normalises the vendor label and looks it up in `FAMAINDUSTRY_TABLE` (built from `FF48_DEFINITIONS` plus Sharadar's own spellings, notably "Restaraunts Hotels Motels" → `Meals`); a name without a usable label falls back to `sic_to_ff48(siccode)` and then to `"Other"`. The sync report prints how many names took each path and warns when more than 10% land in "Other".
+
+TICKERS carries only the **current** classification, so no `industry_history` is written and the static map applies for the whole history. FF48 reclassifications are rare, so this is a mild look-ahead; `build_industry_history` is the hook for a dated SIC source (EDGAR filing headers carry the SIC at each filing date).
+
+### Delistings, corporate actions and the S&P 500
+
+- `delisting_dates`: `lastpricedate` for `isdelisted = "Y"`, `NaT` for alive names, so **every** kept id is covered and the label builder and simulator use the vendor rule rather than the 63-day gap rule. `validate` cross-checks the dates against `ACTIONS` rows of type `delisted` (within 5 days) without overriding TICKERS.
+- `corporate_actions` keeps every `ACTIONS` row (date, action, ticker, id, value, contra ticker) for reference; `validate` confirms that raw-close jumps of more than 40% with a continuous adjusted close line up with `split` actions.
+- `sp500_membership` stores the `SP500` events (`added`, `removed`, plus the vendor's `current` and `historical` listings). `sp500_membership_panel(store)` turns the add/remove events into a date × id boolean panel (member on `[added, removed)`, events before the panel start carried in). It is stored and exposed only: **it is not a universe rule** and nothing in the pipeline reads it yet.
+
+### Incremental refresh and memory
+
+A full load drops and rebuilds every dataset a table feeds (`mode="replace_partition"`). With `--since YYYY-MM-DD` the loader exports only rows with `lastupdated >= since` for `SEP`, `DAILY` and `SF1` (TICKERS, ACTIONS and SP500 are always whole) and upserts them; the derived `market_cap`, `shares_outstanding` and fundamentals panels are rebuilt from the store for every year the delta touched. Sharadar restates `closeadj` for the whole history whenever a dividend is paid, so a full reload every month or two keeps adjusted prices current. Each table is resumable: a raw file already processed in the same mode is skipped (`<store>/_sharadar/state.json`, `--force` ignores it).
+
+Nothing is pivoted whole. CSVs are streamed in chunks of 500,000 rows, rows are resolved to ids and spilled to per-year staging files, and each year is written once; the fundamentals are computed in batches of 500 ids. Peak memory for a full load is a few GB; the numbers are in the Operating guide.
+
+### What the bundle does not cover
+
+Half-spreads (`spread_bps`), borrow fees, short interest and dated industry history are not in the bundle: the cost model's spread falls back to its proxy, the borrow signal waits for the IBKR logger, and FINRA short interest is loaded separately (→ see **Short interest: FINRA data and the publication lag**). Delisting *returns* are not provided either; the −30% haircut stays.
+
+### References
+
+- [Nasdaq Data Link, Sharadar Core US Equities Bundle](https://data.nasdaq.com/databases/SFA)
+- [Nasdaq Data Link, Tables API bulk export](https://docs.data.nasdaq.com/docs/tables-1)
+
 ## Roadmap
 
-Not yet in the code (from `README.md`, `docs/REVIEW_NOTES.md`, `docs/WORK_PLAN.md`): Phase 0 ingest scripts that pull Norgate prices and Sharadar SF1 into a `ParquetStore` (there is no Norgate or Sharadar *downloader* in `qts`; `qts/data/loaders.py` has the Sharadar SF1 transform, FINRA, Ken French and SIC→FF48 parsers, and the Operating guide gives the dataset mapping); a symbol-mapping layer on permanent identifiers; the daily IBKR borrow-rate logger, spliced into `borrow_fee` after 12 months; real delisting returns from the vendor in place of the −30% haircut; reproducing five `openassetpricing` factor series from own data as a PIT audit.
+Not yet in the code (from `README.md`, `docs/REVIEW_NOTES.md`, `docs/WORK_PLAN.md`): the Norgate price path as a second source (`qts/data/loaders.py::norgate_to_store` is a stub); the daily IBKR borrow-rate logger, spliced into `borrow_fee` after 12 months; real delisting returns from the vendor in place of the −30% haircut; dated industry history (`build_industry_history` hook); reproducing five `openassetpricing` factor series from own data as a PIT audit. Phase 0 (Sharadar prices, caps and fundamentals into a `ParquetStore` keyed on permanent identifiers) is in the code: → see **Real data: Sharadar** above.

@@ -568,7 +568,8 @@ def sharadar_sf1_to_pit_fundamentals(sf1_df: pd.DataFrame, dimension: str = "ART
     ``book_to_price(t) = bvps x shares(filing) / market_cap(t)`` and
     ``earnings_yield(t) = eps x shares(filing) / market_cap(t)``, where
     ``shares(filing)`` is the actual share count as of the filing's ``datekey``
-    (``shares_outstanding`` panel, else SF1 ``sharesbas`` of the row) and
+    (``shares_outstanding`` panel; SF1 ``sharesbas`` of the row when there is no
+    panel, or where the panel has no value at the filing date) and
     ``market_cap(t)`` the PIT market cap (``market_cap`` panel, else
     ``close_raw x shares_outstanding``).  ``bvps x shares`` is the book value
     total the filing reports, so a split after the filing (which halves the raw
@@ -680,6 +681,12 @@ def sharadar_sf1_to_pit_fundamentals(sf1_df: pd.DataFrame, dimension: str = "ART
         vals = so.to_numpy(dtype=float)
         shares_f = np.full(len(df), np.nan)
         shares_f[ok] = vals[rpos[ok], cpos[ok]]
+        if "sharesbas" in df.columns:
+            # a filing dated before the panel's first date (or a name the panel lacks)
+            # has no panel share count: the filing's own as-reported count is used,
+            # which is known at its datekey, so the ratio stays PIT
+            sb = pd.to_numeric(df["sharesbas"], errors="coerce").to_numpy(dtype=float)
+            shares_f = np.where(np.isnan(shares_f), sb, shares_f)
     elif "sharesbas" in df.columns:
         shares_f = pd.to_numeric(df["sharesbas"], errors="coerce").to_numpy(dtype=float)
     if mcap_t is not None and shares_f is not None:

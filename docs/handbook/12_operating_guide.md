@@ -1,7 +1,7 @@
 # Operating guide
 
 <callout icon="🧭" color="gray_bg">
-This page is the hands-on manual. It shows how to install the research package, the API and the UI; what every `make` target and every `qts` subcommand does, with examples; how to read the report card a run prints, line by line; how to start the API and the QTS Workbench and what each screen shows; how to launch a run from the browser; how to load real data (Norgate/Sharadar prices and fundamentals, FINRA short interest, Ken French factors) into the `ParquetStore`; how to recalibrate the two parameters that must be re-estimated on real data (the alignment variance scale ν and the impact prefactors b); how the test tiers, the golden file and CI work; and what to do when something goes wrong.
+This page is the hands-on manual. It shows how to install the research package, the API and the UI; what every `make` target and every `qts` subcommand does, with examples; how to read the report card a run prints, line by line; how to start the API and the QTS Workbench and what each screen shows; how to launch a run from the browser; how to load real data into the `ParquetStore` (the Sharadar bundle with `qts data sharadar sync` and `validate`; Norgate prices, FINRA short interest and Ken French factors by hand); how to recalibrate the two parameters that must be re-estimated on real data (the alignment variance scale ν and the impact prefactors b); how the test tiers, the golden file and CI work; and what to do when something goes wrong.
 </callout>
 
 <callout icon="🆕" color="green_bg">
@@ -10,6 +10,7 @@ This page is the hands-on manual. It shows how to install the research package, 
 - Runs now trade one day after the signal by default (`ExecutionConfig.signal_lag_days = 1`); `qts demo --compare-lag` prints the lag-0 versus lag-1 comparison.
 - The defaults quoted here are those of `qts/core/config.py` and the generated `configs/default.yaml` as of 2026-11-05.
 - Stage cache (`--cache`, config section `cache`, off by default): fitted risk and alpha models are reused across runs on the same data; results and hashes are unchanged (→ see **The stage cache**).
+- `qts data sharadar sync` / `validate` load and check the Sharadar bundle; `qts run --store` gained `--max-names` / `--min-mcap-ever` to pre-filter a large store by peak market cap (→ see **Loading Sharadar**).
 </callout>
 
 ## Install
@@ -84,7 +85,7 @@ cd ui && npm ci && cd ..
 
 ## The `qts` command
 
-`qts` has five subcommands. Every pipeline command (`demo`, `run`) fits the full pipeline, backtests, evaluates, prints the report card, writes a run directory under `--runs-root` (default `runs`) and appends a trial to the ledger at `--ledger` (default `runs/trial_ledger.jsonl`).
+`qts` has six subcommands (`demo`, `run`, `data`, `config`, `runs`, `ledger`). Every pipeline command (`demo`, `run`) fits the full pipeline, backtests, evaluates, prints the report card, writes a run directory under `--runs-root` (default `runs`) and appends a trial to the ledger at `--ledger` (default `runs/trial_ledger.jsonl`).
 
 ### Flags shared by `demo` and `run`
 
@@ -143,10 +144,13 @@ Both runs are full trials (two run directories, two ledger records), each refits
 ```bash
 qts run --store data/store --start 2006-01-01                # phase 1 on a ParquetStore
 qts run --store data/store --start 2006-01-01 --ml --config configs/real.yaml
+qts run --store data/store --start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8   # large (Sharadar) store
 qts run --yfinance AAPL MSFT NVDA JPM XOM --start 2015-01-01  # plumbing only
 ```
 
 `--store` assembles `MarketData` with `ParquetStore(path).as_market_data(start, end)`; `--yfinance` downloads with `qts.data.loaders.yfinance_to_market_data` (default start 2015-01-01). Both then call `qts.data.universe.survivorship_check`, which warns when no ticker's prices end before the last date. yfinance data always triggers it: it has no delisted companies, so **never report a Sharpe from it**. `scripts/run_real.py` is a thin wrapper with the same flags.
+
+**Pre-filtering a large store.** `as_market_data` pivots every stored dataset into date × ticker panels; a full Sharadar store (8–10k names alive, ~20k over the history, ~7,000 dates) does not fit a laptop that way. `--max-names N` and `--min-mcap-ever USD` first read only the long `market_cap` table (through DuckDB, never pivoted) and keep the ids whose **peak** market cap in `[start, end]` is at least the threshold, then the `N` largest by that peak (`ParquetStore.tickers_by_market_cap`); only those ids are loaded, through the reader's ticker push-down. A name's peak is used so that a company that was large at any time in the window is loaded for its whole history, delisted names included. This is a loading convenience, not a universe rule: `build_universe_mask` still applies the point-in-time price, ADV, size-quantile and `top_n_by_mcap` screens on top, so set `--max-names` comfortably above `universe.top_n_by_mcap` (3,000 for the default 1,000-name universe) and keep `--min-mcap-ever` below the smallest cap that could ever enter it. The command prints how many ids survived the pre-filter and the loaded shape.
 
 ### `qts config dump` and `qts config validate`
 
@@ -500,9 +504,78 @@ The workbench is designed as an annotated lab notebook (`ui/DESIGN.md`): a calm 
 
 Each job runs in its own process (a crash cannot take the API down), follows the same code path as `qts demo` / `qts run` with NAV \$5M, writes into `runs/_staging/` and renames the directory into place, so readers never see a half-written run. Job state is kept in `runs/_jobs/<job_id>.json`; a job that was running when the API stopped is reported as failed ("Interrupted"). A queued or running job can be cancelled (`DELETE /api/jobs/<id>`). Every launch is a trial in the ledger, which raises the deflated-Sharpe bar for every run in its family; re-running an identical config on identical data from a clean checkout does not.
 
+## Loading Sharadar
+
+The Sharadar Core US Equities Bundle is the system's first real data source (→ see **Data & universe › Real data: Sharadar** for what each table becomes). Everything below runs on a laptop; the sandbox the loader was built in had no access to Nasdaq Data Link, so the first real download is also the first check of the vendor's current file layout: read the sync report and run `validate` before anything else.
+
+### 1. Subscribe and set the key
+
+Subscribe to the bundle on Nasdaq Data Link (tables `SHARADAR/SEP`, `TICKERS`, `DAILY`, `SF1`, `ACTIONS`, `SP500`, plus `SFP`, `METRICS`, `EVENTS`, `INDICATORS`) and copy the API key from your account page. Put it in a `.env` file in the repository root (the file is git-ignored):
+
+```text
+NASDAQ_DATA_LINK_API_KEY=your_key_here
+```
+
+The loader reads `--api-key`, then the environment variable `NASDAQ_DATA_LINK_API_KEY`, then `.env` in the working directory (a plain `KEY=VALUE` parser, no `python-dotenv` needed). The key is never printed or logged and is redacted from every error message. Install the data extra if you have not: `pip install -e ".[dev,data]"` (`requests` for the download, `duckdb` for the checks).
+
+### 2. Download: through the API or by hand
+
+```bash
+qts data sharadar sync --dry-run                      # shows the files it would fetch / read
+qts data sharadar sync                                # full load: TICKERS, SEP, DAILY, SF1, ACTIONS, SP500
+qts data sharadar sync --tables SEP,TICKERS,DAILY,SF1,ACTIONS,SP500,METRICS   # add an optional table
+qts data sharadar sync --store data/store --raw data/raw/sharadar -v          # defaults, with progress logs
+```
+
+The API path requests a bulk export per table (`GET https://data.nasdaq.com/api/v3/datatables/SHARADAR/<TABLE>.json?qopts.export=true&api_key=...`), polls every 5 s until the file status is `fresh`, downloads the zip and caches it as `data/raw/sharadar/<TABLE>/<YYYYMMDD>_full.zip`. A cached file for today is reused, so an interrupted run resumes without downloading again. Keep the raw zips: they are the immutable vendor drop the store is rebuilt from.
+
+If you prefer to download in the browser (the *Data Export* button on each table's page produces the same zip), or want to run the transform offline, point the loader at the folder:
+
+```bash
+qts data sharadar sync --from-files ~/Downloads/sharadar     # SHARADAR_SEP_*.zip, SHARADAR_TICKERS_*.zip, ...
+qts data sharadar sync --from-files data/raw/sharadar        # re-process the cached zips without network
+```
+
+The folder is searched recursively (spaces in the path are fine); a `.zip` (one CSV inside), `.csv` or `.csv.gz` belongs to a table when its name contains the table code as a word, case-insensitively (`SHARADAR_SEP_2f3a.zip`, `sep.csv`, `sharadar-tickers.zip`), or when it sits in a sub-folder named after the table. If several files match one table the newest by modification time is used and the choice is logged; in the raw-cache layout the newest `*_full.zip` plus any later `*_since-*.zip` are used. The command prints the table → file mapping before it starts, skips an optional table (ACTIONS, SP500, …) that has no file with a warning, and stops with the list of files it found when a required table (TICKERS, SEP, DAILY, SF1) has none.
+
+### 3. What a sync does
+
+In table order: TICKERS → the security master, ids, `industry` and `delisting_dates`; SEP → price panels, streamed in 500,000-row chunks and written one year at a time; SF1 → `sharadar_sf1`; DAILY → `sharadar_marketcap` and the valuation ratios; ACTIONS and SP500 → reference tables; then the derived `market_cap` / `shares_outstanding` (per year, from the store) and the four fundamentals panels (in batches of 500 ids). The report printed at the end lists, per table, rows read and kept, rows dropped because their ticker is outside the kept master or their date outside every holder's range, the date range, and the datasets written; a copy is saved as `data/store/_sharadar/last_sync.json`. A full load drops and rebuilds every dataset a table feeds, so stale years never survive; a table whose raw file was already processed is skipped on a rerun (`--force` overrides).
+
+Read the first report with the schema assumptions in mind (→ see **Data & universe › Real data: Sharadar**): the share of SEP rows dropped as "not in master" should be sizeable (ETFs, ADRs, OTC), the share dropped as "out of range" tiny, and the industry sources mostly `famaindustry`.
+
+### 4. Validate
+
+```bash
+qts data sharadar validate --store data/store            # add --json report.json to keep it
+```
+
+Eleven checks, each `PASS`, `WARN` or `SKIP`, with the numbers behind them: required datasets present; names alive and delisted per year (survivorship coverage); the share of ids with a delisting date (expect well above 20% over the full history); the market-cap identity `market_cap = close_raw × shares_outstanding` and the DAILY unit (largest cap in the 10¹¹–2 × 10¹³ USD range, implied shares against SF1 `sharesbas`); raw-close jumps above 40% with a continuous adjusted close, matched to `split` actions; the median daily dollar volume; a point-in-time re-derivation of `gross_profitability` for 50 names (nothing visible before `datekey + 1`); the fraction of price rows without an as-traded close; duplicate `(id, date)` rows; delisting dates against `ACTIONS`; and the S&P 500 panel's last row against the vendor's `current` list. A `WARN` is a prompt to look, not necessarily an error (a short test store warns on the unit check because its caps are tiny).
+
+### 5. Incremental refresh
+
+```bash
+qts data sharadar sync --since 2026-11-01               # rows with lastupdated >= date, upserted
+```
+
+SEP, DAILY and SF1 are exported with `lastupdated.gte=<since>` (cached as `<YYYYMMDD>_since-<date>.zip`); TICKERS, ACTIONS and SP500 are always fetched whole. Rows are upserted on `(date, id)` and the derived panels are rebuilt for every year the delta touched. Because Sharadar restates `closeadj` for the whole history at every dividend, do a full `sync` (no `--since`) every month or two; the raw cache keeps both.
+
+### 6. Run
+
+```bash
+qts run --store data/store --start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8 --cache -v
+qts run --store data/store --start 2006-01-01 --max-names 3000 --ml --config configs/real.yaml
+```
+
+`--max-names` / `--min-mcap-ever` keep the load within laptop memory (→ see **`qts run`: real data** above); the universe rules then pick the 1,000 names the strategy actually trades. Before trusting a result, check that `survivorship_check` did not warn, that `md.delisting_dates` and `md.close_raw` are present (they are, from this loader), and that the two parameters calibrated on synthetic data have been re-estimated (→ see **Recalibrating ν and b**).
+
+### Expected runtime and disk
+
+Measured on the development box (2 vCPU, synthetic files in the vendor layout) and scaled linearly to the full history (~20M SEP rows, ~15M DAILY rows, ~3M SF1 rows, ~20k kept ids): a full `sync` of about 15–30 minutes of streaming and writing (the download itself depends on Nasdaq's export queue; the SEP zip is ~400 MB, ~1.5 GB unzipped), peak memory of 2–3 GB, and a store of 1–2 GB of zstd Parquet plus the raw zips. `validate` takes a few minutes (DuckDB over the whole store). Loading 3,000 ids × 25 years with `as_market_data` takes a minute and a few GB of panels; a full phase-1 run on 1,000 names × 15 years is ~30 minutes (→ see **How long a run takes**). The exact numbers from the benchmark are in the work plan's status log.
+
 ## Loading real data into the ParquetStore
 
-`qts` has parsers and transforms for each source and one loader stub, `qts.data.loaders.norgate_to_store` (Norgate prices and delisting dates, needs the `norgatedata` package; see below). For everything else you export from the vendor, then write the panels into a `ParquetStore` with the dataset names below. The store keeps one value per `(date, ticker)`; point-in-time correctness comes from writing panels that are already keyed on availability dates.
+For the Sharadar bundle use `qts data sharadar sync` (→ see **Loading Sharadar** above). For the other sources `qts` has parsers and transforms and one loader stub, `qts.data.loaders.norgate_to_store` (Norgate prices and delisting dates, needs the `norgatedata` package; see below): you export from the vendor, then write the panels into a `ParquetStore` with the dataset names below. The store keeps one value per `(date, ticker)`; point-in-time correctness comes from writing panels that are already keyed on availability dates.
 
 ### The dataset names
 

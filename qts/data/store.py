@@ -40,7 +40,13 @@ classification -- a look-ahead; audit 2 #13).  Supply ``industry_history``
 from the panel start for real data.
 
 Any additional wide dataset listed in ``extra_names`` is put in
-``MarketData.extra``.
+``MarketData.extra``.  :mod:`qts.data.sharadar` fills every dataset above and adds
+``security_master``, ``sharadar_sf1``, ``sharadar_marketcap`` / ``sharadar_ev`` /
+``sharadar_pb`` / ``sharadar_pe`` / ``sharadar_ps``, ``corporate_actions`` and
+``sp500_membership`` (reference tables, not read by ``as_market_data``).  For a store
+of many thousand names use :meth:`ParquetStore.tickers_by_market_cap` to choose the
+ids to load (``read_long`` / ``read_wide`` push a ``tickers`` filter into the parquet
+reader) instead of pivoting everything.
 
 Write modes (:meth:`ParquetStore.write_long` / :meth:`ParquetStore.write_wide`)
 -------------------------------------------------------------------------------
@@ -252,12 +258,18 @@ class ParquetStore:
         cols = list(dict.fromkeys(prev_cols + list(map(str, df.columns))))
         self._write_meta(name, {"kind": kind, "columns": cols, "partitioned": "date" in df.columns})
 
-    def read_long(self, name: str, start=None, end=None, columns: Optional[List[str]] = None) -> pd.DataFrame:
+    def read_long(self, name: str, start=None, end=None, columns: Optional[List[str]] = None,
+                  tickers: Optional[Iterable[str]] = None) -> pd.DataFrame:
+        """Rows of a dataset.  ``start``/``end`` open only the year partitions in
+        range; ``tickers`` is pushed down into the parquet reader (rows of other
+        tickers are never materialised), which is what makes a pre-filtered
+        ``as_market_data`` cheap on a store of ten thousand names."""
         with self._lock(name, exclusive=False):
-            return self._read_long_unlocked(name, start, end, columns)
+            return self._read_long_unlocked(name, start, end, columns, tickers)
 
     def _read_long_unlocked(self, name: str, start=None, end=None,
-                            columns: Optional[List[str]] = None) -> pd.DataFrame:
+                            columns: Optional[List[str]] = None,
+                            tickers: Optional[Iterable[str]] = None) -> pd.DataFrame:
         files = self._files(name)
         if not files:
             raise FileNotFoundError(f"dataset {name!r} not in store {self.root}")
@@ -265,7 +277,10 @@ class ParquetStore:
             y0 = pd.Timestamp(start).year if start is not None else -1
             y1 = pd.Timestamp(end).year if end is not None else 10 ** 6
             files = [f for f in files if _year_of(f) is None or y0 <= _year_of(f) <= y1]
-        parts = [pq.read_table(f, columns=columns).to_pandas() for f in files]
+        filters = None
+        if tickers is not None:
+            filters = [("ticker", "in", [str(t) for t in tickers])]
+        parts = [pq.read_table(f, columns=columns, filters=filters).to_pandas() for f in files]
         df = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
         if "date" in df.columns:
             df["date"] = pd.to_datetime(df["date"])
@@ -299,15 +314,42 @@ class ParquetStore:
             self._write_long(name, long, mode=mode, kind="wide", key=("date", "ticker"), drop_null="value")
 
     def read_wide(self, name: str, start=None, end=None, tickers: Optional[Iterable[str]] = None) -> Wide:
-        long = self.read_long(name, start, end)
+        tick = None if tickers is None else [str(t) for t in tickers]
+        long = self.read_long(name, start, end, tickers=tick)
         if long.empty:
             return pd.DataFrame(index=pd.DatetimeIndex([], name="date"))
-        if tickers is not None:
-            long = long[long["ticker"].isin(list(tickers))]
         wide = long.pivot(index="date", columns="ticker", values="value").sort_index()
         wide.index.name = None
         wide.columns.name = "ticker"
         return wide
+
+    def tickers_by_market_cap(self, start=None, end=None, min_mcap_ever: Optional[float] = None,
+                              max_names: Optional[int] = None, dataset: str = "market_cap") -> List[str]:
+        """Candidate ids for a pre-filtered :meth:`as_market_data` (the ``qts run
+        --min-mcap-ever / --max-names`` path).
+
+        Reads only the long ``market_cap`` dataset (through DuckDB, never pivoted)
+        and keeps the ids whose **maximum** market cap over ``[start, end]`` is at
+        least ``min_mcap_ever`` USD, then the ``max_names`` largest by that maximum.
+        A name's *peak* size is used so that a company that was large at any time in
+        the window is loaded for its whole history, delisted names included; this is
+        a loading convenience, not a universe rule -- ``build_universe_mask`` still
+        applies the point-in-time price, ADV and size screens on top."""
+        where = []
+        if start is not None:
+            where.append(f"date >= DATE '{pd.Timestamp(start).date()}'")
+        if end is not None:
+            where.append(f"date <= DATE '{pd.Timestamp(end).date()}'")
+        sql = f'SELECT ticker, max(value) AS mx FROM "{dataset}"'
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " GROUP BY ticker"
+        if min_mcap_ever is not None:
+            sql += f" HAVING max(value) >= {float(min_mcap_ever)!r}"
+        sql += " ORDER BY mx DESC, ticker"
+        if max_names is not None:
+            sql += f" LIMIT {int(max_names)}"
+        return [str(t) for t in self.duckdb_query(sql)["ticker"]]
 
     # ------------------------------------------------------------------ duckdb
     def duckdb_connection(self):

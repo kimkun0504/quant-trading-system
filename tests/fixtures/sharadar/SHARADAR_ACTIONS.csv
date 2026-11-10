@@ -1,0 +1,7 @@
+date,action,ticker,name,value,contraticker,contraname
+2020-01-15,split,AAA,Alpha Bank,2.0,,
+2020-01-22,dividend,BBB,Beta Software,0.5,,
+2020-01-21,delisted,CCC,Gamma Diners,,,
+2020-01-10,delisted,DDD,Delta Pharma (old),,,
+2020-01-27,listed,DDD,Delta Holdings (new),,,
+2020-01-31,dividend,SPY,SPDR S&P 500,1.2,,

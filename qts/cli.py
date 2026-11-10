@@ -5,7 +5,12 @@ Commands
 --------
 ``demo``             synthetic end-to-end run (``--ml``, ``--stocks``, ``--days``, ``--seed``,
                      ``--signal-lag N``, ``--compare-lag`` prints lag-0 vs lag-1 Sharpe)
-``run``              real data: ``--store PATH`` (ParquetStore) or ``--yfinance T1 T2 ...``
+``run``              real data: ``--store PATH`` (ParquetStore) or ``--yfinance T1 T2 ...``;
+                     ``--min-mcap-ever USD`` / ``--max-names N`` pre-filter a large store by
+                     peak market cap before anything is pivoted
+``data sharadar sync``      fill a ParquetStore from the Sharadar bundle (``--store``,
+                     ``--raw``, ``--tables``, ``--since``, ``--from-files DIR``, ``--dry-run``)
+``data sharadar validate``  sanity checks of a Sharadar-filled store (PASS/WARN per check)
 ``config dump``      print the default (or ``--config``) SystemConfig as YAML;
                      ``configs/default.yaml`` is ``python -m qts.cli config dump``
 ``config validate``  strict-load a YAML file (unknown keys fail), print its hash
@@ -166,7 +171,23 @@ def cmd_run(a: argparse.Namespace) -> int:
     if a.store:
         from qts.data.store import ParquetStore
 
-        md = ParquetStore(a.store).as_market_data(start=a.start, end=a.end)
+        store = ParquetStore(a.store)
+        tickers = None
+        if a.min_mcap_ever is not None or a.max_names is not None:
+            # pre-filter by peak market cap (reads only the long market_cap table), so a
+            # ten-thousand-name store is never pivoted whole; the pipeline's own PIT
+            # universe rules (top_n_by_mcap, min price, ADV) still apply on top
+            tickers = store.tickers_by_market_cap(
+                a.start, a.end, min_mcap_ever=a.min_mcap_ever, max_names=a.max_names
+            )
+            print(f"prefilter: {len(tickers)} candidate ids by peak market cap")
+            if not tickers:
+                print("error: the prefilter left no ids", file=sys.stderr)
+                return 2
+        md = store.as_market_data(universe_tickers=tickers, start=a.start, end=a.end)
+        print(
+            f"store: {md.close.shape[1]} ids x {md.close.shape[0]} days ({md.dates[0].date()}..{md.dates[-1].date()})"
+        )
     elif a.yfinance:
         from qts.data.loaders import yfinance_to_market_data
 
@@ -178,6 +199,42 @@ def cmd_run(a: argparse.Namespace) -> int:
 
     survivorship_check(md)
     return _run_pipeline(md, _load_config(a.config), a)
+
+
+def cmd_data(a: argparse.Namespace) -> int:
+    if a.data_cmd != "sharadar":
+        return 2
+    from qts.data import sharadar
+
+    if a.sharadar_cmd == "sync":
+        tables = [t.strip().upper() for t in a.tables.split(",") if t.strip()]
+        try:
+            if a.from_files:
+                print(sharadar.format_source_map(sharadar.resolve_sources(a.from_files, tables)))
+            rep = sharadar.sync(
+                store_root=a.store,
+                raw_dir=a.raw,
+                tables=tables,
+                since=a.since,
+                from_files=a.from_files,
+                api_key=a.api_key,
+                chunksize=a.chunksize,
+                dry_run=a.dry_run,
+                force=a.force,
+            )
+        except sharadar.SharadarError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        print(rep.format())
+        return 0
+    if a.sharadar_cmd == "validate":
+        rep = sharadar.validate(a.store, sample_size=a.sample)
+        print(rep.format())
+        if a.json:
+            Path(a.json).write_text(json.dumps(rep.to_dict(), indent=1, default=str))
+            print(f"written {a.json}")
+        return 0 if all(c.status != "WARN" or c.name != "required_datasets" for c in rep.checks) else 1
+    return 2
 
 
 def cmd_config(a: argparse.Namespace) -> int:
@@ -322,8 +379,51 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--yfinance", nargs="*", default=None, help="tickers for a yfinance prototype run")
     r.add_argument("--start", default=None)
     r.add_argument("--end", default=None)
+    r.add_argument(
+        "--min-mcap-ever",
+        type=float,
+        default=None,
+        help="store prefilter: load only ids whose peak market cap in [start, end] is >= this (USD)",
+    )
+    r.add_argument(
+        "--max-names",
+        type=int,
+        default=None,
+        help="store prefilter: load only the N ids with the largest peak market cap in [start, end]",
+    )
     _add_pipeline_args(r)
     r.set_defaults(func=cmd_run)
+
+    dt = sub.add_parser("data", help="load vendor data into a ParquetStore")
+    dsub = dt.add_subparsers(dest="data_cmd", required=True)
+    sh = dsub.add_parser("sharadar", help="Sharadar Core US Equities Bundle (Nasdaq Data Link)")
+    shsub = sh.add_subparsers(dest="sharadar_cmd", required=True)
+    ss = shsub.add_parser("sync", help="download (or read --from-files) -> transform -> write the store")
+    ss.add_argument("--store", default="data/store", help="ParquetStore root")
+    ss.add_argument(
+        "--raw", default="data/raw/sharadar", help="raw zip cache (<raw>/<TABLE>/<date>_<full|since-..>.zip)"
+    )
+    ss.add_argument(
+        "--tables",
+        default="SEP,TICKERS,DAILY,SF1,ACTIONS,SP500",
+        help="comma-separated tables; optional extras: METRICS,EVENTS,SFP,INDICATORS",
+    )
+    ss.add_argument("--since", default=None, help="incremental: rows with lastupdated >= YYYY-MM-DD (upsert)")
+    ss.add_argument(
+        "--from-files", default=None, help="read already-downloaded zips/CSVs from DIR (no network)"
+    )
+    ss.add_argument(
+        "--api-key", default=None, help="Nasdaq Data Link key (default: $NASDAQ_DATA_LINK_API_KEY or .env)"
+    )
+    ss.add_argument("--chunksize", type=int, default=500_000, help="CSV rows per streamed chunk")
+    ss.add_argument("--dry-run", action="store_true", help="show what would be downloaded / written")
+    ss.add_argument("--force", action="store_true", help="ignore the per-table resume state")
+    ss.add_argument("-v", "--verbose", action="store_true", help="log progress per chunk / year")
+    sv = shsub.add_parser("validate", help="sanity checks of a Sharadar-filled store")
+    sv.add_argument("--store", default="data/store")
+    sv.add_argument("--sample", type=int, default=50, help="ids sampled for the per-name checks")
+    sv.add_argument("--json", default=None, help="also write the report as JSON to this path")
+    dt.set_defaults(func=cmd_data)
 
     c = sub.add_parser("config", help="dump / validate SystemConfig YAML")
     csub = c.add_subparsers(dest="config_cmd", required=True)
