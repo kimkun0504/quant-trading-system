@@ -12,7 +12,9 @@ Contents
 * :func:`linear_shrinkage` -- Ledoit & Wolf (2004) linear shrinkage (sklearn).
 * :func:`specific_risk` -- USE4 specific-risk pipeline: EWMA+NW time-series
   vol, structural model blend for thin histories, Bayesian shrinkage toward
-  the size-decile mean, specific VRA.
+  the size-decile mean, floor / ceiling relative to the ESTU median, specific VRA.
+* :func:`repair_covariance` -- finite / bounded check of the assembled
+  covariance (the last line of defence in ``as_of``).
 
 All variances are in **daily** units.
 """
@@ -542,12 +544,25 @@ def _vra_cap_weights(market_cap: pd.DataFrame, U: pd.DataFrame) -> np.ndarray:
 
 
 def structural_specific_vol(
-    sigma_ts: pd.Series, gamma: pd.Series, exposures: pd.DataFrame, market_cap: pd.Series
+    sigma_ts: pd.Series,
+    gamma: pd.Series,
+    exposures: pd.DataFrame,
+    market_cap: pd.Series,
+    clip_pctl: float = 0.0,
 ) -> pd.Series:
     """USE4 structural model: regress ``ln sigma_TS`` on the factor exposures
     (WLS, weights ∝ sqrt(cap)) over stocks with full history (``gamma == 1``),
     then ``sigma_STR = E0 * exp(X b)`` with ``E0`` the bias correction making
-    the fitted values unbiased in levels."""
+    the fitted values unbiased in levels.
+
+    ``clip_pctl = p > 0`` clips the prediction to the ``[p, 1 - p]`` quantile
+    band of the ``sigma_TS`` it was fitted on.  ``exp`` of a linear
+    extrapolation has no upper bound: a name whose exposure sits far outside the
+    fitted cross-section (a gross descriptor outlier) can be assigned a vol of
+    ``1e55`` (docs/notes/risk_new_listing_fix_2026-11-10.md).  The structural
+    value is the prior for a name without history; a prior beyond every
+    seasoned name is not information.  A non-finite prediction takes the
+    fit-set median."""
     idx = sigma_ts.index
     X = exposures.reindex(idx).fillna(0.0).values
     fit_mask = (
@@ -561,14 +576,24 @@ def structural_specific_vol(
     w = np.sqrt(market_cap.reindex(idx).fillna(market_cap.median()).clip(lower=1e-9).values[fit_mask])
     sw = np.sqrt(w)[:, None]
     b, *_ = np.linalg.lstsq(X[fit_mask] * sw, y * sw[:, 0], rcond=None)
-    fitted = np.exp(X @ b)
+    if clip_pctl > 0:
+        with np.errstate(over="ignore", invalid="ignore"):
+            fitted = np.exp(X @ b)
+    else:
+        fitted = np.exp(X @ b)
     E0 = float(np.sum(w * sigma_ts.values[fit_mask]) / np.sum(w * fitted[fit_mask]))
-    return pd.Series(E0 * fitted, index=idx)
+    pred = E0 * fitted
+    if clip_pctl > 0:
+        obs = sigma_ts.to_numpy(dtype=float)[fit_mask]
+        lo, hi = np.quantile(obs, [float(clip_pctl), 1.0 - float(clip_pctl)])
+        pred = np.where(np.isfinite(pred), pred, float(np.median(obs)))
+        pred = np.clip(pred, lo, hi)
+    return pd.Series(pred, index=idx)
 
 
 def bayesian_shrink_specific(
-    sigma: pd.Series, market_cap: pd.Series, q: float, n_deciles: int = 10
-) -> pd.Series:
+    sigma: pd.Series, market_cap: pd.Series, q: float, n_deciles: int = 10, return_target: bool = False
+):
     """USE4 Bayesian shrinkage of specific risk toward the cap-weighted mean of
     its size decile:
 
@@ -579,7 +604,13 @@ def bayesian_shrink_specific(
     ``sigma`` *about that cap-weighted mean* within the decile,
     ``Delta = sqrt(mean_n (sigma_n - sigma_bar)^2)`` (USE4 Methodology Notes,
     "Bayesian shrinkage"; second-pass audit finding 9 -- it was the
-    equal-weighted sd, i.e. about the equal-weighted mean)."""
+    equal-weighted sd, i.e. about the equal-weighted mean).
+
+    ``sigma_bar`` is an arithmetic mean: it has no defence against one huge
+    member, which then pulls every other name of the decile to (nearly) the
+    same value.  :func:`specific_risk` therefore bounds the input
+    (``cfg.specific_var_cap_mult``) before calling this.  With
+    ``return_target`` also returns each name's ``sigma_bar``."""
     cap = market_cap.reindex(sigma.index).fillna(market_cap.median()).clip(lower=1e-9).values
     s = sigma.values.astype(float)
     n = len(s)
@@ -588,18 +619,23 @@ def bayesian_shrink_specific(
     dec = np.empty(n, dtype=int)
     dec[order] = (np.arange(n) * k) // n
     out = s.copy()
+    target = np.full(n, np.nan)
     for d in range(k):
         m = dec == d
         if not m.any():
             continue
         sd_, cd = s[m], cap[m]
         sbar = float((sd_ * cd).sum() / cd.sum())
+        target[m] = sbar
         delta = float(np.sqrt(np.mean((sd_ - sbar) ** 2)))
         dev = np.abs(sd_ - sbar)
         den = delta + q * dev
         v = np.where(den > 0, q * dev / np.where(den > 0, den, 1.0), 0.0)
         out[m] = v * sbar + (1 - v) * sd_
-    return pd.Series(out, index=sigma.index)
+    shrunk = pd.Series(out, index=sigma.index)
+    if return_target:
+        return shrunk, pd.Series(target, index=sigma.index)
+    return shrunk
 
 
 def _column_quantiles(U: pd.DataFrame, q: float) -> pd.Series:
@@ -652,25 +688,47 @@ def specific_risk(
        step 1 is floored the same way *before* the structural fit, so a
        residual series that is identically zero (single-member industry) enters
        as a small-but-real vol, never as ``1e-16``.
-    5. Specific VRA multiplier ``lambda_S`` (daily cap weights from
+    5. Specific-variance ceiling (``cfg.specific_var_cap_mult``), symmetric to
+       the floor: variance ``<= cap_mult`` times the ESTU median, applied to the
+       raw EWMA input, to the blended value **before** the Bayesian shrinkage
+       (the size-decile target is a cap-weighted *mean*; one unbounded member
+       drags every other name of its decile to the same huge value) and to the
+       final shrunk forecast.
+    6. Specific VRA multiplier ``lambda_S`` (daily cap weights from
        ``market_cap_history`` when given, see :func:`specific_vra_multiplier`;
        names at the floor are excluded from the bias statistic, ``z^2`` clipped
        at ``cfg.vra_z2_clip``, ``lambda_S`` clipped to ``[vra_min, vra_max]``).
 
+    Seasoning: ``cfg.min_specific_obs`` (60) is the ``h_i`` below which
+    ``gamma_i = 0`` -- the name takes the structural value alone, clipped to the
+    ``[p, 1 - p]`` band of seasoned names (``cfg.structural_clip_pctl``).
+
     Returns ``(lambda_S * sigma_SH)^2`` indexed like ``exposures_latest``;
-    with ``return_details`` also ``n_at_floor`` (names whose shrunk variance
-    was raised to the floor) and ``floor_var``."""
+    with ``return_details`` also ``n_at_floor`` / ``n_at_cap`` (names whose
+    variance was moved to the bound), ``floor_var`` / ``cap_var`` (bounds on
+    the shrunk variance, before VRA), ``var_bounds`` (the same bounds on the
+    returned variance, i.e. times ``lambda_S^2``; ``None`` where a bound is
+    off), ``var_ts_raw`` (EWMA variance before the floor / cap) and
+    ``shrink_target`` (each name's size-decile mean vol)."""
     cfg = cfg or RiskConfig()
     tickers = exposures_latest.index
     window = int(max(6 * cfg.specific_half_life, cfg.min_history_days))
     U = specific_returns.reindex(columns=tickers).tail(window)
     var_ts, n_obs = ewma_nw_variance(U, cfg.specific_half_life, cfg.newey_west_lags_vol)
+    var_ts_raw = var_ts
     floor_frac = float(getattr(cfg, "specific_var_floor_frac", 0.0))
+    cap_mult = float(getattr(cfg, "specific_var_cap_mult", np.inf))
+    has_cap = bool(np.isfinite(cap_mult))
     estu = n_obs > 0
-    if floor_frac > 0 and estu.any():
+    capped = pd.Series(False, index=var_ts.index)  # names the ceiling acted on, at any stage
+    if (floor_frac > 0 or has_cap) and estu.any():
         med_ts = float(np.nanmedian(var_ts[estu].to_numpy(dtype=float)))
         if np.isfinite(med_ts) and med_ts > 0:
-            var_ts = var_ts.where(~(var_ts < floor_frac * med_ts), floor_frac * med_ts)
+            if floor_frac > 0:
+                var_ts = var_ts.where(~(var_ts < floor_frac * med_ts), floor_frac * med_ts)
+            if has_cap:
+                capped = (var_ts > cap_mult * med_ts).fillna(False)
+                var_ts = var_ts.where(~capped, cap_mult * med_ts)
     sigma_ts = np.sqrt(var_ts)
 
     # robust-vs-equal sd ratio for outlier damping (USE4: sigma_robust = IQR/1.35,
@@ -679,23 +737,48 @@ def specific_risk(
     sd_robust = ((q75 - q25) / 1.35).replace(0.0, np.nan)
     sd_eq = U.std(ddof=0)
     Z = (sd_eq / sd_robust - 1.0).abs().fillna(0.0)
-    gamma = ((n_obs - 60) / 120.0).clip(0.0, 1.0) * np.minimum(1.0, np.exp(1.0 - Z))
+    min_obs = int(getattr(cfg, "min_specific_obs", 60))
+    gamma = ((n_obs - min_obs) / 120.0).clip(0.0, 1.0) * np.minimum(1.0, np.exp(1.0 - Z))
     gamma = gamma.fillna(0.0)
 
-    sigma_str = structural_specific_vol(sigma_ts, gamma, exposures_latest, market_cap)
+    sigma_str = structural_specific_vol(
+        sigma_ts,
+        gamma,
+        exposures_latest,
+        market_cap,
+        clip_pctl=float(getattr(cfg, "structural_clip_pctl", 0.0)),
+    )
     sigma = gamma * sigma_ts.fillna(0.0) + (1 - gamma) * sigma_str
     sigma = sigma.where(sigma > 0, sigma_str)
 
-    sigma_sh = bayesian_shrink_specific(sigma, market_cap, cfg.specific_shrink_q)
+    if has_cap and estu.any():
+        # bound the shrinkage *input*: the decile target below is a cap-weighted mean
+        med_bl = float(np.nanmedian((sigma[estu] ** 2).to_numpy(dtype=float)))
+        if np.isfinite(med_bl) and med_bl > 0:
+            over = ~(sigma**2 <= cap_mult * med_bl) & sigma.notna()
+            if over.any():
+                capped = capped | over
+                sigma = sigma.where(~over, np.sqrt(cap_mult * med_bl))
+
+    sigma_sh, target = bayesian_shrink_specific(sigma, market_cap, cfg.specific_shrink_q, return_target=True)
     n_at_floor = 0
     floor_var = 0.0
-    if floor_frac > 0 and estu.any():
+    cap_var = float("inf")
+    if (floor_frac > 0 or has_cap) and estu.any():
         med_sh = float(np.nanmedian((sigma_sh[estu] ** 2).to_numpy(dtype=float)))
         if np.isfinite(med_sh) and med_sh > 0:
-            floor_var = floor_frac * med_sh
-            below = (sigma_sh**2 < floor_var).fillna(False)
-            n_at_floor = int(below.sum())
-            sigma_sh = sigma_sh.where(~below, np.sqrt(floor_var))
+            if floor_frac > 0:
+                floor_var = floor_frac * med_sh
+                below = (sigma_sh**2 < floor_var).fillna(False)
+                n_at_floor = int(below.sum())
+                sigma_sh = sigma_sh.where(~below, np.sqrt(floor_var))
+            if has_cap:
+                cap_var = cap_mult * med_sh
+                above = (sigma_sh**2 > cap_var).fillna(False)
+                if above.any():
+                    capped = capped | above
+                    sigma_sh = sigma_sh.where(~above, np.sqrt(cap_var))
+    n_at_cap = int(capped.sum())
     z2_clip, lam_clip = vra_clip_from(cfg)
     lam = specific_vra_multiplier(
         U,
@@ -718,8 +801,175 @@ def specific_risk(
             "n_obs": n_obs,
             "n_at_floor": n_at_floor,
             "floor_var": floor_var,
+            "n_at_cap": n_at_cap,
+            "cap_var": cap_var,
+            "var_bounds": (
+                floor_var * lam**2 if floor_var > 0 else None,
+                cap_var * lam**2 if np.isfinite(cap_var) else None,
+            ),
+            "var_ts_raw": var_ts_raw,
+            "shrink_target": target,
         }
     return var
+
+
+# --------------------------------------------------------------------------- repair
+#: ``median(x^2) / MEDIAN_CHI2_1`` is a Gaussian-consistent variance of a zero-mean ``x``.
+MEDIAN_CHI2_1 = 0.4549364
+REPAIR_WINDOWS = (252, 63, 21)
+REPAIR_MIN_OBS = 20
+
+
+def robust_factor_variances(
+    factor_returns: pd.DataFrame,
+    windows: tuple[int, ...] = REPAIR_WINDOWS,
+    min_obs: int = REPAIR_MIN_OBS,
+) -> pd.Series:
+    """Per factor: ``median(f^2) / 0.4549`` over the trailing year, a variance
+    estimate that one bad day (or one bad month) cannot move -- and the larger
+    of that and the same statistic over the trailing quarter and month, so a
+    genuine regime change (a crash raises every factor's vol several-fold) lifts
+    the reference within ~11 days instead of half a year.  Exact zeros ("no
+    members that day") and NaNs are not observations; a window with fewer than
+    ``min(min_obs, 2/3 window)`` of them is skipped and a factor with no usable
+    window gets NaN (no reference)."""
+    A_all = factor_returns.to_numpy(dtype=float)
+    out = np.full(A_all.shape[1], np.nan)
+    for win in windows:
+        A = A_all[-int(win) :]
+        A = np.where(np.isfinite(A) & (A != 0.0), A, np.nan)
+        n = np.isfinite(A).sum(axis=0)
+        cols = np.flatnonzero(n >= min(int(min_obs), (2 * int(win)) // 3))
+        if len(cols):
+            v = np.nanmedian(A[:, cols] ** 2, axis=0) / MEDIAN_CHI2_1
+            out[cols] = np.fmax(out[cols], v)
+    return pd.Series(out, index=factor_returns.columns)
+
+
+def repair_covariance(
+    factor_cov: pd.DataFrame,
+    specific_var: pd.Series,
+    factor_returns: pd.DataFrame | None = None,
+    var_bounds: tuple[float | None, float | None] | None = None,
+    factor_var_mult: float = 100.0,
+    rtol: float = 1e-9,
+) -> tuple[pd.DataFrame, pd.Series, list[dict]]:
+    """Last line of defence after the covariance is assembled (``as_of``).
+
+    * every specific variance finite and ``> 0`` (else the median of the finite
+      ones) and inside ``var_bounds = (floor, cap)`` (else clipped; ``None`` = no
+      bound on that side);
+    * every factor-covariance entry finite and every factor variance
+      ``<= factor_var_mult`` times :func:`robust_factor_variances` of that
+      factor's returns (trailing year; quarter / month if larger).  A factor above the bound has its row and
+      column scaled so the variance sits at the bound (correlations kept); a
+      non-finite variance is set to the reference itself (0 without one) with
+      zero covariances.
+
+    Returns ``(factor_cov, specific_var, repairs)``; ``repairs`` is a list of
+    ``{"what": ..., "n": ..., "worst": (label, value)}`` and is empty -- with
+    the inputs returned untouched -- when nothing violated a bound.  This is a
+    repair, not an estimator: the upstream protections are meant to make it
+    unreachable, and every firing is recorded so it cannot hide a cause."""
+    repairs: list[dict] = []
+    d = specific_var.to_numpy(dtype=float)
+    bad = ~np.isfinite(d) | (d <= 0)
+    lo, hi = var_bounds if var_bounds is not None else (None, None)
+    d_new = d
+    if bad.any():
+        good = d[~bad]
+        fill = float(np.median(good)) if len(good) else OUT_OF_MODEL_FALLBACK_VAR
+        k = int(np.flatnonzero(bad)[0])
+        repairs.append(
+            {
+                "what": "specific_var_not_finite",
+                "n": int(bad.sum()),
+                "worst": (str(specific_var.index[k]), float(d[k])),
+            }
+        )
+        d_new = np.where(bad, fill, d)
+    if lo is not None and lo > 0:
+        below = d_new < lo * (1.0 - rtol)
+        if below.any():
+            k = int(np.argmin(np.where(below, d_new, np.inf)))
+            repairs.append(
+                {
+                    "what": "specific_var_below_floor",
+                    "n": int(below.sum()),
+                    "worst": (str(specific_var.index[k]), float(d_new[k])),
+                }
+            )
+            d_new = np.where(below, lo, d_new)
+    if hi is not None and np.isfinite(hi):
+        above = d_new > hi * (1.0 + rtol)
+        if above.any():
+            k = int(np.argmax(np.where(above, d_new, -np.inf)))
+            repairs.append(
+                {
+                    "what": "specific_var_above_cap",
+                    "n": int(above.sum()),
+                    "worst": (str(specific_var.index[k]), float(d_new[k])),
+                }
+            )
+            d_new = np.where(above, hi, d_new)
+    D = specific_var if d_new is d else pd.Series(d_new, index=specific_var.index, name=specific_var.name)
+
+    Fv = factor_cov.to_numpy(dtype=float)
+    cols = factor_cov.columns
+    ref = (
+        robust_factor_variances(factor_returns).reindex(cols).to_numpy(dtype=float)
+        if factor_returns is not None and len(factor_returns)
+        else np.full(len(cols), np.nan)
+    )
+    diag = np.diag(Fv).copy()
+    nonfinite = ~np.isfinite(Fv)
+    has_ref = np.isfinite(ref) & (ref > 0)
+    with np.errstate(invalid="ignore"):
+        too_big = np.isfinite(diag) & has_ref & (diag > float(factor_var_mult) * ref * (1.0 + rtol))
+    if nonfinite.any() or too_big.any():
+        F2 = Fv.copy()
+        bad_diag = ~np.isfinite(diag) | (diag < 0)
+        for k in np.flatnonzero(bad_diag):
+            F2[k, :] = 0.0
+            F2[:, k] = 0.0
+            F2[k, k] = ref[k] if has_ref[k] else 0.0
+        if bad_diag.any():
+            k = int(np.flatnonzero(bad_diag)[0])
+            repairs.append(
+                {
+                    "what": "factor_var_not_finite",
+                    "n": int(bad_diag.sum()),
+                    "worst": (str(cols[k]), float(diag[k])),
+                }
+            )
+        if too_big.any():
+            ratio = np.where(too_big, diag / np.where(has_ref, ref, 1.0), 0.0)
+            k = int(np.argmax(ratio))
+            repairs.append(
+                {
+                    "what": "factor_var_above_bound",
+                    "n": int(too_big.sum()),
+                    "worst": (str(cols[k]), float(diag[k])),
+                    "reference_var": float(ref[k]),
+                }
+            )
+            scale = np.ones(len(cols))
+            scale[too_big] = np.sqrt(float(factor_var_mult) * ref[too_big] / diag[too_big])
+            F2 = F2 * np.outer(scale, scale)
+        left = ~np.isfinite(F2)
+        if left.any():
+            if not bad_diag.any():
+                i, j = (int(x[0]) for x in np.nonzero(left))
+                repairs.append(
+                    {
+                        "what": "factor_cov_not_finite",
+                        "n": int(left.sum()),
+                        "worst": (f"{cols[i]}/{cols[j]}", float(Fv[i, j])),
+                    }
+                )
+            F2 = np.where(left, 0.0, F2)
+        factor_cov = pd.DataFrame(nearest_psd(F2), index=factor_cov.index, columns=cols)
+    return factor_cov, D, repairs
 
 
 # Out-of-model specific variance (second-pass finding 8): the rule

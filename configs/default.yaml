@@ -127,6 +127,15 @@ risk:
   vra_min: 0.5
   vra_max: 4.0
   reference_vol_check_in_fit: true
+  style_raw_winsor_mad_k: 10.0
+  style_exposure_cap: 3.0
+  flat_return_tol: 1.0e-06
+  flat_run_min_days: 20
+  min_specific_obs: 60
+  structural_clip_pctl: 0.01
+  specific_var_cap_mult: 25.0
+  covariance_repair: true
+  factor_var_repair_mult: 100.0
 cost:
   commission_per_share: 0.0035
   commission_min_per_order: 0.35

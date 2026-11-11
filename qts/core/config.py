@@ -387,13 +387,55 @@ class RiskConfig(_ConfigBase):
     # Run the reference-vol guard on a month-end grid at the end of ``fit`` (one
     # ``as_of`` per month) so a blown fit warns before the backtest starts.
     reference_vol_check_in_fit: bool = True
+    # --- new listings and de-SPACs (docs/notes/risk_new_listing_fix_2026-11-10.md;
+    # handbook 05 section 4c).  A gross raw-descriptor outlier (a de-SPAC's asset
+    # growth against its pre-IPO shell: +100,000 %) survived "clip at 3 sd, then
+    # re-standardise": the outlier owns the sd, the other names collapse to one
+    # point and the re-standardisation puts the outlier back at ~sqrt(N) sd.  The
+    # style then acts as a dummy for that one name (regression leverage ~1, residual
+    # ~0) and the structural specific-risk model extrapolates exp(x b) to 1e55.
+    # (1) raw descriptors are winsorised per date at median +- k robust sigmas
+    # (1.4826 MAD; IQR / 1.349 when the MAD is zero) before the standardisation;
+    # 0 = off.  Loose on purpose: it only has to stop one name owning the sd.
+    style_raw_winsor_mad_k: float = 10.0
+    # (2) the final standardised style exposure is winsorised at +- this many sd
+    # (USE4 trims standardised descriptors at 3 sd); inf = off.
+    style_exposure_cap: float = 3.0
+    # (3) non-trading days: a return with |r| < flat_return_tol on each of the last
+    # ``flat_run_min_days`` days (a SPAC sitting at its trust value, a stale or
+    # halted price carried forward) is not an observation.  Those days are dropped
+    # from the factor regression and the specific-return history, and from the
+    # beta / residual-vol descriptor windows; 0 days = off.
+    flat_return_tol: float = 1e-6
+    flat_run_min_days: int = 20
+    # (4) seasoning: below this many residuals a name's specific risk is the
+    # structural (peer) value alone; the blend weight then rises linearly over the
+    # next 120 observations (USE4: 60 / 180).
+    min_specific_obs: int = 60
+    # (5) the structural model's prediction is clipped to the [p, 1 - p] quantile
+    # band of the specific vols it was fitted on (a prior for a thin-history name
+    # must not extrapolate beyond every seasoned name); 0 = off.
+    structural_clip_pctl: float = 0.01
+    # (6) ceiling symmetric to ``specific_var_floor_frac``: specific variance <=
+    # this multiple of the ESTU median (25 -> specific vol <= 5x the median name),
+    # applied to the raw EWMA input, to the blended value before the Bayesian
+    # shrinkage (so one name cannot move its size decile's mean) and to the final
+    # forecast; inf = off.
+    specific_var_cap_mult: float = 25.0
+    # (7) belt and braces: after the final assembly in ``as_of`` every specific
+    # variance must be finite and inside [floor, cap] and every factor variance
+    # finite and <= ``factor_var_repair_mult`` x a robust trailing-year variance of
+    # that factor's returns; violations are clipped and recorded in
+    # ``diagnostics['covariance_repairs']``.  With (1)-(6) on it never fires.
+    covariance_repair: bool = True
+    factor_var_repair_mult: float = 100.0
 
     def __post_init__(self) -> None:
         errs = check_bounds(self, RISK_CONFIG_BOUNDS)
         if self.vra_min > self.vra_max:
             errs.append(f"vra_min ({self.vra_min}) must be <= vra_max ({self.vra_max})")
-        # inf is the documented "off" value of these two, so they are not in RISK_CONFIG_BOUNDS
-        for name in ("vra_z2_clip", "vra_max"):
+        # inf is the documented "off" value of these, so they are not in RISK_CONFIG_BOUNDS
+        for name in ("vra_z2_clip", "vra_max", "style_exposure_cap"):
             z: Any = getattr(self, name)
             if (
                 isinstance(z, bool)
@@ -402,6 +444,14 @@ class RiskConfig(_ConfigBase):
                 or float(z) <= 0
             ):
                 errs.append(f"{name} must be > 0 (inf = off), got {z!r}")
+        cap_mult: Any = self.specific_var_cap_mult
+        if (
+            isinstance(cap_mult, bool)
+            or not isinstance(cap_mult, (int, float))
+            or math.isnan(float(cap_mult))
+            or float(cap_mult) < 1.0
+        ):
+            errs.append(f"specific_var_cap_mult must be >= 1 (inf = off), got {cap_mult!r}")
         if errs:
             raise ValueError("RiskConfig: " + "; ".join(errs))
 
@@ -419,6 +469,12 @@ RISK_CONFIG_BOUNDS: dict[str, FieldBound] = {
     "thin_industry_prior_obs": (0.0, None, False, True),
     "specific_var_floor_frac": (0.0, 1.0, True, False),
     "vra_min": (0.0, None, True, True),
+    "style_raw_winsor_mad_k": (0.0, None, True, True),
+    "flat_return_tol": (0.0, None, True, True),
+    "flat_run_min_days": (0.0, None, True, True),
+    "min_specific_obs": (0.0, None, True, True),
+    "structural_clip_pctl": (0.0, 0.5, True, False),
+    "factor_var_repair_mult": (1.0, None, True, True),
 }
 
 

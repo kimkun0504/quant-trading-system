@@ -40,10 +40,15 @@ import numpy as np
 import pandas as pd
 
 from qts.core.config import RiskConfig
-from qts.core.returns import CleanedReturns, clean_returns, flag_bad_prices
+from qts.core.returns import CleanedReturns, clean_returns, flag_bad_prices, flat_run_mask
 from qts.core.types import MarketData, RiskModelOutput
 from qts.risk.alignment import alpha_alignment
-from qts.risk.covariance import factor_covariance, shrunk_residual_covariance, specific_risk
+from qts.risk.covariance import (
+    factor_covariance,
+    repair_covariance,
+    shrunk_residual_covariance,
+    specific_risk,
+)
 from qts.risk.exposures import ExposureHistory, exposure_history, split_factor_columns
 from qts.risk.factor_returns import estimate_factor_return_history
 
@@ -75,7 +80,11 @@ def estimation_inputs(
       into and out of it: a spike-and-reverse pair counts 2).
 
     Otherwise everything is ``md`` / ``md.returns`` untouched and ``cleaning`` is
-    ``None``.  The estimation universe is ``md.eligible`` (the PIT universe mask)
+    ``None``.  Independently of the cleaning, with ``cfg.flat_run_min_days > 0``
+    the non-trading days of :func:`flat_return_days` are NaN in ``returns``: the
+    regression skips the name on those days and it gets no specific return (a
+    SPAC at its trust value is not an observation of an operating company's
+    risk).  The estimation universe is ``md.eligible`` (the PIT universe mask)
     when ``cfg.estimation_universe_eligible_only`` and the mask exists, else
     ``None`` (every name with a market cap)."""
     cleaning: CleanedReturns | None = None
@@ -98,8 +107,22 @@ def estimation_inputs(
         data_error = (returns.notna() & cleaning.returns.isna()) | cleaning.data_error
         cleaning = replace(cleaning, data_error=data_error)
         returns = cleaning.returns
+    flat = flat_return_days(returns, cfg)
+    if flat is not None:
+        returns = returns.mask(flat)
     estu = md.eligible if (cfg.estimation_universe_eligible_only and md.eligible is not None) else None
     return md_est, returns, cleaning, estu
+
+
+def flat_return_days(returns: pd.DataFrame, cfg: RiskConfig) -> pd.DataFrame | None:
+    """Boolean panel of non-trading days (:func:`qts.core.returns.flat_run_mask`
+    with ``cfg.flat_return_tol`` / ``cfg.flat_run_min_days``), or ``None`` when
+    the rule is off or flags nothing."""
+    k = int(getattr(cfg, "flat_run_min_days", 0))
+    if k <= 0:
+        return None
+    flat = flat_run_mask(returns, float(cfg.flat_return_tol), k)
+    return flat if flat.to_numpy().any() else None
 
 
 def reference_book(market_cap: pd.Series, tickers: pd.Index) -> pd.Series:
@@ -165,7 +188,13 @@ class BarraStyleRiskModel:
         #: ``covariance_outliers`` (list of dicts), ``n_data_error_returns``,
         #: ``n_winsorized_returns``, ``thin_industry_days`` (industry -> days shrunk
         #: toward its parent sector), ``specific_vra_multiplier`` / ``n_at_specific_floor``
-        #: (date -> value, one entry per ``as_of``); filled by ``fit`` / ``as_of``.
+        #: (date -> value, one entry per ``as_of``), ``n_at_specific_cap`` and
+        #: ``specific_var_bounds`` (date -> ``(floor, cap)`` on the returned variance),
+        #: ``n_flat_return_days`` (non-trading (date, name) cells dropped from the
+        #: estimation), ``covariance_repairs`` (list of dicts: date, model, what --
+        #: empty unless the last-line repair in ``as_of`` had to act),
+        #: ``reference_vol_hybrid`` (the guard on the hybrid's covariance);
+        #: filled by ``fit`` / ``as_of``.
         self.diagnostics: dict[str, Any] = self._empty_diagnostics()
 
     @staticmethod
@@ -179,6 +208,11 @@ class BarraStyleRiskModel:
             "thin_industry_cells": {},
             "specific_vra_multiplier": {},
             "n_at_specific_floor": {},
+            "n_at_specific_cap": {},
+            "specific_var_bounds": {},
+            "n_flat_return_days": 0,
+            "covariance_repairs": [],
+            "reference_vol_hybrid": {},
         }
 
     # ------------------------------------------------------------------ fit
@@ -199,6 +233,18 @@ class BarraStyleRiskModel:
         self.diagnostics = self._empty_diagnostics()
         self.diagnostics["n_data_error_returns"] = 0 if cleaning is None else cleaning.n_data_errors
         self.diagnostics["n_winsorized_returns"] = 0 if cleaning is None else cleaning.n_winsorized
+        # non-trading cells = finite before the flat-run rule, NaN after it (estimation_inputs)
+        if int(getattr(self.cfg, "flat_run_min_days", 0)) > 0:
+            before = md_est.returns if cleaning is None else cleaning.returns
+            n_flat = int((before.notna() & returns.isna()).to_numpy().sum())
+            self.diagnostics["n_flat_return_days"] = n_flat
+            if n_flat:
+                log.info(
+                    "risk model: %d non-trading (date, name) cells dropped (|r| < %g for >= %d days)",
+                    n_flat,
+                    self.cfg.flat_return_tol,
+                    self.cfg.flat_run_min_days,
+                )
         if cleaning is not None and cleaning.n_data_errors:
             log.warning(
                 "risk model: %d data-error returns removed (rule (a)), %d winsorised (rule (b)); "
@@ -338,6 +384,9 @@ class BarraStyleRiskModel:
         )
         self.diagnostics["specific_vra_multiplier"][date] = float(det["vra_multiplier"])
         self.diagnostics["n_at_specific_floor"][date] = int(det["n_at_floor"])
+        self.diagnostics["n_at_specific_cap"][date] = int(det["n_at_cap"])
+        self.diagnostics["specific_var_bounds"][date] = det["var_bounds"]
+        F, D = self.repair(date, F, D, F_hist, det["var_bounds"], model="fundamental")
         self._check_reference_vol(date, B, F, D, mcap)
         y: pd.Series | None = None
         nu = 0.0
@@ -356,16 +405,58 @@ class BarraStyleRiskModel:
             factor_groups=factor_groups_for(B.columns, self.cfg),
         )
 
+    # ------------------------------------------------------------------ repair
+    def repair(
+        self,
+        date: pd.Timestamp,
+        F: pd.DataFrame,
+        D: pd.Series,
+        factor_returns: pd.DataFrame | None,
+        var_bounds: tuple[float | None, float | None] | None,
+        model: str = "fundamental",
+    ) -> tuple[pd.DataFrame, pd.Series]:
+        """Belt and braces after the final assembly (``cfg.covariance_repair``):
+        :func:`qts.risk.covariance.repair_covariance` on ``(F, D)``.  Anything it
+        had to change is appended to ``diagnostics['covariance_repairs']`` (date,
+        model, what, count, worst label / value) and logged as a warning.  It is
+        not the mechanism that keeps the covariance sane -- the protections
+        upstream are; a non-empty list means one of them has a hole."""
+        if not getattr(self.cfg, "covariance_repair", True):
+            return F, D
+        F2, D2, repairs = repair_covariance(
+            F, D, factor_returns, var_bounds, float(getattr(self.cfg, "factor_var_repair_mult", 100.0))
+        )
+        for r in repairs:
+            entry = {"date": date, "model": model, **r}
+            self.diagnostics["covariance_repairs"].append(entry)
+            log.warning(
+                "risk model: covariance repair on %s (%s): %s x%d, worst %s",
+                date.date(),
+                model,
+                r["what"],
+                r["n"],
+                r["worst"],
+            )
+        return F2, D2
+
     # ------------------------------------------------------------------ guard
     def _check_reference_vol(
-        self, date: pd.Timestamp, B: pd.DataFrame, F: pd.DataFrame, D: pd.Series, mcap: pd.Series
+        self,
+        date: pd.Timestamp,
+        B: pd.DataFrame,
+        F: pd.DataFrame,
+        D: pd.Series,
+        mcap: pd.Series,
+        key: str = "reference_vol",
+        model: str = "fundamental",
     ) -> float:
         """Blow-up guard: annualised ex-ante vol of :func:`reference_book` under
         ``B F B' + D``, recorded in ``diagnostics['reference_vol'][date]``.  Above
         ``cfg.max_reference_vol`` or more than :data:`REFERENCE_VOL_JUMP` times the
         previously recorded date's value it is appended to
         ``diagnostics['covariance_outliers']`` with the top factor / specific
-        contributors and logged as a warning.  A healthy long-only sqrt-cap book
+        contributors and logged as a warning (``key`` / ``model``: the hybrid
+        records its own series under ``reference_vol_hybrid``).  A healthy long-only sqrt-cap book
         sits near the market's vol (15-25 %); hundreds of percent mean a factor
         return or a specific variance absorbed a data error."""
         w = reference_book(mcap, B.index)
@@ -378,7 +469,7 @@ class BarraStyleRiskModel:
         spec_contrib = wv**2 * d
         var = float(fac_contrib.sum() + spec_contrib.sum())
         vol = float(np.sqrt(max(var, 0.0) * TRADING_DAYS))
-        ref: dict[pd.Timestamp, float] = self.diagnostics["reference_vol"]
+        ref: dict[pd.Timestamp, float] = self.diagnostics[key]
         earlier = [k for k in ref if k < date]
         prev_vol = ref[max(earlier)] if earlier else None
         ref[date] = vol
@@ -388,6 +479,7 @@ class BarraStyleRiskModel:
             ks = np.argsort(-spec_contrib)[:5]
             entry = {
                 "date": date,
+                "model": model,
                 "reference_vol": vol,
                 "previous_vol": prev_vol,
                 "top_factors": [(str(B.columns[k]), float(fac_contrib[k] * TRADING_DAYS)) for k in kf],
@@ -395,8 +487,9 @@ class BarraStyleRiskModel:
             }
             self.diagnostics["covariance_outliers"].append(entry)
             log.warning(
-                "risk model: reference-book ex-ante vol %.1f%% on %s (previous %s; limit %.0f%%); "
+                "risk model (%s): reference-book ex-ante vol %.1f%% on %s (previous %s; limit %.0f%%); "
                 "top factors %s; top names %s",
+                model,
                 100 * vol,
                 date.date(),
                 "n/a" if prev_vol is None else f"{100 * prev_vol:.1f}%",

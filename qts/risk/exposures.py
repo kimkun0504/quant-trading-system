@@ -38,9 +38,25 @@ short_interest
 
 Standardization (USE4 Methodology Notes, section on descriptor standardization):
 cap-weighted mean 0 and equal-weighted standard deviation 1, outliers trimmed
-at +-3 standard deviations.  We apply: cap-weighted z-score -> clip to [-3, 3]
--> re-standardize (so the sd is ~1 after trimming) -> fill missing with 0
-(a missing style exposure is treated as "average", the USE4 convention).
+at +-3 standard deviations.  We apply: robust pre-winsorisation of the raw
+descriptor at ``median +- 10 x 1.4826 MAD`` -> cap-weighted z-score -> clip to
+[-3, 3] -> re-standardize (so the sd is ~1 after trimming) -> winsorise the
+result at +-3 -> fill missing with 0 (a missing style exposure is treated as
+"average", the USE4 convention).
+
+The first and last steps exist because "clip at 3 sd, then re-standardise" is
+not robust to a *gross* outlier (docs/notes/risk_new_listing_fix_2026-11-10.md):
+one name at 10,000x the cross-sectional spread owns the first sd, every other
+name collapses to a single point, and the re-standardisation puts the clipped
+outlier back at ``~sqrt(N)`` sd (31 at 1,000 names) with the rest of the
+cross-section inside a band of width ~0.01.  The style column is then a dummy
+for that one name.
+
+Beta and residual volatility are estimated on trading days only: days inside a
+run of ``flat_run_min_days`` returns with ``|r| < flat_return_tol`` (a SPAC at
+its trust value, a stale price) are removed from the regression window, so a
+name needs ``BETA_WINDOW // 4`` real returns before either descriptor exists
+(until then: missing -> 0).
 """
 
 from __future__ import annotations
@@ -53,6 +69,7 @@ import pandas as pd
 from qts.core import stats
 from qts.core.config import RiskConfig
 from qts.core.crosssection import zscore
+from qts.core.returns import MAD_TO_SD, flat_run_mask
 from qts.core.types import MarketData
 
 MARKET_FACTOR = "market"
@@ -64,6 +81,11 @@ REVERSAL_WINDOW = 21
 LIQUIDITY_WINDOW = 63
 BETA_SHRINK = 1.0 / 3.0
 WINSOR_SD = 3.0
+#: defaults of ``RiskConfig.style_raw_winsor_mad_k`` / ``style_exposure_cap``
+RAW_WINSOR_MAD_K = 10.0
+EXPOSURE_CAP = 3.0
+#: ``IQR / IQR_TO_SD`` is a Gaussian-consistent sd (fallback when the MAD is zero)
+IQR_TO_SD = 1.349
 
 SUPPORTED_STYLES = [
     "beta",
@@ -80,11 +102,16 @@ SUPPORTED_STYLES = [
 
 
 # --------------------------------------------------------------------------- raw styles
-def raw_style_panels(md: MarketData, styles: Iterable[str]) -> dict[str, pd.DataFrame]:
+def raw_style_panels(
+    md: MarketData, styles: Iterable[str], cfg: RiskConfig | None = None
+) -> dict[str, pd.DataFrame]:
     """Compute un-standardized style descriptors as wide panels (date x ticker).
 
     Every descriptor is causal (rolling windows / lags only), so slicing a
-    panel at date ``t`` uses data ``<= t`` only."""
+    panel at date ``t`` uses data ``<= t`` only.  ``cfg`` supplies the
+    non-trading-day rule (``flat_return_tol`` / ``flat_run_min_days``) for the
+    beta / residual-vol regression window; ``None`` = ``RiskConfig()``."""
+    cfg = cfg or RiskConfig()
     styles = list(styles)
     unknown = set(styles) - set(SUPPORTED_STYLES)
     if unknown:
@@ -100,6 +127,13 @@ def raw_style_panels(md: MarketData, styles: Iterable[str]) -> dict[str, pd.Data
         # all-columns mean would include names whose *only* reason to be in the
         # panel is that apply_mask kept them for entering the universe later --
         # a future-membership look-ahead (lag investigation 2026-11-05).
+        # Non-trading days are not observations: a de-SPAC's 250 days at exactly
+        # 10.00 followed by the merger jump would give beta ~ 0 and a residual
+        # vol that is one day's jump (flat_run_mask is causal).
+        if int(getattr(cfg, "flat_run_min_days", 0)) > 0:
+            flat = flat_run_mask(returns, cfg.flat_return_tol, cfg.flat_run_min_days)
+            if flat.to_numpy().any():
+                returns = returns.mask(flat)
         market = returns.where(md.eligibility()).mean(axis=1)
         reg = stats.rolling_beta(returns, market, BETA_WINDOW, min_periods=BETA_WINDOW // 4)
         beta_hat, resid_var = reg.beta, reg.resid_var
@@ -151,25 +185,76 @@ def raw_style_panels(md: MarketData, styles: Iterable[str]) -> dict[str, pd.Data
     return out
 
 
-def standardize_style(raw: pd.DataFrame, market_cap: pd.DataFrame) -> pd.DataFrame:
-    """Barra standardization of a wide descriptor panel, row by row:
+def winsorize_raw_descriptor(raw: pd.DataFrame, mad_k: float = RAW_WINSOR_MAD_K) -> pd.DataFrame:
+    """Per date, clip a raw descriptor at ``median +- mad_k`` robust sigmas, the
+    robust sigma being ``1.4826 MAD`` (``IQR / 1.349`` when the MAD is zero, i.e.
+    when more than half the names share one value; a row where both are zero, or
+    with fewer than 5 values, is left alone).  ``mad_k <= 0`` returns ``raw``.
+
+    This is the outlier step the 3-sd trim cannot do: the trim measures distance
+    in units of an sd the outlier itself inflates."""
+    if not (mad_k > 0) or not np.isfinite(mad_k) or raw.shape[1] == 0:
+        return raw
+    A = raw.to_numpy(dtype=np.float64)
+    n = np.isfinite(A).sum(axis=1)
+    rows = np.flatnonzero(n >= 5)
+    if len(rows) == 0:
+        return raw
+    sub = A[rows]
+    q25, med, q75 = np.nanquantile(sub, [0.25, 0.5, 0.75], axis=1)
+    sig = MAD_TO_SD * np.nanmedian(np.abs(sub - med[:, None]), axis=1)
+    sig = np.where(sig > 0, sig, (q75 - q25) / IQR_TO_SD)
+    ok = np.isfinite(sig) & (sig > 0)
+    half = np.where(ok, float(mad_k) * sig, np.inf)
+    lo, hi = (med - half)[:, None], (med + half)[:, None]
+    with np.errstate(invalid="ignore"):
+        hit = (sub < lo) | (sub > hi)
+    if not hit.any():
+        return raw
+    out = A.copy()
+    out[rows] = np.where(np.isfinite(sub), np.clip(sub, lo, hi), sub)
+    return pd.DataFrame(out, index=raw.index, columns=raw.columns)
+
+
+def standardize_style(
+    raw: pd.DataFrame,
+    market_cap: pd.DataFrame,
+    raw_winsor_mad_k: float = RAW_WINSOR_MAD_K,
+    exposure_cap: float = EXPOSURE_CAP,
+) -> pd.DataFrame:
+    """Barra standardization of a wide descriptor panel, row by row: robust
+    pre-winsorisation of the raw values (:func:`winsorize_raw_descriptor`),
     cap-weighted mean 0 / equal-weighted sd 1, trim at +-3 sd, re-standardize,
-    fill missing with 0."""
+    winsorise the result at ``+-exposure_cap``, fill missing with 0.
+    ``raw_winsor_mad_k=0`` and ``exposure_cap=inf`` give the pre-2026-11-10
+    behaviour (trim and re-standardise only)."""
     raw = raw.replace([np.inf, -np.inf], np.nan)
+    raw = winsorize_raw_descriptor(raw, raw_winsor_mad_k)
     z = zscore(raw, weights=market_cap).clip(-WINSOR_SD, WINSOR_SD)
     z = zscore(z, weights=market_cap)
+    if np.isfinite(exposure_cap):
+        z = z.clip(-float(exposure_cap), float(exposure_cap))
     return z.fillna(0.0)
 
 
-def standardized_style_panels(md: MarketData, styles: Iterable[str]) -> dict[str, pd.DataFrame]:
+def standardized_style_panels(
+    md: MarketData, styles: Iterable[str], cfg: RiskConfig | None = None
+) -> dict[str, pd.DataFrame]:
     """Standardised style panels; the per-date cross-section (cap-weighted mean,
     equal-weighted sd) is restricted to ``md.eligibility()`` at that date, so a
     name kept in the column set only because it enters the universe later never
-    moves today's standardisation (PIT; lag investigation 2026-11-05)."""
-    raw = raw_style_panels(md, styles)
+    moves today's standardisation (PIT; lag investigation 2026-11-05).  ``cfg``
+    supplies the outlier parameters (``style_raw_winsor_mad_k``,
+    ``style_exposure_cap``) and the non-trading-day rule; ``None`` = defaults."""
+    cfg = cfg or RiskConfig()
+    raw = raw_style_panels(md, styles, cfg)
     elig = md.eligibility()
+    mad_k = float(getattr(cfg, "style_raw_winsor_mad_k", RAW_WINSOR_MAD_K))
+    cap = float(getattr(cfg, "style_exposure_cap", EXPOSURE_CAP))
     return {
-        k: standardize_style(v.where(elig.reindex_like(v).fillna(False).astype(bool)), md.market_cap)
+        k: standardize_style(
+            v.where(elig.reindex_like(v).fillna(False).astype(bool)), md.market_cap, mad_k, cap
+        )
         for k, v in raw.items()
     }
 
@@ -392,7 +477,7 @@ def exposure_history(
     cfg = cfg or RiskConfig()
     dates = md.dates if dates is None else pd.DatetimeIndex(list(dates))
     styles = list(cfg.styles)
-    panels = standardized_style_panels(md, styles)
+    panels = standardized_style_panels(md, styles, cfg)
     tickers_all = md.tickers
     N = len(tickers_all)
     rows = md.dates.get_indexer(dates)

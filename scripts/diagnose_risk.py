@@ -12,8 +12,17 @@ prints:
   time and the first date it fell to <= 2; and the number of (date, industry) cells
   with 0, 1 or 2 members;
 * specific-variance extremes per year (min / max annualised specific vol);
-* the reference-book ex-ante vol (``as_of`` on month ends): every month where it
-  exceeds 100% or jumps > 5x, with the top factors by variance contribution;
+* the reference-book ex-ante vol on **all** month ends ``as_of`` can serve, for
+  the fundamental model and (when the statistical companion is on) the hybrid:
+  every month where it exceeds 100% or jumps > 5x, with the top factor and
+  specific variance contributions and, for the top-5 names, every stage of the
+  specific-risk pipeline (raw EWMA variance, number of residuals, structural
+  prediction, shrinkage target, final variance, largest style exposure); ends
+  with one ``alerts: none`` / ``alerts: <n>`` line;
+* new-listing protections: non-trading cells dropped, names at the
+  specific-variance cap per year, covariance repairs (expected 0) and the
+  largest raw-descriptor outliers in robust sigmas (which name / descriptor the
+  pre-winsorisation acts on);
 * the specific VRA multiplier on the same month ends (extremes with dates, and
   how many month ends sit at the configured ``[vra_min, vra_max]`` clip), the
   number of names at the specific-variance floor per year, and the industries
@@ -44,6 +53,106 @@ from diagnose_signal import add_data_args, load_config, load_market
 
 def _fundamental(risk):
     return getattr(risk, "fundamental", risk)
+
+
+def reference_contributions(out, market_cap: pd.Series) -> tuple[float, pd.Series, pd.Series]:
+    """``(annualised vol, factor contributions, specific contributions)`` of the
+    sqrt-cap reference book under ``out`` (a ``RiskModelOutput``); contributions
+    are annualised variances, sorted descending."""
+    B, F, D = out.exposures, out.factor_cov, out.specific_var
+    names = B.index
+    w = np.sqrt(market_cap.reindex(names).fillna(0).clip(lower=0).to_numpy(dtype=float))
+    w = w / w.sum() if w.sum() > 0 else w
+    Bw = B.fillna(0).to_numpy(dtype=float).T @ w
+    Fv = F.reindex(index=B.columns, columns=B.columns).fillna(0.0).to_numpy(dtype=float)
+    with np.errstate(over="ignore", invalid="ignore"):
+        fac = pd.Series(Bw * (Fv @ Bw) * 252, index=B.columns).sort_values(ascending=False)
+        spec = pd.Series(D.reindex(names).fillna(0).to_numpy(dtype=float) * w**2 * 252, index=names)
+        spec = spec.sort_values(ascending=False)
+        var = float(fac.sum() + spec.sum())
+    vol = float(np.sqrt(max(var, 0.0))) if np.isfinite(var) else float("inf")
+    return vol, fac, spec
+
+
+def specific_trace(fm, d: pd.Timestamp, names: list[str]) -> pd.DataFrame:
+    """Every stage of :func:`qts.risk.covariance.specific_risk` for ``names`` on
+    ``d``: raw EWMA variance, number of residuals, blend weight, structural
+    prediction, size-decile shrinkage target, final variance -- next to the
+    cross-sectional median of each -- plus the largest |style exposure| and the
+    spread of that style over the other names (a spread << 1 means the style is
+    a dummy for the outlier)."""
+    from qts.risk.covariance import specific_risk
+
+    B = fm.exposures_as_of(d)
+    mcap = fm.md.market_cap.loc[:d].iloc[-1]
+    with np.errstate(over="ignore", invalid="ignore"):
+        var, det = specific_risk(
+            fm.specific_returns.loc[:d],
+            B,
+            mcap,
+            fm.cfg,
+            return_details=True,
+            market_cap_history=fm.md.market_cap.loc[:d],
+        )
+    styles = [c for c in B.columns if c in fm.cfg.styles]
+    cols = {
+        "ewma_var_raw": det["var_ts_raw"],
+        "n_obs": det["n_obs"],
+        "gamma": det["gamma"],
+        "structural_var": det["sigma_str"] ** 2,
+        "shrink_target_var": det["shrink_target"] ** 2,
+        "final_var": var,
+    }
+    tab = pd.DataFrame({k: v.reindex(names) for k, v in cols.items()})
+    if styles:
+        absx = B[styles].abs()
+        worst = absx.reindex(names).idxmax(axis=1)
+        tab["max_abs_style"] = absx.reindex(names).max(axis=1)
+        tab["style"] = worst
+        tab["others_sd"] = [
+            float(B[st].drop(index=n, errors="ignore").std()) if isinstance(st, str) else np.nan
+            for n, st in worst.items()
+        ]
+    med = {k: float(np.nanmedian(v.to_numpy(dtype=float))) for k, v in cols.items()}
+    tab.loc["(median, all names)"] = pd.Series(med)
+    return tab
+
+
+def raw_descriptor_outliers(md, rcfg, months, top: int = 25) -> pd.DataFrame:
+    """Largest raw-descriptor outliers on the month ends, in robust sigmas
+    (|x - median| / 1.4826 MAD over the eligible names): the cells the
+    pre-winsorisation (``style_raw_winsor_mad_k``) acts on.  A de-SPAC's asset
+    growth against its pre-IPO shell shows up here at 1e3-1e5 robust sigmas."""
+    from qts.risk.exposures import raw_style_panels
+
+    elig = md.eligibility()
+    rows = []
+    for st, panel in raw_style_panels(md, rcfg.styles, rcfg).items():
+        sub = panel.where(elig).reindex(months).replace([np.inf, -np.inf], np.nan)
+        if not sub.notna().to_numpy().any():
+            continue
+        med = sub.median(axis=1)
+        sig = 1.4826 * sub.sub(med, axis=0).abs().median(axis=1)
+        z = sub.sub(med, axis=0).div(sig.where(sig > 0), axis=0).abs().stack()
+        n_beyond = int((z > rcfg.style_raw_winsor_mad_k).sum()) if rcfg.style_raw_winsor_mad_k > 0 else 0
+        for (d, t), v in z.nlargest(5).items():
+            rows.append(
+                {
+                    "style": st,
+                    "date": d.date(),
+                    "name": t,
+                    "raw": float(panel.at[d, t]),
+                    "robust_z": float(v),
+                    "cells_beyond_k": n_beyond,
+                }
+            )
+    print(
+        f"largest raw-descriptor outliers on month ends (robust z; winsorised at "
+        f"{rcfg.style_raw_winsor_mad_k:g} robust sigmas before standardisation):"
+    )
+    if not rows:
+        return pd.DataFrame(columns=["style", "date", "name", "raw", "robust_z", "cells_beyond_k"])
+    return pd.DataFrame(rows).sort_values("robust_z", ascending=False).head(top)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -150,46 +259,74 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(tab.to_string())
 
-    # -- reference vol on month ends ----------------------------------------------
+    # -- reference vol on ALL month ends, fundamental and hybrid --------------------
+    # every month end as_of can serve (>= min_history_days factor-return rows)
+    first_ok = fr.index[min(cfg.risk.min_history_days, len(fr)) - 1]
     months = pd.Series(md.dates).groupby(pd.Series(md.dates).dt.to_period("M")).last().tolist()
-    months = [d for d in months if d >= fr.index[0] + pd.Timedelta(days=400)]
-    ref = {}
-    alerts = []
-    prev = None
+    months = [d for d in months if first_ok <= d <= fr.index[-1]]
+    is_hybrid = fm is not risk
+    models = ["fundamental", "hybrid"] if is_hybrid else ["fundamental"]
+    ref: dict[str, dict] = {m: {} for m in models}
+    alerts: dict[str, list] = {m: [] for m in models}
+    prev: dict[str, float | None] = dict.fromkeys(models)
     for d in months:
         try:
-            out = risk.as_of(d)
+            out_h = risk.as_of(d)
+            out_f = fm.as_of(d) if is_hybrid else out_h
         except Exception as e:
             print(f"as_of({d.date()}) failed: {e}")
             continue
-        B, F, D = out.exposures, out.factor_cov, out.specific_var
-        names = B.index
-        mc = md.market_cap.loc[:d].iloc[-1].reindex(names).fillna(0).clip(lower=0)
-        w = np.sqrt(mc.to_numpy())
-        w = w / w.sum() if w.sum() > 0 else w
-        Bw = B.fillna(0).to_numpy(dtype=float).T @ w
-        fvar = Bw @ F.to_numpy() @ Bw
-        svar = float(np.nansum(D.reindex(names).fillna(0).to_numpy() * w**2))
-        vol = float(np.sqrt(max(fvar + svar, 0) * 252))
-        ref[d] = vol
-        if vol > 1.0 or (prev and vol > 5 * prev):
-            contrib = pd.Series(Bw * (F.to_numpy() @ Bw), index=F.columns).sort_values(ascending=False)
-            alerts.append((d.date(), vol, prev, contrib.head(5).round(6).to_dict()))
-        prev = vol
-    refs = pd.Series(ref)
-    print("\n== reference-book ex-ante vol (month ends) ==")
-    print(refs.describe(percentiles=[0.05, 0.5, 0.95]).to_string())
-    print("\n== alerts (vol > 100% or > 5x previous month) ==")
-    for d, v, p, c in alerts:
+        for m, out in zip(models, [out_f, out_h] if is_hybrid else [out_f], strict=True):
+            vol, fac, spec = reference_contributions(out, md.market_cap.loc[:d].iloc[-1])
+            ref[m][d] = vol
+            p = prev[m]
+            if vol > 1.0 or (p and vol > 5 * p) or not np.isfinite(vol):
+                alerts[m].append((d, vol, p, fac.head(5), spec.head(5)))
+            prev[m] = vol
+    n_alerts = 0
+    for m in models:
+        refs = pd.Series(ref[m])
+        print(f"\n== reference-book ex-ante vol, {m} ({len(refs)} month ends) ==")
+        print(refs.describe(percentiles=[0.05, 0.5, 0.95]).to_string())
+        print(f"\n== alerts, {m} (vol > 100% or > 5x previous month) ==")
+        for d, v, p, fac, spec in alerts[m]:
+            n_alerts += 1
+            print(f"{d.date()}: vol {v:.4g} ({v:.2%}; prev {p if p is None else f'{p:.2%}'})")
+            print(f"  top factor variance contributions (annualised): {fac.map('{:.4g}'.format).to_dict()}")
+            print(
+                f"  top specific variance contributions (annualised): {spec.map('{:.4g}'.format).to_dict()}"
+            )
+            with pd.option_context("display.width", 200, "display.float_format", "{:.4g}".format):
+                print("  specific-risk trace of those names (daily variances; vols are daily):")
+                print(specific_trace(fm, d, list(spec.index)).to_string().replace("\n", "\n  "))
+        if not alerts[m]:
+            print("none")
+    print(
+        f"\nalerts: {'none' if n_alerts == 0 else n_alerts} (all {len(months)} month ends, {' + '.join(models)})"
+    )
+
+    # -- new listings / de-SPACs: caps, repairs, non-trading days, raw-descriptor outliers
+    print("\n== new-listing protections ==")
+    print(f"non-trading (date, name) cells dropped: {fm.diagnostics.get('n_flat_return_days', 0)}")
+    nc = pd.Series(fm.diagnostics.get("n_at_specific_cap", {})).sort_index()
+    if len(nc):
+        g = nc.groupby(nc.index.year)
         print(
-            f"{d}: vol {v:.2%} (prev {p if p is None else f'{p:.2%}'}) top factor variance contributions: {c}"
+            f"names at the specific-variance cap ({cfg.risk.specific_var_cap_mult:g} x median), month ends per year:"
         )
-    if not alerts:
-        print("none")
+        print(pd.DataFrame({"mean": g.mean().round(1), "max": g.max()}).to_string())
+    reps = fm.diagnostics.get("covariance_repairs", [])
+    print(
+        f"covariance repairs: {len(reps)}"
+        + (" (expected 0: a repair means a protection has a hole)" if reps else "")
+    )
+    for r in reps[:20]:
+        print(f"  {r['date'].date()} {r['model']}: {r['what']} x{r['n']}, worst {r['worst']}")
+    print(raw_descriptor_outliers(md_risk, cfg.risk, months, top=a.top).to_string(index=False))
 
     # -- specific VRA multiplier and the specific-variance floor ------------------
     lam = pd.Series(fm.diagnostics.get("specific_vra_multiplier", {})).sort_index()
-    lam = lam.loc[[d for d in lam.index if d in ref]] if len(lam) else lam
+    lam = lam.loc[[d for d in lam.index if d in ref["fundamental"]]] if len(lam) else lam
     print("\n== specific VRA multiplier lambda_S (month ends) ==")
     if len(lam):
         lo, hi = cfg.risk.vra_min, cfg.risk.vra_max

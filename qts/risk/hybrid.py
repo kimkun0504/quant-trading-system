@@ -167,7 +167,9 @@ class HybridRiskModel:
 
     @property
     def diagnostics(self) -> dict:
-        """Fundamental model's cleaning / reference-vol diagnostics."""
+        """Fundamental model's cleaning / reference-vol diagnostics (the hybrid's
+        own guard series is ``reference_vol_hybrid``; its repairs carry
+        ``model == "hybrid"`` in ``covariance_repairs``)."""
         return self.fundamental.diagnostics
 
     @property
@@ -277,6 +279,29 @@ class HybridRiskModel:
         cols = list(fund.factor_cov.columns) + stat_cols
         factor_cov = pd.DataFrame(F, index=cols, columns=cols)
         spec = pd.Series(D_h, index=tickers, name="specific_var")
+        # belt and braces + the alarm on the *hybrid* covariance (the fundamental's
+        # own as_of above already repaired / checked its block).  Bounds: D_h =
+        # keep * D_fund with keep in [SPECIFIC_FLOOR, 1].
+        fm = self.fundamental
+        lo, hi = fm.diagnostics["specific_var_bounds"].get(fund.date, (None, None))
+        factor_cov, spec = fm.repair(
+            fund.date,
+            factor_cov,
+            spec,
+            fr,
+            (None if lo is None else SPECIFIC_FLOOR * lo, hi),
+            model="hybrid",
+        )
+        assert fm.md is not None
+        fm._check_reference_vol(
+            fund.date,
+            exposures,
+            factor_cov,
+            spec,
+            fm.md.market_cap.loc[: fund.date].iloc[-1],
+            key="reference_vol_hybrid",
+            model="hybrid",
+        )
         y: pd.Series | None = None
         nu = 0.0
         if alpha is not None and cfg.alignment:

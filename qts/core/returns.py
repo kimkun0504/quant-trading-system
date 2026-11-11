@@ -126,6 +126,31 @@ def data_error_mask(
     return pd.DataFrame(bad, index=returns.index, columns=returns.columns)
 
 
+def flat_run_mask(returns: pd.DataFrame, tol: float = 1e-6, min_days: int = 20) -> pd.DataFrame:
+    """Non-trading days (docs/notes/risk_new_listing_fix_2026-11-10.md): True on
+    day ``t`` when ``|r| < tol`` on each of the ``min_days`` days ending at ``t``.
+
+    A SPAC sitting at its trust value, a halted name whose last price is carried
+    forward and a stale vendor price all look like this: a long run of returns
+    that are exactly (or to rounding) zero.  They are not observations of the
+    stock's risk.  The rule is causal -- day ``t`` is flagged from data ``<= t``
+    only, so the first ``min_days - 1`` days of a run are *not* flagged (they were
+    not known to be a run yet) -- and a NaN return breaks a run.  ``min_days <= 0``
+    returns an all-False panel."""
+    r = returns.to_numpy(dtype=np.float64)
+    out = np.zeros(r.shape, dtype=bool)
+    k = int(min_days)
+    if k > 0 and r.shape[0] >= k:
+        with np.errstate(invalid="ignore"):
+            flat = np.isfinite(r) & (np.abs(r) < float(tol))
+        if flat.any():
+            c = np.cumsum(flat, axis=0, dtype=np.int64)
+            run = c.copy()
+            run[k:] = c[k:] - c[:-k]
+            out = flat & (run >= k)
+    return pd.DataFrame(out, index=returns.index, columns=returns.columns)
+
+
 def winsorize_cross_section(
     returns: pd.DataFrame, mad_k: float = DEFAULT_WINSOR_MAD_K
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
