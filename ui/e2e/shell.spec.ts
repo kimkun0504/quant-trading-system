@@ -3,17 +3,20 @@ import { expect, test } from '@playwright/test';
 const BASELINE = '20261104T175159Z_944dd5b4';
 const TA0 = '20261106T083015Z_5e2c9f10';
 
-test('sidebar reaches every workspace; labs say which step brings them', async ({ page }) => {
+test('sidebar reaches every workspace; an empty tray shows the labs’ run picker', async ({
+  page,
+}) => {
   await page.goto('/');
+  await page.evaluate(() => localStorage.removeItem('qts-selection'));
   const nav = page.getByRole('navigation', { name: 'Workspaces' });
-  for (const [label, heading, step] of [
-    ['Signal lab', 'Signal lab', 4],
-    ['Portfolio', 'Portfolio anatomy', 5],
-    ['Costs & constraints', 'Cost & constraint lab', 5],
+  for (const [label, heading] of [
+    ['Signal lab', 'Signal lab'],
+    ['Portfolio', 'Portfolio anatomy'],
+    ['Costs & constraints', 'Cost & constraint lab'],
   ] as const) {
     await nav.getByRole('link', { name: label }).click();
     await expect(page.getByRole('heading', { level: 1, name: heading })).toBeVisible();
-    await expect(page.getByText(`Coming in step ${step}`)).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Pick the runs to study/ })).toBeVisible();
   }
   await nav.getByRole('link', { name: 'Run builder' }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'Run builder' })).toBeVisible();

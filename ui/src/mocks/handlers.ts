@@ -158,6 +158,30 @@ export const handlers = [
     return 'error' in r ? r.error : HttpResponse.json(r.run.ic);
   }),
 
+  http.get<{ id: string }>('*/api/runs/:id/alpha/refits', async ({ params }) => {
+    await delay();
+    const r = findRun(params.id);
+    return 'error' in r ? r.error : HttpResponse.json(r.run.alphaRefits);
+  }),
+
+  http.get<{ id: string }>('*/api/runs/:id/alpha/theme-weights', async ({ params }) => {
+    await delay();
+    const r = findRun(params.id);
+    return 'error' in r ? r.error : HttpResponse.json(r.run.themeWeights);
+  }),
+
+  http.get<{ id: string }>('*/api/runs/:id/alpha/ic-by-year', async ({ params }) => {
+    await delay();
+    const r = findRun(params.id);
+    return 'error' in r ? r.error : HttpResponse.json(r.run.icByYear);
+  }),
+
+  http.get<{ id: string }>('*/api/runs/:id/constraints', async ({ params }) => {
+    await delay();
+    const r = findRun(params.id);
+    return 'error' in r ? r.error : HttpResponse.json(r.run.constraints);
+  }),
+
   http.get<{ id: string }>('*/api/runs/:id/files', async ({ params }) => {
     await delay();
     const r = findRun(params.id);

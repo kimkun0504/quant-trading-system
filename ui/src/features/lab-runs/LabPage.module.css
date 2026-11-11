@@ -1,0 +1,57 @@
+.strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-sm);
+}
+
+.stripItem {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.swatch {
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 2px;
+  flex: none;
+}
+
+.missing {
+  margin: 0;
+  color: var(--color-caution-ink);
+  font-size: var(--text-sm);
+}
+
+.lanes {
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr));
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.lane {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.laneTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+  font-weight: 600;
+  margin: 0;
+}
+
+@media (max-width: 1099px) {
+  .lanes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

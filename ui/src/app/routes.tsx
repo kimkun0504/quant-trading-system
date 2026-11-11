@@ -43,15 +43,27 @@ export const routes: RouteObject[] = [
                 Component: m.NewRunPage,
               })),
           },
-          ...(['signal', 'portfolio', 'costs'] as const).map((key) => ({
-            path: key,
+          {
+            path: 'signal',
             lazy: () =>
-              Promise.all([import('@/pages/lab/LabStubPage'), import('@/pages/lab/stubs')]).then(
-                ([m, stubs]) => ({
-                  Component: () => <m.LabStubPage stub={stubs.LAB_STUBS[key]} />,
-                }),
-              ),
-          })),
+              import('@/pages/signal-lab/SignalLabPage').then((m) => ({
+                Component: m.SignalLabPage,
+              })),
+          },
+          {
+            path: 'portfolio',
+            lazy: () =>
+              import('@/pages/portfolio-lab/PortfolioLabPage').then((m) => ({
+                Component: m.PortfolioLabPage,
+              })),
+          },
+          {
+            path: 'costs',
+            lazy: () =>
+              import('@/pages/costs-lab/CostsLabPage').then((m) => ({
+                Component: m.CostsLabPage,
+              })),
+          },
           {
             path: 'runs/:runId',
             lazy: () =>

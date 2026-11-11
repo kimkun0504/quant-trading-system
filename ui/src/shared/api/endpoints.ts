@@ -1,5 +1,8 @@
 import { apiDelete, apiGet, apiPost } from './client';
 import type {
+  AlphaIcByYear,
+  AlphaRefits,
+  AlphaThemeWeights,
   ConfigSchema,
   Health,
   Job,
@@ -8,6 +11,7 @@ import type {
   Ledger,
   ColumnarSeries,
   RunCompare,
+  RunConstraints,
   RunCosts,
   RunDetail,
   RunExposures,
@@ -43,6 +47,18 @@ export const api = {
     apiGet<RunIc>(`/runs/${encodeURIComponent(id)}/ic`, undefined, signal),
   getRunFiles: (id: RunId, signal?: AbortSignal) =>
     apiGet<RunFiles>(`/runs/${encodeURIComponent(id)}/files`, undefined, signal),
+  getAlphaRefits: (id: RunId, signal?: AbortSignal) =>
+    apiGet<AlphaRefits>(`/runs/${encodeURIComponent(id)}/alpha/refits`, undefined, signal),
+  getThemeWeights: (id: RunId, signal?: AbortSignal) =>
+    apiGet<AlphaThemeWeights>(
+      `/runs/${encodeURIComponent(id)}/alpha/theme-weights`,
+      undefined,
+      signal,
+    ),
+  getIcByYear: (id: RunId, signal?: AbortSignal) =>
+    apiGet<AlphaIcByYear>(`/runs/${encodeURIComponent(id)}/alpha/ic-by-year`, undefined, signal),
+  getRunConstraints: (id: RunId, signal?: AbortSignal) =>
+    apiGet<RunConstraints>(`/runs/${encodeURIComponent(id)}/constraints`, undefined, signal),
   launchRun: (body: LaunchRunRequest) => apiPost<LaunchRunResponse>('/runs', body),
   getJob: (jobId: string, signal?: AbortSignal) =>
     apiGet<Job>(`/jobs/${encodeURIComponent(jobId)}`, undefined, signal),

@@ -24,7 +24,16 @@ from qts_api.settings import Settings
 OLD_RUN_ID = "20200101T000000000000Z_0ldrun00"
 #: TestClient base URL: the app only accepts Host headers on its allow-list (localhost, ...).
 LOCAL = "http://localhost"
-EXTRA_FILES = ("extras.json", "exante_vol.parquet", "exposures.parquet", "holdings.parquet")
+EXTRA_FILES = (
+    "extras.json",
+    "exante_vol.parquet",
+    "exposures.parquet",
+    "holdings.parquet",
+    "alpha_refits.json",
+    "theme_weights.parquet",
+    "alpha_ic_by_sleeve.parquet",
+    "constraints.parquet",
+)
 
 
 @pytest.fixture(scope="session")
@@ -34,7 +43,7 @@ def fixture_root(tmp_path_factory) -> Path:
     old = root / OLD_RUN_ID
     shutil.copytree(run_dir, old)
     for f in EXTRA_FILES:
-        (old / f).unlink()
+        (old / f).unlink(missing_ok=True)
     m = json.loads((old / "manifest.json").read_text())
     m["run_id"] = OLD_RUN_ID
     m["created_at"] = "2020-01-01T00:00:00+00:00"

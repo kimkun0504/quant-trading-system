@@ -20,6 +20,25 @@ memory; :func:`write_extra_artifacts` adds them next to the core files::
                          expected return over the alpha horizon, ``alpha.as_of(
                          signal_date)`` -- what the optimizer saw), specific vol
                          (annualised), industry
+    alpha_refits.parquet long table of what every walk-forward refit of the ML sleeve
+                         learned: refit_date (first date the model predicts for), sleeve
+                         (lgbm / ridge / mlp / ensemble), feature, importance (raw: gain
+                         share for LightGBM, |coef| for ridge, member mean for the
+                         ensemble; the UI normalises per refit)
+    alpha_refits.json    the refits' windows (train_start, train_end, valid_start,
+                         pred_end, n_train, n_valid), blend weights and notes, plus
+                         the full-sample feature IC table (feature, sign as used, theme,
+                         mean rank IC, Newey-West t, n dates)
+    theme_weights.parquet decision date x theme: the composite's theme weights
+                         (dynamic, or the static ones repeated)
+    alpha_ic_by_sleeve.parquet date x sleeve: daily OOS rank IC of combined, composite,
+                         ml (when fitted) and every theme_<name> score against the
+                         training label
+    constraints.parquet  one row per rebalance solve (``diagnostics["solve_log"]``):
+                         date, signal_date, status, vol_target_binding, transfer
+                         coefficient, vol scalar, expected risk / alpha / cost,
+                         n_solves, n_traded (names with a trade) and one
+                         ``binding_<name>`` count column per constraint that ever bound
 
 Everything here is best effort: a failure is logged and never fails the run (the
 API degrades gracefully when a file is missing, as it does for runs written before
@@ -33,7 +52,7 @@ import logging
 import math
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pandas as pd
@@ -246,6 +265,134 @@ def holdings(result: PipelineResult, pipeline: ResearchPipeline) -> pd.DataFrame
     return out
 
 
+# ----------------------------------------------------------------------------- alpha recordings
+def alpha_refits_frames(pipeline: ResearchPipeline) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """``(long importance table, window metadata)`` of the alpha model's refit records.
+    Empty frame / ``{"refits": [], ...}`` when the run has no ML sleeve."""
+    alpha = pipeline.alpha
+    records = list(getattr(alpha, "refit_records_", []) or []) if alpha is not None else []
+    rows: list[dict[str, Any]] = []
+    meta: list[dict[str, Any]] = []
+    notes: list[str] = []
+    for r in records:
+        for sleeve, imp in r.importance.items():
+            for feat, val in imp.items():
+                rows.append(
+                    {
+                        "refit_date": pd.Timestamp(r.refit_date),
+                        "sleeve": str(sleeve),
+                        "feature": str(feat),
+                        "importance": float(val),
+                    }
+                )
+        meta.append(
+            {
+                "refit_date": str(pd.Timestamp(r.refit_date).date()),
+                "train_start": str(pd.Timestamp(r.train_start).date()),
+                "train_end": str(pd.Timestamp(r.train_end).date()),
+                "valid_start": None if r.valid_start is None else str(pd.Timestamp(r.valid_start).date()),
+                "pred_end": str(pd.Timestamp(r.pred_end).date()),
+                "n_train": int(r.n_train),
+                "n_valid": int(r.n_valid),
+                "blend_weights": {str(k): float(v) for k, v in r.blend_weights.items()},
+            }
+        )
+        for n in r.notes:
+            if n not in notes:
+                notes.append(str(n))
+    long = pd.DataFrame(rows, columns=["refit_date", "sleeve", "feature", "importance"])
+    embargo = int(getattr(getattr(alpha, "trainer", None), "embargo", 0) or 0) if alpha is not None else 0
+    payload = {
+        "refits": meta,
+        "embargo_days": embargo,
+        "refit_frequency_days": int(pipeline.cfg.alpha.refit_frequency_days),
+        "notes": notes,
+    }
+    return long, payload
+
+
+def feature_ic_rows(pipeline: ResearchPipeline) -> list[dict[str, Any]]:
+    alpha = pipeline.alpha
+    if alpha is None or not hasattr(alpha, "feature_ic_table"):
+        return []
+    df = alpha.feature_ic_table()
+    return [
+        {
+            "feature": str(r["feature"]),
+            "sign": float(r["sign"]),
+            "theme": str(r["theme"]) if r["theme"] else None,
+            "mean_ic": _finite(r["mean_ic"]),
+            "t_stat": _finite(r["t_stat"]),
+            "n": int(r["n"]),
+        }
+        for r in df.to_dict("records")
+    ]
+
+
+def theme_weights(pipeline: ResearchPipeline) -> pd.DataFrame:
+    alpha = pipeline.alpha
+    W = getattr(getattr(alpha, "composite", None), "theme_weights_", None)
+    if W is None or not len(W):
+        return pd.DataFrame()
+    out = W.copy()
+    out.columns = [str(c) for c in out.columns]
+    out.index = pd.DatetimeIndex(out.index, name="date")
+    return out
+
+
+def sleeve_ic(pipeline: ResearchPipeline) -> pd.DataFrame:
+    alpha = pipeline.alpha
+    if alpha is None or not hasattr(alpha, "sleeve_ic_series"):
+        return pd.DataFrame()
+    return alpha.sleeve_ic_series()
+
+
+# ----------------------------------------------------------------------------- constraints
+def constraints_frame(result: PipelineResult) -> pd.DataFrame:
+    """One row per rebalance solve from ``diagnostics["solve_log"]`` with the binding
+    counts widened to ``binding_<name>`` columns (0 where a constraint did not bind)."""
+    log_ = result.backtest.diagnostics.get("solve_log") or []
+    entries = [r for r in log_ if isinstance(r, Mapping)]  # type: ignore[union-attr]
+    if not entries:
+        return pd.DataFrame()
+    trades = result.backtest.trades
+    n_traded = (trades.abs() > MIN_ABS_WEIGHT).sum(axis=1) if trades is not None and len(trades) else None
+    tc = result.backtest.transfer_coefficient
+    rows: list[dict[str, Any]] = []
+    names: set[str] = set()
+    for e in entries:
+        d = pd.Timestamp(e["date"])  # type: ignore[arg-type]
+        binding = e.get("binding") or {}
+        if isinstance(binding, Mapping):
+            names.update(str(k) for k in binding)
+        sd = e.get("signal_date")
+        rows.append(
+            {
+                "date": d,
+                "signal_date": pd.Timestamp(sd) if sd is not None else pd.NaT,  # type: ignore[arg-type]
+                "status": str(e.get("status", "")),
+                "vol_target_binding": str(e.get("vol_target_binding") or ""),
+                "transfer_coefficient": float(tc.get(d, np.nan)) if tc is not None and len(tc) else np.nan,
+                "vol_scalar": float(e.get("vol_scalar", np.nan) or np.nan),  # type: ignore[arg-type]
+                "risk_aversion": float(e.get("risk_aversion", np.nan) or np.nan),  # type: ignore[arg-type]
+                "expected_risk": float(e.get("expected_risk", np.nan) or np.nan),  # type: ignore[arg-type]
+                "expected_alpha": float(e.get("expected_alpha", np.nan) or np.nan),  # type: ignore[arg-type]
+                "expected_cost": float(e.get("expected_cost", np.nan) or np.nan),  # type: ignore[arg-type]
+                "solve_time": float(e.get("solve_time", np.nan) or np.nan),  # type: ignore[arg-type]
+                "n_solves": int(e.get("n_solves", 0) or 0),  # type: ignore[arg-type]
+                "n_excluded_alpha": int(e.get("n_excluded_alpha", 0) or 0),  # type: ignore[arg-type]
+                "n_traded": int(n_traded.get(d, 0)) if n_traded is not None else 0,
+                "_binding": dict(binding) if isinstance(binding, Mapping) else {},
+            }
+        )
+    df = pd.DataFrame(rows)
+    for name in sorted(names):
+        df[f"binding_{name}"] = [int(r["_binding"].get(name, 0) or 0) for r in rows]
+    df = df.drop(columns=["_binding"]).sort_values("date").reset_index(drop=True)
+    df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
 def write_extra_artifacts(
     run_dir: str | Path | None,
     result: PipelineResult,
@@ -284,6 +431,31 @@ def write_extra_artifacts(
         if hd is not None and len(hd):
             hd.to_parquet(p / "holdings.parquet", index=False)
             files["holdings"] = "holdings.parquet"
+
+        refits = _guard("alpha_refits", lambda: alpha_refits_frames(pipeline))
+        if refits is not None:
+            long, meta = cast(tuple[pd.DataFrame, dict[str, Any]], refits)
+            meta = {**meta, "feature_ic": _guard("feature_ic", lambda: feature_ic_rows(pipeline)) or []}
+            if len(long):
+                long.to_parquet(p / "alpha_refits.parquet", index=False)
+                files["alpha_refits"] = "alpha_refits.parquet"
+            _write_json(p / "alpha_refits.json", meta)
+            files["alpha_refits_meta"] = "alpha_refits.json"
+
+        tw = _guard("theme_weights", lambda: theme_weights(pipeline))
+        if tw is not None and len(tw):
+            tw.to_parquet(p / "theme_weights.parquet")
+            files["theme_weights"] = "theme_weights.parquet"
+
+        si = _guard("alpha_ic_by_sleeve", lambda: sleeve_ic(pipeline))
+        if si is not None and len(si):
+            si.to_parquet(p / "alpha_ic_by_sleeve.parquet")
+            files["alpha_ic_by_sleeve"] = "alpha_ic_by_sleeve.parquet"
+
+        cs = _guard("constraints", lambda: constraints_frame(result))
+        if cs is not None and len(cs):
+            cs.to_parquet(p / "constraints.parquet", index=False)
+            files["constraints"] = "constraints.parquet"
 
         payload = {
             "extras_version": EXTRAS_VERSION,

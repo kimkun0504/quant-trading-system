@@ -164,6 +164,10 @@ class ThemeComposite:
     def __init__(self, cfg: AlphaConfig, themes: dict[str, list[tuple[str, float]]] = THEMES):
         self.cfg = cfg
         self.themes = themes
+        #: date x theme weights of the last :meth:`score_all` (the dynamic weights, or the
+        #: static ones repeated per date); recorded for the run directory
+        #: (``theme_weights.parquet``), never read back by the scoring
+        self.theme_weights_: pd.DataFrame | None = None
 
     # -- weights -------------------------------------------------------------
     def static_weights(self, available: list[str]) -> pd.Series:
@@ -228,10 +232,16 @@ class ThemeComposite:
             W = self.dynamic_weights(theme_returns, md, available)
             ref = next(iter(themes.values()))
             W = W.reindex(ref.index).ffill().fillna(self.static_weights(available))
+            self.theme_weights_ = W.copy()
             num = sum(themes[th].mul(W[th], axis=0).fillna(0.0) for th in available)
             den = sum(themes[th].notna().mul(W[th].abs(), axis=0) for th in available).replace(0, np.nan)
         else:
             w = self.static_weights(available)
+            ref = next(iter(themes.values()), None)
+            if ref is not None:
+                self.theme_weights_ = pd.DataFrame(
+                    np.tile(w.to_numpy(dtype=float), (len(ref.index), 1)), index=ref.index, columns=available
+                )
             num = sum(themes[th].fillna(0.0) * w[th] for th in available)
             den = sum(themes[th].notna() * abs(w[th]) for th in available).replace(0, np.nan)
         comp = zscore(num / den)

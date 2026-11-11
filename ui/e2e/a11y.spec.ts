@@ -3,11 +3,19 @@ import { expect, test } from '@playwright/test';
 
 const DEMO = '20261104T175159Z_944dd5b4';
 const SEL = `sel=${DEMO},20261106T083015Z_5e2c9f10,20261106T142207Z_9a7b3d44`;
+const LAB_ONE = 'sel=20261101T061500Z_e4b17c2d';
+const LAB_THREE = `sel=${DEMO},20261106T083015Z_5e2c9f10,20261105T091402Z_3be1a7c0`;
 const PAGES = [
   '/',
   `/?${SEL}`,
   `/compare?${SEL}`,
   '/signal',
+  `/signal?${LAB_ONE}`,
+  `/signal?${LAB_THREE}`,
+  `/portfolio?${LAB_ONE}`,
+  `/portfolio?${LAB_THREE}`,
+  `/costs?${LAB_ONE}`,
+  `/costs?${LAB_THREE}`,
   `/runs/${DEMO}`,
   `/runs/${DEMO}#config`,
   '/runs/20261106T142207Z_9a7b3d44#portfolio',

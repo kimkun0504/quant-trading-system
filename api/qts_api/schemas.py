@@ -354,6 +354,101 @@ class RunIc(_Model):
     horizon_days: int
 
 
+# ----------------------------------------------------------------------------- labs (steps 4-5)
+class AlphaRefitWindow(_Model):
+    """One walk-forward refit of the ML sleeve (``alpha_refits.json``)."""
+
+    refit_date: str = Field(description="first date the refit's model predicts for")
+    train_start: str
+    train_end: str = Field(description="last label date used; the embargo separates it from refit_date")
+    valid_start: str | None
+    pred_end: str
+    n_train: int
+    n_valid: int
+    blend_weights: dict[str, float] = Field(
+        description="ensemble member weights by sleeve (sum 1); empty for a bare model"
+    )
+
+
+class AlphaFeatureIc(_Model):
+    feature: str
+    sign: float = Field(description="+1 / -1 as the composite uses the feature; +1 for ML-only features")
+    theme: str | None
+    mean_ic: float | None = Field(
+        description="full-sample mean daily rank IC of sign x feature against the training label"
+    )
+    t_stat: float | None = Field(description="Newey-West t with the label overlap as the bandwidth floor")
+    n: int
+
+
+class AlphaRefits(_Model):
+    """Learned weights over time: raw per-sleeve feature importance per refit (the UI
+    normalises each refit to sum 1), the refit windows and the feature IC table."""
+
+    refits: list[AlphaRefitWindow]
+    sleeves: list[str] = Field(description="lgbm / ridge / mlp / ensemble, those recorded")
+    features: list[str]
+    importance: dict[str, dict[str, list[float | None]]] = Field(
+        description="sleeve -> feature -> one raw value per refit (aligned with `refits`); null where not recorded"
+    )
+    feature_ic: list[AlphaFeatureIc]
+    embargo_days: int
+    refit_frequency_days: int
+    notes: list[str]
+    recorded: bool = Field(description="false for runs written before the refits were recorded")
+
+
+class AlphaThemeWeights(_Model):
+    """The composite's theme weights by decision date (``theme_weights.parquet``)."""
+
+    dates: list[str]
+    series: dict[str, list[float | None]]
+    themes: list[str]
+    static: dict[str, float] = Field(description="`alpha.theme_weights` of the run's config")
+    dynamic: bool = Field(description="`alpha.dynamic_weights`: whether the weights move")
+    downsampled: bool
+
+
+class IcByYearCell(_Model):
+    year: int
+    mean_ic: float | None
+    t_stat: float | None
+    n: int
+
+
+class IcByYearRow(_Model):
+    sleeve: str = Field(description="combined, composite, ml or theme_<name>")
+    cells: list[IcByYearCell] = Field(description="one per year of `years`, in order")
+
+
+class AlphaIcByYear(_Model):
+    years: list[int]
+    rows: list[IcByYearRow]
+    source: Literal["daily_sleeves", "sampled_combined"] = Field(
+        description="daily_sleeves: daily rank IC per sleeve with Newey-West t; sampled_combined: the sampled "
+        "ic.parquet (combined only, plain t) for runs written before the sleeve IC was recorded"
+    )
+    overlap_days: int = Field(description="label overlap (horizon + signal lag) the t-statistics allow for")
+
+
+class RunConstraints(_Model):
+    """Per-rebalance constraint log (``constraints.parquet``); empty `dates` for older runs."""
+
+    dates: list[str]
+    names: list[str] = Field(description="constraint names that ever bound, in display order")
+    binding: dict[str, list[int]] = Field(description="name -> binding-entry count per rebalance")
+    status: list[str]
+    vol_target_binding: list[str] = Field(
+        description="target / caps / bracket / max_solves / no_alpha / solve_failed:* / ''"
+    )
+    transfer_coefficient: list[float | None]
+    n_traded: list[int] = Field(description="names with a non-zero trade")
+    n_solves: list[int]
+    share_binding: dict[str, float] = Field(description="share of rebalances on which each constraint bound")
+    vol_target_reasons: list[str] = Field(description="distinct non-empty vol_target_binding values")
+    n_rebalances: int
+
+
 # ----------------------------------------------------------------------------- launch / jobs
 class LaunchRunRequest(_Model):
     """Strict types (pydantic strict mode): ``"stocks": "60"`` or ``"ml": "true"`` are

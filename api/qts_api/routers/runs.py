@@ -191,6 +191,46 @@ def get_ic(run_id: str, registry: Registry, jobs: Jobs) -> dict[str, Any]:
 
 
 @router.get(
+    "/{run_id}/alpha/refits",
+    response_model=S.AlphaRefits,
+    responses=problems(404, 409),
+    summary="Learned weights over time: per-refit feature importance by sleeve, refit windows, feature IC table",
+)
+def get_alpha_refits(run_id: str, registry: Registry, jobs: Jobs) -> dict[str, Any]:
+    return registry.alpha_refits(resolve(registry, jobs, run_id))
+
+
+@router.get(
+    "/{run_id}/alpha/theme-weights",
+    response_model=S.AlphaThemeWeights,
+    responses=problems(404, 409),
+    summary="The composite's theme weights by decision date",
+)
+def get_theme_weights(run_id: str, registry: Registry, jobs: Jobs) -> dict[str, Any]:
+    return registry.theme_weights(resolve(registry, jobs, run_id))
+
+
+@router.get(
+    "/{run_id}/alpha/ic-by-year",
+    response_model=S.AlphaIcByYear,
+    responses=problems(404, 409),
+    summary="Mean rank IC and t per sleeve per calendar year",
+)
+def get_ic_by_year(run_id: str, registry: Registry, jobs: Jobs) -> dict[str, Any]:
+    return registry.ic_by_year(resolve(registry, jobs, run_id))
+
+
+@router.get(
+    "/{run_id}/constraints",
+    response_model=S.RunConstraints,
+    responses=problems(404, 409),
+    summary="Per-rebalance constraint log: binding counts, vol-target reason, transfer coefficient",
+)
+def get_constraints(run_id: str, registry: Registry, jobs: Jobs) -> dict[str, Any]:
+    return registry.constraints(resolve(registry, jobs, run_id))
+
+
+@router.get(
     "/{run_id}/files",
     response_model=S.RunFiles,
     responses=problems(404, 409),

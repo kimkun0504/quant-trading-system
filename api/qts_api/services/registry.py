@@ -75,6 +75,11 @@ FILE_DESCRIPTIONS: dict[str, str] = {
     "exante_vol.parquet": "The risk model's ex-ante portfolio volatility by decision date",
     "exposures.parquet": "Net book exposure to each style factor by decision date",
     "holdings.parquet": "Month-end positions with alpha, specific vol and industry",
+    "alpha_refits.parquet": "Per-refit feature importance of every ML sleeve (long: refit date, sleeve, feature)",
+    "alpha_refits.json": "The refits' training windows, blend weights and the full-sample feature IC table",
+    "theme_weights.parquet": "The composite's theme weights by decision date",
+    "alpha_ic_by_sleeve.parquet": "Daily rank IC of the combined, composite, ML and theme scores",
+    "constraints.parquet": "Per-rebalance solve log: status, binding-constraint counts, vol-target reason, transfer coefficient",
     "report.txt": "The printed report card",
 }
 FILE_KINDS: dict[str, str] = {
@@ -201,6 +206,10 @@ class Frames:
     exante_vol: pd.Series | None
     exposures: pd.DataFrame | None
     holdings: pd.DataFrame | None
+    alpha_refits: pd.DataFrame | None = None
+    theme_weights: pd.DataFrame | None = None
+    sleeve_ic: pd.DataFrame | None = None
+    constraints: pd.DataFrame | None = None
     _series: pd.DataFrame | None = None
 
     @property
@@ -385,6 +394,10 @@ class RunRegistry:
             exante_vol=None if ev is None or "exante_vol" not in ev else ev["exante_vol"],
             exposures=opt("exposures.parquet"),
             holdings=opt("holdings.parquet"),
+            alpha_refits=opt("alpha_refits.parquet"),
+            theme_weights=opt("theme_weights.parquet"),
+            sleeve_ic=opt("alpha_ic_by_sleeve.parquet"),
+            constraints=opt("constraints.parquet"),
         )
 
     @staticmethod
@@ -750,6 +763,186 @@ class RunRegistry:
         if not p.is_file() or p.resolve().parent != e.path.resolve():
             raise RunNotFound(f"{run_id}/{name}")
         return p
+
+    # ------------------------------------------------------------------ labs
+    #: Sleeve rows of ``/alpha/ic-by-year`` in display order (themes follow, alphabetically).
+    SLEEVE_ORDER = ("combined", "composite", "ml")
+    THEME_WEIGHTS_MAX_POINTS = 2000
+
+    def _refits_meta(self, e: RunEntry) -> dict[str, Any] | None:
+        f = e.path / "alpha_refits.json"
+        if not f.exists():
+            return None
+        try:
+            d = json.loads(f.read_text())
+        except (OSError, ValueError):
+            log.warning("unreadable %s", f)
+            return None
+        return d if isinstance(d, dict) else None
+
+    def alpha_refits(self, run_id: str) -> dict[str, Any]:
+        e = self.get(run_id)
+        meta = self._refits_meta(e)
+        long = self.frames(e).alpha_refits
+        refits_in = list((meta or {}).get("refits") or [])
+        refits = [
+            {
+                "refit_date": str(r.get("refit_date", "")),
+                "train_start": str(r.get("train_start", "")),
+                "train_end": str(r.get("train_end", "")),
+                "valid_start": None if r.get("valid_start") is None else str(r["valid_start"]),
+                "pred_end": str(r.get("pred_end", "")),
+                "n_train": int(r.get("n_train", 0) or 0),
+                "n_valid": int(r.get("n_valid", 0) or 0),
+                "blend_weights": {str(k): _num(v) for k, v in (r.get("blend_weights") or {}).items()},
+            }
+            for r in refits_in
+            if isinstance(r, dict)
+        ]
+        dates = [r["refit_date"] for r in refits]
+        sleeves: list[str] = []
+        features: list[str] = []
+        importance: dict[str, dict[str, list[float | None]]] = {}
+        if long is not None and len(long) and {"refit_date", "sleeve", "feature", "importance"} <= set(long.columns):
+            df = long.assign(refit_date=pd.to_datetime(long["refit_date"]).dt.strftime("%Y-%m-%d"))
+            if not dates:  # metadata missing: the refit dates are the table's
+                dates = sorted(df["refit_date"].unique())
+            present = list(dict.fromkeys(str(s) for s in df["sleeve"]))
+            sleeves = [s for s in ("lgbm", "ridge", "mlp", "ensemble") if s in present] + [
+                s for s in present if s not in ("lgbm", "ridge", "mlp", "ensemble")
+            ]
+            features = sorted({str(f) for f in df["feature"]})
+            pos = {d: i for i, d in enumerate(dates)}
+            for sl in sleeves:
+                sub = df[df["sleeve"] == sl]
+                table: dict[str, list[float | None]] = {f: [None] * len(dates) for f in features}
+                for rd, feat, val in zip(sub["refit_date"], sub["feature"], sub["importance"], strict=True):
+                    i = pos.get(str(rd))
+                    if i is not None:
+                        table[str(feat)][i] = _opt_num(val)
+                importance[sl] = table
+        feature_ic = [
+            {
+                "feature": str(f.get("feature", "")),
+                "sign": _num(f.get("sign", 1.0)),
+                "theme": None if not f.get("theme") else str(f["theme"]),
+                "mean_ic": _opt_num(f.get("mean_ic")),
+                "t_stat": _opt_num(f.get("t_stat")),
+                "n": int(f.get("n", 0) or 0),
+            }
+            for f in ((meta or {}).get("feature_ic") or [])
+            if isinstance(f, dict)
+        ]
+        return {
+            "refits": refits,
+            "sleeves": sleeves,
+            "features": features,
+            "importance": importance,
+            "feature_ic": feature_ic,
+            "embargo_days": int((meta or {}).get("embargo_days", 0) or 0),
+            "refit_frequency_days": int(
+                (meta or {}).get("refit_frequency_days", (e.config.get("alpha") or {}).get("refit_frequency_days", 0))
+                or 0
+            ),
+            "notes": [str(n) for n in ((meta or {}).get("notes") or [])],
+            "recorded": meta is not None,
+        }
+
+    def theme_weights(self, run_id: str) -> dict[str, Any]:
+        e = self.get(run_id)
+        acfg = e.config.get("alpha") or {}
+        static = {str(k): _num(v) for k, v in (acfg.get("theme_weights") or {}).items()}
+        dynamic = bool(acfg.get("dynamic_weights", False))
+        W = self.frames(e).theme_weights
+        if W is None or not len(W):
+            return {"dates": [], "series": {}, "themes": [], "static": static, "dynamic": dynamic, "downsampled": False}
+        keep = thin_axis(len(W), self.THEME_WEIGHTS_MAX_POINTS)
+        sub = W.iloc[keep]
+        themes = [str(c) for c in W.columns]
+        return {
+            "dates": SR.iso_dates(sub.index),
+            "series": {t: SR.clean(sub[t]) for t in themes},
+            "themes": themes,
+            "static": static,
+            "dynamic": dynamic,
+            "downsampled": len(keep) < len(W),
+        }
+
+    def ic_by_year(self, run_id: str) -> dict[str, Any]:
+        """Mean rank IC and t per sleeve per calendar year: from the daily per-sleeve IC
+        (Newey-West t, overlap = horizon + lag) when recorded, else the sampled combined IC."""
+        e = self.get(run_id)
+        fr = self.frames(e)
+        overlap = e.horizon_days + e.signal_lag_days
+        si = fr.sleeve_ic
+        if si is not None and len(si) and "combined" in si.columns:
+            cols = [c for c in self.SLEEVE_ORDER if c in si.columns] + sorted(
+                str(c) for c in si.columns if str(c).startswith("theme_")
+            )
+            frame = si[cols].astype(float)
+            source = "daily_sleeves"
+        else:
+            frame = fr.record.ic.astype(float).to_frame("combined")
+            source = "sampled_combined"
+            overlap = 1
+        idx = pd.DatetimeIndex(frame.index)
+        years = sorted({int(y) for y in idx.year})
+        rows = []
+        for col in frame.columns:
+            s = frame[col]
+            cells = []
+            for y in years:
+                v = s[idx.year == y].dropna()
+                n = len(v)
+                cells.append(
+                    {
+                        "year": y,
+                        "mean_ic": float(v.mean()) if n else None,
+                        "t_stat": SR.ic_t_stat(v, overlap) if n else None,
+                        "n": n,
+                    }
+                )
+            rows.append({"sleeve": str(col), "cells": cells})
+        return {"years": years, "rows": rows, "source": source, "overlap_days": int(overlap)}
+
+    def constraints(self, run_id: str) -> dict[str, Any]:
+        e = self.get(run_id)
+        cs = self.frames(e).constraints
+        empty = {
+            "dates": [],
+            "names": [],
+            "binding": {},
+            "status": [],
+            "vol_target_binding": [],
+            "transfer_coefficient": [],
+            "n_traded": [],
+            "n_solves": [],
+            "share_binding": {},
+            "vol_target_reasons": [],
+            "n_rebalances": 0,
+        }
+        if cs is None or not len(cs) or "date" not in cs.columns:
+            return empty
+        df = cs.sort_values("date")
+        n = len(df)
+        bind_cols = [c for c in df.columns if str(c).startswith("binding_")]
+        names = sorted(str(c)[len("binding_") :] for c in bind_cols)
+        binding = {nm: [int(v) for v in df[f"binding_{nm}"].fillna(0)] for nm in names}
+        share = {nm: float((df[f"binding_{nm}"].fillna(0) > 0).mean()) for nm in names}
+        vtb = [str(v) if isinstance(v, str) else "" for v in df.get("vol_target_binding", pd.Series([""] * n))]
+        return {
+            "dates": SR.iso_dates(pd.to_datetime(df["date"])),
+            "names": names,
+            "binding": binding,
+            "status": [str(v) for v in df.get("status", pd.Series([""] * n))],
+            "vol_target_binding": vtb,
+            "transfer_coefficient": SR.clean(df.get("transfer_coefficient", pd.Series([np.nan] * n))),
+            "n_traded": [int(v) for v in df.get("n_traded", pd.Series([0] * n)).fillna(0)],
+            "n_solves": [int(v) for v in df.get("n_solves", pd.Series([0] * n)).fillna(0)],
+            "share_binding": share,
+            "vol_target_reasons": sorted({v for v in vtb if v}),
+            "n_rebalances": n,
+        }
 
     def ic(self, run_id: str) -> dict[str, Any]:
         e = self.get(run_id)

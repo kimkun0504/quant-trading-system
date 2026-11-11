@@ -1,0 +1,27 @@
+.pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.stack {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.breakeven {
+  margin: var(--space-3) var(--space-4) 0;
+  font-size: var(--text-md);
+  max-width: var(--measure);
+}
+
+.inset {
+  margin: var(--space-2) var(--space-4) var(--space-3);
+}
+
+@media (max-width: 1099px) {
+  .pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

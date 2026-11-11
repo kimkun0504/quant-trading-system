@@ -1,0 +1,16 @@
+.pair {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.inset {
+  margin: var(--space-2) var(--space-4) var(--space-3);
+}
+
+@media (max-width: 1099px) {
+  .pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

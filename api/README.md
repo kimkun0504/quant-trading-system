@@ -59,6 +59,10 @@ API runs share one registry and one ledger.
 | GET    | `/api/runs/{id}/exposures`         | `RunExposures`           | 404, 409      |
 | GET    | `/api/runs/{id}/holdings?date=`    | `RunHoldings`            | 404, 409      |
 | GET    | `/api/runs/{id}/ic`                | `RunIc`                  | 404, 409      |
+| GET    | `/api/runs/{id}/alpha/refits`      | `AlphaRefits`            | 404, 409      |
+| GET    | `/api/runs/{id}/alpha/theme-weights` | `AlphaThemeWeights`    | 404, 409      |
+| GET    | `/api/runs/{id}/alpha/ic-by-year`  | `AlphaIcByYear`          | 404, 409      |
+| GET    | `/api/runs/{id}/constraints`       | `RunConstraints`         | 404, 409      |
 | GET    | `/api/runs/{id}/files`             | `RunFiles`               | 404, 409      |
 | GET    | `/api/runs/{id}/files/{name}`      | the file (download)      | 404, 409      |
 | POST   | `/api/runs`                        | `LaunchRunResponse` 202  | 422           |
@@ -121,6 +125,11 @@ knows:
 | `exante_vol.parquet` | the risk model's annualised ex-ante vol of the post-trade book, by decision date |
 | `exposures.parquet`  | decision date x factor: net book exposure to the market and each style   |
 | `holdings.parquet`   | month-end positions (last 60) with alpha, specific vol, industry           |
+| `alpha_refits.parquet` | long: refit_date, sleeve (lgbm / ridge / mlp / ensemble), feature, raw importance, one row per refit × sleeve × feature (ML runs only) |
+| `alpha_refits.json`  | the refits' windows (train_start, train_end, valid_start, pred_end, n_train, n_valid, blend weights), embargo, notes, and the full-sample feature IC table |
+| `theme_weights.parquet` | decision date × theme: the composite's (dynamic or static) theme weights |
+| `alpha_ic_by_sleeve.parquet` | date × sleeve: daily OOS rank IC of combined, composite, ml and every theme score |
+| `constraints.parquet` | one row per rebalance solve: status, vol_target_binding, transfer coefficient, vol scalar, n_solves, n_traded and `binding_<name>` counts |
 
 `RunRegistry` discovers runs with `qts.pipeline.list_runs`, parses the JSON files once per
 *signature* (name, mtime, size of every file in the directory) and loads the Parquet side with
@@ -132,6 +141,15 @@ its minimum equals `max_drawdown_net`), `turnover` (sum of |trades|), the positi
 decision-date values onto realisation dates, per-day cost components with pre-trade NAV, fold
 labels; IC by year and DSR moments are recomputed from `ic.parquet` / `returns.parquet` when
 `extras.json` is absent. The UI computes rolling Sharpe and monthly returns from `/series`.
+
+**Labs.** `/alpha/refits` pivots `alpha_refits.parquet` to sleeve → feature → one raw value per refit
+(the UI normalises each refit to sum 1) and carries the windows and the feature IC table from
+`alpha_refits.json` (`recorded: false` when the file is missing). `/alpha/theme-weights` serves
+`theme_weights.parquet` thinned to 2,000 points. `/alpha/ic-by-year` groups `alpha_ic_by_sleeve.parquet`
+by calendar year per sleeve with a Newey–West t (bandwidth floor = horizon + signal lag, the label
+overlap); without that file it falls back to the sampled `ic.parquet` (combined row only, plain t,
+`source: "sampled_combined"`). `/constraints` widens `constraints.parquet` into per-name binding-count
+arrays plus the whole-run share of solves on which each constraint bound; older runs get empty arrays.
 
 **Older runs** (no `extras.json`) still load: `execution_venue: null`; `config.stocks/days` from
 the recorded `qts.cli demo` command when there was one, else `null`; `exante_vol` all `null`;

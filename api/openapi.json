@@ -552,6 +552,254 @@
         }
       }
     },
+    "/api/runs/{run_id}/alpha/refits": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Learned weights over time: per-refit feature importance by sleeve, refit windows, feature IC table",
+        "operationId": "get_alpha_refits_api_runs__run_id__alpha_refits_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlphaRefits"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "The run is still running or failed before writing results"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/alpha/theme-weights": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "The composite's theme weights by decision date",
+        "operationId": "get_theme_weights_api_runs__run_id__alpha_theme_weights_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlphaThemeWeights"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "The run is still running or failed before writing results"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/alpha/ic-by-year": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Mean rank IC and t per sleeve per calendar year",
+        "operationId": "get_ic_by_year_api_runs__run_id__alpha_ic_by_year_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlphaIcByYear"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "The run is still running or failed before writing results"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/constraints": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Per-rebalance constraint log: binding counts, vol-target reason, transfer coefficient",
+        "operationId": "get_constraints_api_runs__run_id__constraints_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunConstraints"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "The run is still running or failed before writing results"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/runs/{run_id}/files": {
       "get": {
         "tags": [
@@ -909,6 +1157,326 @@
   },
   "components": {
     "schemas": {
+      "AlphaFeatureIc": {
+        "properties": {
+          "feature": {
+            "type": "string",
+            "title": "Feature"
+          },
+          "sign": {
+            "type": "number",
+            "title": "Sign",
+            "description": "+1 / -1 as the composite uses the feature; +1 for ML-only features"
+          },
+          "theme": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Theme"
+          },
+          "mean_ic": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Ic",
+            "description": "full-sample mean daily rank IC of sign x feature against the training label"
+          },
+          "t_stat": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "T Stat",
+            "description": "Newey-West t with the label overlap as the bandwidth floor"
+          },
+          "n": {
+            "type": "integer",
+            "title": "N"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "feature",
+          "sign",
+          "theme",
+          "mean_ic",
+          "t_stat",
+          "n"
+        ],
+        "title": "AlphaFeatureIc"
+      },
+      "AlphaIcByYear": {
+        "properties": {
+          "years": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Years"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/IcByYearRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "daily_sleeves",
+              "sampled_combined"
+            ],
+            "title": "Source",
+            "description": "daily_sleeves: daily rank IC per sleeve with Newey-West t; sampled_combined: the sampled ic.parquet (combined only, plain t) for runs written before the sleeve IC was recorded"
+          },
+          "overlap_days": {
+            "type": "integer",
+            "title": "Overlap Days",
+            "description": "label overlap (horizon + signal lag) the t-statistics allow for"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "years",
+          "rows",
+          "source",
+          "overlap_days"
+        ],
+        "title": "AlphaIcByYear"
+      },
+      "AlphaRefitWindow": {
+        "properties": {
+          "refit_date": {
+            "type": "string",
+            "title": "Refit Date",
+            "description": "first date the refit's model predicts for"
+          },
+          "train_start": {
+            "type": "string",
+            "title": "Train Start"
+          },
+          "train_end": {
+            "type": "string",
+            "title": "Train End",
+            "description": "last label date used; the embargo separates it from refit_date"
+          },
+          "valid_start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Start"
+          },
+          "pred_end": {
+            "type": "string",
+            "title": "Pred End"
+          },
+          "n_train": {
+            "type": "integer",
+            "title": "N Train"
+          },
+          "n_valid": {
+            "type": "integer",
+            "title": "N Valid"
+          },
+          "blend_weights": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Blend Weights",
+            "description": "ensemble member weights by sleeve (sum 1); empty for a bare model"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "refit_date",
+          "train_start",
+          "train_end",
+          "valid_start",
+          "pred_end",
+          "n_train",
+          "n_valid",
+          "blend_weights"
+        ],
+        "title": "AlphaRefitWindow",
+        "description": "One walk-forward refit of the ML sleeve (``alpha_refits.json``)."
+      },
+      "AlphaRefits": {
+        "properties": {
+          "refits": {
+            "items": {
+              "$ref": "#/components/schemas/AlphaRefitWindow"
+            },
+            "type": "array",
+            "title": "Refits"
+          },
+          "sleeves": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Sleeves",
+            "description": "lgbm / ridge / mlp / ensemble, those recorded"
+          },
+          "features": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Features"
+          },
+          "importance": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              "type": "object"
+            },
+            "type": "object",
+            "title": "Importance",
+            "description": "sleeve -> feature -> one raw value per refit (aligned with `refits`); null where not recorded"
+          },
+          "feature_ic": {
+            "items": {
+              "$ref": "#/components/schemas/AlphaFeatureIc"
+            },
+            "type": "array",
+            "title": "Feature Ic"
+          },
+          "embargo_days": {
+            "type": "integer",
+            "title": "Embargo Days"
+          },
+          "refit_frequency_days": {
+            "type": "integer",
+            "title": "Refit Frequency Days"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Notes"
+          },
+          "recorded": {
+            "type": "boolean",
+            "title": "Recorded",
+            "description": "false for runs written before the refits were recorded"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "refits",
+          "sleeves",
+          "features",
+          "importance",
+          "feature_ic",
+          "embargo_days",
+          "refit_frequency_days",
+          "notes",
+          "recorded"
+        ],
+        "title": "AlphaRefits",
+        "description": "Learned weights over time: raw per-sleeve feature importance per refit (the UI\nnormalises each refit to sum 1), the refit windows and the feature IC table."
+      },
+      "AlphaThemeWeights": {
+        "properties": {
+          "dates": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Dates"
+          },
+          "series": {
+            "additionalProperties": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Series"
+          },
+          "themes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Themes"
+          },
+          "static": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Static",
+            "description": "`alpha.theme_weights` of the run's config"
+          },
+          "dynamic": {
+            "type": "boolean",
+            "title": "Dynamic",
+            "description": "`alpha.dynamic_weights`: whether the weights move"
+          },
+          "downsampled": {
+            "type": "boolean",
+            "title": "Downsampled"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dates",
+          "series",
+          "themes",
+          "static",
+          "dynamic",
+          "downsampled"
+        ],
+        "title": "AlphaThemeWeights",
+        "description": "The composite's theme weights by decision date (``theme_weights.parquet``)."
+      },
       "BacktestSummary": {
         "properties": {
           "start": {
@@ -1626,6 +2194,73 @@
           "n"
         ],
         "title": "IcByYear"
+      },
+      "IcByYearCell": {
+        "properties": {
+          "year": {
+            "type": "integer",
+            "title": "Year"
+          },
+          "mean_ic": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Ic"
+          },
+          "t_stat": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "T Stat"
+          },
+          "n": {
+            "type": "integer",
+            "title": "N"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "year",
+          "mean_ic",
+          "t_stat",
+          "n"
+        ],
+        "title": "IcByYearCell"
+      },
+      "IcByYearRow": {
+        "properties": {
+          "sleeve": {
+            "type": "string",
+            "title": "Sleeve",
+            "description": "combined, composite, ml or theme_<name>"
+          },
+          "cells": {
+            "items": {
+              "$ref": "#/components/schemas/IcByYearCell"
+            },
+            "type": "array",
+            "title": "Cells",
+            "description": "one per year of `years`, in order"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "sleeve",
+          "cells"
+        ],
+        "title": "IcByYearRow"
       },
       "IcDecayPoint": {
         "properties": {
@@ -2442,6 +3077,117 @@
         ],
         "title": "RunConfig",
         "description": "Subset of ``SystemConfig`` the UI reads directly; the full YAML is in ``config_yaml``."
+      },
+      "RunConstraints": {
+        "properties": {
+          "dates": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Dates"
+          },
+          "names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Names",
+            "description": "constraint names that ever bound, in display order"
+          },
+          "binding": {
+            "additionalProperties": {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Binding",
+            "description": "name -> binding-entry count per rebalance"
+          },
+          "status": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Status"
+          },
+          "vol_target_binding": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Vol Target Binding",
+            "description": "target / caps / bracket / max_solves / no_alpha / solve_failed:* / ''"
+          },
+          "transfer_coefficient": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Transfer Coefficient"
+          },
+          "n_traded": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "N Traded",
+            "description": "names with a non-zero trade"
+          },
+          "n_solves": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "N Solves"
+          },
+          "share_binding": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Share Binding",
+            "description": "share of rebalances on which each constraint bound"
+          },
+          "vol_target_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Vol Target Reasons",
+            "description": "distinct non-empty vol_target_binding values"
+          },
+          "n_rebalances": {
+            "type": "integer",
+            "title": "N Rebalances"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dates",
+          "names",
+          "binding",
+          "status",
+          "vol_target_binding",
+          "transfer_coefficient",
+          "n_traded",
+          "n_solves",
+          "share_binding",
+          "vol_target_reasons",
+          "n_rebalances"
+        ],
+        "title": "RunConstraints",
+        "description": "Per-rebalance constraint log (``constraints.parquet``); empty `dates` for older runs."
       },
       "RunCosts": {
         "properties": {

@@ -4,6 +4,9 @@
  * consistent: the metrics table, the charts and the gates all agree.
  */
 import type {
+  AlphaIcByYear,
+  AlphaRefits,
+  AlphaThemeWeights,
   CostSensitivityRow,
   ExposureSnapshotRow,
   GateResult,
@@ -11,6 +14,7 @@ import type {
   Hurdles,
   IcByYear,
   Phase,
+  RunConstraints,
   RunCosts,
   RunDetail,
   RunExposures,
@@ -38,6 +42,7 @@ import {
   sd,
   sortino,
 } from '@/shared/lib/stats';
+import { mockAlphaRefits, mockConstraints, mockIcByYear, mockThemeWeights } from './labs';
 import { deflatedSharpe, hashString, mulberry32, normal, standardise } from './random';
 import type { Rng } from './random';
 
@@ -68,6 +73,8 @@ export interface RunSpec {
   overrides?: Record<string, ConfigLeaf>;
   /** Share of decision days the book was invested (default 1). */
   investedDayFrac?: number;
+  /** Scales the lab fixtures' IC story (1 = the baseline story). */
+  icLevel?: number;
 }
 
 export interface GeneratedRun {
@@ -80,6 +87,10 @@ export interface GeneratedRun {
   exposures: RunExposures;
   ic: RunIc;
   holdingsFor: (date: string | undefined) => RunHoldings;
+  alphaRefits: AlphaRefits;
+  themeWeights: AlphaThemeWeights;
+  icByYear: AlphaIcByYear;
+  constraints: RunConstraints;
 }
 
 /**
@@ -712,11 +723,15 @@ export function generateRun(spec: RunSpec): GeneratedRun {
     const d = date && monthEnds.includes(date) ? date : latest;
     const hr = mulberry32(hashString(`${spec.id}${d}`));
     const positions: Holding[] = [];
+    const used = new Set<string>();
     for (let i = 0; i < 120; i++) {
       const long = i < 60;
       const alpha = (long ? 1 : -1) * (0.002 + 0.01 * hr());
+      let ticker = `SYN${String(Math.floor(hr() * 300)).padStart(3, '0')}`;
+      while (used.has(ticker)) ticker = `SYN${String(Math.floor(hr() * 300)).padStart(3, '0')}`;
+      used.add(ticker);
       positions.push({
-        ticker: `SYN${String(Math.floor(hr() * 300)).padStart(3, '0')}`,
+        ticker,
         weight: (long ? 1 : -1) * (0.0105 + 0.0093 * hr()) * (grossExposure / 2),
         alpha,
         specific_vol: 0.18 + 0.25 * hr(),
@@ -746,6 +761,17 @@ export function generateRun(spec: RunSpec): GeneratedRun {
     exposures,
     ic: { ic: { dates: icDates, series: { rank_ic: icSeries } }, decay, horizon_days: H },
     holdingsFor,
+    alphaRefits: mockAlphaRefits({ id: spec.id, dates, useMl: spec.use_ml, level: spec.icLevel }),
+    themeWeights: mockThemeWeights({ id: spec.id, dates, dynamic: true }),
+    icByYear: mockIcByYear({ id: spec.id, dates, useMl: spec.use_ml, level: spec.icLevel }),
+    constraints: mockConstraints({
+      id: spec.id,
+      dates,
+      turnover,
+      emptyDays,
+      tradeAversion: Number(flattenConfig(tree)['portfolio.trade_aversion'] ?? 1),
+      volTargetMode: 'target',
+    }),
   };
 }
 

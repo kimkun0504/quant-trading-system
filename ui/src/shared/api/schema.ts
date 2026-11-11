@@ -321,6 +321,105 @@ export interface RunIc {
   horizon_days: number;
 }
 
+// ----------------------------------------------------------------------------- labs
+/** One walk-forward refit of the ML sleeve (`alpha_refits.json`). */
+export interface AlphaRefitWindow {
+  /** First date the refit's model predicts for. */
+  refit_date: IsoDate;
+  train_start: IsoDate;
+  /** Last label date used; the embargo separates it from `refit_date`. */
+  train_end: IsoDate;
+  valid_start: IsoDate | null;
+  pred_end: IsoDate;
+  n_train: number;
+  n_valid: number;
+  /** Ensemble member weights by sleeve (sum 1); empty for a bare model. */
+  blend_weights: Record<string, number>;
+}
+
+export interface AlphaFeatureIc {
+  feature: string;
+  /** +1 / −1 as the composite uses the feature; +1 for ML-only features. */
+  sign: number;
+  theme: string | null;
+  mean_ic: number | null;
+  /** Newey–West t with the label overlap as the bandwidth floor. */
+  t_stat: number | null;
+  n: number;
+}
+
+/**
+ * Learned weights over time: raw per-sleeve feature importance per refit (normalise each
+ * refit to sum 1 before drawing), the refit windows and the full-sample feature IC table.
+ * `recorded` is false for runs written before the refits were recorded.
+ */
+export interface AlphaRefits {
+  refits: AlphaRefitWindow[];
+  /** lgbm / ridge / mlp / ensemble, those recorded. */
+  sleeves: string[];
+  features: string[];
+  /** sleeve → feature → one raw value per refit (aligned with `refits`); null where not recorded. */
+  importance: Record<string, Record<string, (number | null)[]>>;
+  feature_ic: AlphaFeatureIc[];
+  embargo_days: number;
+  refit_frequency_days: number;
+  notes: string[];
+  recorded: boolean;
+}
+
+/** The composite's theme weights by decision date; empty `dates` for older runs. */
+export interface AlphaThemeWeights {
+  dates: IsoDate[];
+  series: Record<string, (number | null)[]>;
+  themes: string[];
+  /** `alpha.theme_weights` of the run's config. */
+  static: Record<string, number>;
+  dynamic: boolean;
+  downsampled: boolean;
+}
+
+export interface IcByYearCell {
+  year: number;
+  mean_ic: number | null;
+  t_stat: number | null;
+  n: number;
+}
+
+export interface IcByYearRow {
+  /** combined, composite, ml or theme_<name>. */
+  sleeve: string;
+  /** One per year of `years`, in order. */
+  cells: IcByYearCell[];
+}
+
+export interface AlphaIcByYear {
+  years: number[];
+  rows: IcByYearRow[];
+  /** daily_sleeves: daily rank IC per sleeve with Newey–West t; sampled_combined: older runs. */
+  source: 'daily_sleeves' | 'sampled_combined';
+  overlap_days: number;
+}
+
+/** Per-rebalance constraint log (`constraints.parquet`); empty `dates` for older runs. */
+export interface RunConstraints {
+  dates: IsoDate[];
+  /** Constraint names that ever bound. */
+  names: string[];
+  /** name → binding-entry count per rebalance. */
+  binding: Record<string, number[]>;
+  status: string[];
+  /** target / caps / bracket / max_solves / no_alpha / solve_failed:* / ''. */
+  vol_target_binding: string[];
+  transfer_coefficient: (number | null)[];
+  /** Names with a non-zero trade. */
+  n_traded: number[];
+  n_solves: number[];
+  /** Share of rebalances on which each constraint bound. */
+  share_binding: Record<string, number>;
+  vol_target_reasons: string[];
+  n_rebalances: number;
+}
+
 export type Venue = 'routed' | 'auction' | 'continuous';
 
 export interface LaunchRunRequest {

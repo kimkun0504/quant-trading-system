@@ -2,6 +2,7 @@ import {
   keepPreviousData,
   queryOptions,
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
@@ -24,6 +25,10 @@ export const runKeys = {
     [...runKeys.detail(id), 'holdings', date ?? 'latest'] as const,
   ic: (id: RunId) => [...runKeys.detail(id), 'ic'] as const,
   files: (id: RunId) => [...runKeys.detail(id), 'files'] as const,
+  alphaRefits: (id: RunId) => [...runKeys.detail(id), 'alpha', 'refits'] as const,
+  themeWeights: (id: RunId) => [...runKeys.detail(id), 'alpha', 'theme-weights'] as const,
+  icByYear: (id: RunId) => [...runKeys.detail(id), 'alpha', 'ic-by-year'] as const,
+  constraints: (id: RunId) => [...runKeys.detail(id), 'constraints'] as const,
   compare: (ids: readonly RunId[]) => [...runKeys.all, 'compare', ids.join(',')] as const,
 };
 
@@ -92,6 +97,87 @@ export function useRunFiles(id: RunId) {
     queryKey: runKeys.files(id),
     queryFn: ({ signal }) => api.getRunFiles(id, signal),
     staleTime: Infinity,
+  });
+}
+
+/** `GET /api/runs/{id}/alpha/refits`: per-refit feature importance, windows, feature IC. */
+export function useAlphaRefits(id: RunId) {
+  return useQuery({
+    queryKey: runKeys.alphaRefits(id),
+    queryFn: ({ signal }) => api.getAlphaRefits(id, signal),
+    staleTime: Infinity,
+  });
+}
+
+/** `GET /api/runs/{id}/alpha/theme-weights`: the composite's theme weights by date. */
+export function useThemeWeights(id: RunId) {
+  return useQuery({
+    queryKey: runKeys.themeWeights(id),
+    queryFn: ({ signal }) => api.getThemeWeights(id, signal),
+    staleTime: Infinity,
+  });
+}
+
+/** `GET /api/runs/{id}/alpha/ic-by-year`: mean rank IC and t per sleeve per year. */
+export function useIcByYear(id: RunId) {
+  return useQuery({
+    queryKey: runKeys.icByYear(id),
+    queryFn: ({ signal }) => api.getIcByYear(id, signal),
+    staleTime: Infinity,
+  });
+}
+
+/** `GET /api/runs/{id}/constraints`: the per-rebalance constraint log. */
+export function useRunConstraints(id: RunId) {
+  return useQuery({
+    queryKey: runKeys.constraints(id),
+    queryFn: ({ signal }) => api.getRunConstraints(id, signal),
+    staleTime: Infinity,
+  });
+}
+
+/** The same per-run query for several runs at once (labs with several lanes), in order. */
+export function useManyRunIc(ids: readonly RunId[]) {
+  return useQueries({
+    queries: ids.map((id) => ({
+      queryKey: runKeys.ic(id),
+      queryFn: ({ signal }: { signal: AbortSignal }) => api.getRunIc(id, signal),
+      staleTime: Infinity,
+    })),
+  });
+}
+
+export function useManyRunSeries<N extends RunSeriesName>(
+  ids: readonly RunId[],
+  names: readonly N[],
+) {
+  return useQueries({
+    queries: ids.map((id) => ({
+      queryKey: runKeys.series(id, names),
+      queryFn: ({ signal }: { signal: AbortSignal }) => api.getRunSeries(id, names, signal),
+      staleTime: Infinity,
+    })),
+  });
+}
+
+/** Holdings of one run on several dates (the industry-over-time stack). */
+export function useManyRunHoldings(id: RunId, dates: readonly string[]) {
+  return useQueries({
+    queries: dates.map((d) => ({
+      queryKey: runKeys.holdings(id, d),
+      queryFn: ({ signal }: { signal: AbortSignal }) => api.getRunHoldings(id, d, signal),
+      staleTime: Infinity,
+    })),
+  });
+}
+
+export function useManyRunConstraints(ids: readonly RunId[]) {
+  return useQueries({
+    queries: ids.map((id) => ({
+      queryKey: runKeys.constraints(id),
+      queryFn: ({ signal }: { signal: AbortSignal }) => api.getRunConstraints(id, signal),
+      staleTime: Infinity,
+    })),
   });
 }
 

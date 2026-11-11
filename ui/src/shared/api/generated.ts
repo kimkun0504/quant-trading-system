@@ -141,6 +141,74 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/runs/{run_id}/alpha/refits': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Learned weights over time: per-refit feature importance by sleeve, refit windows, feature IC table */
+    get: operations['get_alpha_refits_api_runs__run_id__alpha_refits_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/runs/{run_id}/alpha/theme-weights': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** The composite's theme weights by decision date */
+    get: operations['get_theme_weights_api_runs__run_id__alpha_theme_weights_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/runs/{run_id}/alpha/ic-by-year': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Mean rank IC and t per sleeve per calendar year */
+    get: operations['get_ic_by_year_api_runs__run_id__alpha_ic_by_year_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/runs/{run_id}/constraints': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Per-rebalance constraint log: binding counts, vol-target reason, transfer coefficient */
+    get: operations['get_constraints_api_runs__run_id__constraints_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/runs/{run_id}/files': {
     parameters: {
       query?: never;
@@ -270,6 +338,147 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
+    /** AlphaFeatureIc */
+    AlphaFeatureIc: {
+      /** Feature */
+      feature: string;
+      /**
+       * Sign
+       * @description +1 / -1 as the composite uses the feature; +1 for ML-only features
+       */
+      sign: number;
+      /** Theme */
+      theme: string | null;
+      /**
+       * Mean Ic
+       * @description full-sample mean daily rank IC of sign x feature against the training label
+       */
+      mean_ic: number | null;
+      /**
+       * T Stat
+       * @description Newey-West t with the label overlap as the bandwidth floor
+       */
+      t_stat: number | null;
+      /** N */
+      n: number;
+    };
+    /** AlphaIcByYear */
+    AlphaIcByYear: {
+      /** Years */
+      years: number[];
+      /** Rows */
+      rows: components['schemas']['IcByYearRow'][];
+      /**
+       * Source
+       * @description daily_sleeves: daily rank IC per sleeve with Newey-West t; sampled_combined: the sampled ic.parquet (combined only, plain t) for runs written before the sleeve IC was recorded
+       * @enum {string}
+       */
+      source: 'daily_sleeves' | 'sampled_combined';
+      /**
+       * Overlap Days
+       * @description label overlap (horizon + signal lag) the t-statistics allow for
+       */
+      overlap_days: number;
+    };
+    /**
+     * AlphaRefitWindow
+     * @description One walk-forward refit of the ML sleeve (``alpha_refits.json``).
+     */
+    AlphaRefitWindow: {
+      /**
+       * Refit Date
+       * @description first date the refit's model predicts for
+       */
+      refit_date: string;
+      /** Train Start */
+      train_start: string;
+      /**
+       * Train End
+       * @description last label date used; the embargo separates it from refit_date
+       */
+      train_end: string;
+      /** Valid Start */
+      valid_start: string | null;
+      /** Pred End */
+      pred_end: string;
+      /** N Train */
+      n_train: number;
+      /** N Valid */
+      n_valid: number;
+      /**
+       * Blend Weights
+       * @description ensemble member weights by sleeve (sum 1); empty for a bare model
+       */
+      blend_weights: {
+        [key: string]: number;
+      };
+    };
+    /**
+     * AlphaRefits
+     * @description Learned weights over time: raw per-sleeve feature importance per refit (the UI
+     *     normalises each refit to sum 1), the refit windows and the feature IC table.
+     */
+    AlphaRefits: {
+      /** Refits */
+      refits: components['schemas']['AlphaRefitWindow'][];
+      /**
+       * Sleeves
+       * @description lgbm / ridge / mlp / ensemble, those recorded
+       */
+      sleeves: string[];
+      /** Features */
+      features: string[];
+      /**
+       * Importance
+       * @description sleeve -> feature -> one raw value per refit (aligned with `refits`); null where not recorded
+       */
+      importance: {
+        [key: string]: {
+          [key: string]: (number | null)[];
+        };
+      };
+      /** Feature Ic */
+      feature_ic: components['schemas']['AlphaFeatureIc'][];
+      /** Embargo Days */
+      embargo_days: number;
+      /** Refit Frequency Days */
+      refit_frequency_days: number;
+      /** Notes */
+      notes: string[];
+      /**
+       * Recorded
+       * @description false for runs written before the refits were recorded
+       */
+      recorded: boolean;
+    };
+    /**
+     * AlphaThemeWeights
+     * @description The composite's theme weights by decision date (``theme_weights.parquet``).
+     */
+    AlphaThemeWeights: {
+      /** Dates */
+      dates: string[];
+      /** Series */
+      series: {
+        [key: string]: (number | null)[];
+      };
+      /** Themes */
+      themes: string[];
+      /**
+       * Static
+       * @description `alpha.theme_weights` of the run's config
+       */
+      static: {
+        [key: string]: number;
+      };
+      /**
+       * Dynamic
+       * @description `alpha.dynamic_weights`: whether the weights move
+       */
+      dynamic: boolean;
+      /** Downsampled */
+      downsampled: boolean;
+    };
     /**
      * BacktestSummary
      * @description ``BacktestResult.summary()`` (qts/backtest/result.py).
@@ -539,6 +748,30 @@ export interface components {
       mean_ic: number;
       /** N */
       n: number;
+    };
+    /** IcByYearCell */
+    IcByYearCell: {
+      /** Year */
+      year: number;
+      /** Mean Ic */
+      mean_ic: number | null;
+      /** T Stat */
+      t_stat: number | null;
+      /** N */
+      n: number;
+    };
+    /** IcByYearRow */
+    IcByYearRow: {
+      /**
+       * Sleeve
+       * @description combined, composite, ml or theme_<name>
+       */
+      sleeve: string;
+      /**
+       * Cells
+       * @description one per year of `years`, in order
+       */
+      cells: components['schemas']['IcByYearCell'][];
     };
     /** IcDecayPoint */
     IcDecayPoint: {
@@ -874,6 +1107,56 @@ export interface components {
       signal_lag_days: number;
       /** Config Yaml */
       config_yaml: string;
+    };
+    /**
+     * RunConstraints
+     * @description Per-rebalance constraint log (``constraints.parquet``); empty `dates` for older runs.
+     */
+    RunConstraints: {
+      /** Dates */
+      dates: string[];
+      /**
+       * Names
+       * @description constraint names that ever bound, in display order
+       */
+      names: string[];
+      /**
+       * Binding
+       * @description name -> binding-entry count per rebalance
+       */
+      binding: {
+        [key: string]: number[];
+      };
+      /** Status */
+      status: string[];
+      /**
+       * Vol Target Binding
+       * @description target / caps / bracket / max_solves / no_alpha / solve_failed:* / ''
+       */
+      vol_target_binding: string[];
+      /** Transfer Coefficient */
+      transfer_coefficient: (number | null)[];
+      /**
+       * N Traded
+       * @description names with a non-zero trade
+       */
+      n_traded: number[];
+      /** N Solves */
+      n_solves: number[];
+      /**
+       * Share Binding
+       * @description share of rebalances on which each constraint bound
+       */
+      share_binding: {
+        [key: string]: number;
+      };
+      /**
+       * Vol Target Reasons
+       * @description distinct non-empty vol_target_binding values
+       */
+      vol_target_reasons: string[];
+      /** N Rebalances */
+      n_rebalances: number;
     };
     /** RunCosts */
     RunCosts: {
@@ -1553,6 +1836,202 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['RunIc'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description The run is still running or failed before writing results */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_alpha_refits_api_runs__run_id__alpha_refits_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        run_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['AlphaRefits'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description The run is still running or failed before writing results */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_theme_weights_api_runs__run_id__alpha_theme_weights_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        run_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['AlphaThemeWeights'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description The run is still running or failed before writing results */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_ic_by_year_api_runs__run_id__alpha_ic_by_year_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        run_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['AlphaIcByYear'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description The run is still running or failed before writing results */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_constraints_api_runs__run_id__constraints_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        run_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['RunConstraints'];
         };
       };
       /** @description Not found */

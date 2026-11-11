@@ -50,21 +50,101 @@ half-life-weighted alpha) when ``PortfolioConfig.use_gp_shrink`` is true.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import cast
+from dataclasses import dataclass, field
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 
+from qts.core import stats
 from qts.core.config import AlphaConfig, CostConfig
 from qts.core.crosssection import zscore
 from qts.core.types import AlphaOutput, Long, MarketData, Wide
 
-from .composite import ThemeComposite, theme_portfolio_returns
-from .evaluation import rank_ic_series, signal_half_life
+from .composite import THEMES, ThemeComposite, theme_portfolio_returns
+from .evaluation import newey_west_lags, rank_ic_series, signal_half_life
 from .features import FeatureBuilder
 from .models import EnsembleModel, LGBMModel, MLPModel, RidgeModel
 from .targets import ExposuresFn, label_realisation, residualize_forward_returns
-from .trainer import WalkForwardTrainer
+from .trainer import FoldInfo, WalkForwardTrainer
+
+#: Sleeve name of each ML member class in the refit record (``alpha_refits.parquet``).
+SLEEVE_OF_MODEL: dict[str, str] = {"LGBMModel": "lgbm", "RidgeModel": "ridge", "MLPModel": "mlp"}
+
+
+@dataclass(frozen=True)
+class RefitRecord:
+    """What one walk-forward refit learned: the window it was trained on and the
+    feature importance of every sleeve (``lgbm``: mean gain share over the seed
+    bag; ``ridge``: |coef|; ``ensemble``: the member average; ``mlp``: none, a
+    permutation importance would cost another full pass over the validation
+    block, so it is omitted and ``notes`` says so).  ``refit_date`` is the first
+    date the model predicts for; its training labels end at ``train_end``,
+    ``embargo`` days earlier (see :mod:`qts.alpha.trainer`)."""
+
+    refit_date: pd.Timestamp
+    train_start: pd.Timestamp
+    train_end: pd.Timestamp
+    valid_start: pd.Timestamp | None
+    pred_end: pd.Timestamp
+    n_train: int
+    n_valid: int
+    importance: dict[str, pd.Series] = field(default_factory=dict)
+    blend_weights: dict[str, float] = field(default_factory=dict)
+    notes: list[str] = field(default_factory=list)
+
+
+def _sleeve_name(model: object) -> str:
+    name = type(model).__name__
+    return SLEEVE_OF_MODEL.get(name, name.lower().removesuffix("model") or name.lower())
+
+
+def refit_record(fold: FoldInfo, model: Any) -> RefitRecord:
+    """Per-sleeve feature importance of one fitted walk-forward model (ensemble
+    members by sleeve name plus ``ensemble``; a bare model under its own name)."""
+    importance: dict[str, pd.Series] = {}
+    blend: dict[str, float] = {}
+    notes: list[str] = []
+    members = list(getattr(model, "models", None) or [])
+    if members:
+        weights = list(getattr(model, "weights", [1.0] * len(members)))
+        for m, w in zip(members, weights, strict=False):
+            name = _sleeve_name(m)
+            blend[name] = float(w)
+            _add_importance(importance, notes, name, m)
+        _add_importance(importance, notes, "ensemble", model)
+    else:
+        _add_importance(importance, notes, _sleeve_name(model), model)
+    return RefitRecord(
+        refit_date=pd.Timestamp(fold.pred_start),
+        train_start=pd.Timestamp(fold.train_start),
+        train_end=pd.Timestamp(fold.train_end),
+        valid_start=None if fold.valid_start is None else pd.Timestamp(fold.valid_start),
+        pred_end=pd.Timestamp(fold.pred_end),
+        n_train=int(fold.n_train_rows),
+        n_valid=int(fold.n_valid_rows),
+        importance=importance,
+        blend_weights=blend,
+        notes=notes,
+    )
+
+
+def _add_importance(out: dict[str, pd.Series], notes: list[str], name: str, model: Any) -> None:
+    fn = getattr(model, "feature_importance", None)
+    imp = None
+    if callable(fn):
+        try:
+            imp = fn()
+        except Exception as e:  # a member without a fitted importance never fails the run
+            notes.append(f"{name}: feature importance unavailable ({type(e).__name__})")
+    if imp is None:
+        if name == "mlp":
+            notes.append("mlp: no feature importance recorded (permutation importance is not computed)")
+        return
+    s = pd.Series(cast(Any, imp), dtype=float)
+    s = s[np.isfinite(s.to_numpy())]
+    if len(s):
+        out[name] = s
 
 
 def default_ml_factory(cfg: AlphaConfig) -> Callable[[], object]:
@@ -135,6 +215,8 @@ class AlphaModel:
         self.trainer = WalkForwardTrainer(self.cfg, label_lag_days=self.signal_lag_days)
         self.fitted_ = False
         self._half_life_cache: dict[tuple, float] = {}
+        #: one :class:`RefitRecord` per walk-forward refit of the ML sleeve (empty without ML)
+        self.refit_records_: list[RefitRecord] = []
 
     # ------------------------------------------------------------------ fit
     def fit(self, md: MarketData, risk_exposures_fn: ExposuresFn | None = None) -> AlphaModel:
@@ -175,6 +257,10 @@ class AlphaModel:
             factory = self.ml_factory or default_ml_factory(self.cfg)
             ml = self.trainer.run(self.X_, y_long, factory, label_ready=self.label_ready_)
             self.ml_score_ = zscore(ml) if ml.notna().any().any() else None
+            # what each refit learned (recording only: never read back by the scoring)
+            self.refit_records_ = [
+                refit_record(f, m) for f, m in zip(self.trainer.folds_, self.trainer.models_, strict=True)
+            ]
         self.combined_score_ = self._combine_history().where(
             self.eligible_.reindex_like(self.composite_score_)
         )
@@ -247,6 +333,49 @@ class AlphaModel:
         for th, sc in self.theme_scores_.items():
             out[f"theme_{th}"] = sc
         return out
+
+    # ------------------------------------------------------------- recordings
+    def sleeve_ic_series(self) -> pd.DataFrame:
+        """Daily OOS rank IC of every sleeve (``combined``, ``composite``, ``ml`` when
+        fitted, ``theme_<name>``) against the training label (``target_``): date x
+        sleeve.  Diagnostic only (``alpha_ic_by_sleeve.parquet``); the ``combined``
+        column equals ``oos_ic_``."""
+        if not self.fitted_:
+            raise RuntimeError("call fit() first")
+        cols = {name: rank_ic_series(panel, self.target_) for name, panel in self._sleeve_scores().items()}
+        out = pd.DataFrame(cols)
+        out.index = pd.DatetimeIndex(out.index, name="date")
+        return out
+
+    def feature_ic_table(self) -> pd.DataFrame:
+        """Full-sample daily rank IC of every processed feature, with the sign the
+        composite uses (``THEMES``; +1 for features only the ML sleeve sees):
+        columns ``feature, sign, theme, mean_ic, t_stat, n``.  ``t_stat`` is
+        Newey-West with the label overlap (``horizon_days + signal_lag_days``) as
+        the bandwidth floor."""
+        if not self.fitted_:
+            raise RuntimeError("call fit() first")
+        signs: dict[str, tuple[float, str]] = {}
+        for theme, members in THEMES.items():
+            for f, sgn in members:
+                signs[f] = (float(sgn), theme)
+        overlap = int(self.cfg.horizon_days) + int(self.signal_lag_days)
+        rows = []
+        for f in self.X_.columns:
+            sgn, theme = signs.get(str(f), (1.0, ""))
+            panel = self.X_[f].unstack("ticker") * sgn
+            ic = rank_ic_series(panel, self.target_).dropna()
+            n = len(ic)
+            if n:
+                lags = newey_west_lags(n, overlap)
+                t = float(stats.newey_west_tstat(ic.to_numpy(dtype=float), lags=int(lags)))
+                mean = float(ic.mean())
+            else:
+                t = mean = float("nan")
+            rows.append(
+                {"feature": str(f), "sign": sgn, "theme": theme, "mean_ic": mean, "t_stat": t, "n": n}
+            )
+        return pd.DataFrame(rows, columns=["feature", "sign", "theme", "mean_ic", "t_stat", "n"])
 
     def _half_life(self, sleeve: str, panel: Wide, date: pd.Timestamp) -> float:
         dates = self.combined_score_.index

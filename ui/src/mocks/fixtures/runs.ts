@@ -118,6 +118,31 @@ export const SEED_SPECS: RunSpec[] = [
     pbo: 0.28,
     startDate: '2010-01-04',
   },
+  {
+    // The long one: 24 years of real data with the ML sleeve, for the labs' by-year views
+    // (value fading, quality rising, the 2009 momentum crash).
+    id: '20261101T061500Z_e4b17c2d',
+    label: 'Composite + ML sleeve, 2001–2025 store',
+    created_at: '2026-11-01T06:15:00Z',
+    kind: 'store',
+    phase: 2,
+    use_ml: true,
+    stocks: 1500,
+    days: 6900,
+    seed: 0,
+    signal_lag_days: 1,
+    status: 'done',
+    sharpeGross: 1.21,
+    sharpeNet: 0.88,
+    meanIc: 0.036,
+    icirAnnual: 1.9,
+    decileT: 4.1,
+    nTrials: 3,
+    varTrials: 0.15,
+    pbo: 0.31,
+    startDate: '2001-01-02',
+    investedDayFrac: 0.995,
+  },
 ];
 
 export const RUNNING_SPEC: RunSpec = {

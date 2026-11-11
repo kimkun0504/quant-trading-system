@@ -158,6 +158,21 @@ def moments(net: pd.Series) -> tuple[float, float, int]:
     return float(r.skew()), float(r.kurt() + 3.0), len(r)
 
 
+def ic_t_stat(ic: pd.Series, overlap: int = 1) -> float | None:
+    """t-statistic of a rank-IC series: Newey-West with ``newey_west_lags(n, overlap)`` as
+    the bandwidth (the plain ``mean / sd * sqrt(n)`` when ``overlap`` is 1 and the series is
+    short enough for the automatic lag to be 0).  ``None`` when undefined."""
+    from qts.alpha.evaluation import newey_west_lags
+    from qts.core import stats as ST
+
+    v = ic.dropna().astype(float).to_numpy()
+    if len(v) < 3:
+        return None
+    lags = newey_west_lags(len(v), overlap)
+    t = ST.newey_west_tstat(v, lags=int(lags))
+    return float(t) if math.isfinite(t) else None
+
+
 def ic_by_year(ic: pd.Series) -> list[dict[str, Any]]:
     s = ic.dropna().astype(float)
     if not len(s):
