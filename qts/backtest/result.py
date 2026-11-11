@@ -253,6 +253,18 @@ class BacktestResult:
             return None
         return int(cast(int, self.diagnostics.get("n_failed_solves", 0))) / n
 
+    def exante_vol_alert_fraction(self) -> float | None:
+        """Rebalance solves with a risk-model ex-ante vol alert / rebalance solves
+        (``diagnostics``; simulator module docstring "Risk-model sanity"), or
+        ``None`` when no solve was attempted or the simulator did not record
+        the counter."""
+        if "n_exante_vol_alerts" not in self.diagnostics:
+            return None
+        n = int(cast(int, self.diagnostics.get("n_rebalance_solves", 0) or 0))
+        if n <= 0:
+            return None
+        return int(cast(int, self.diagnostics.get("n_exante_vol_alerts", 0))) / n
+
     def turnover_on_return_dates(self) -> pd.Series:
         """Turnover on decision date t re-indexed to the realisation date t+1
         (positionally aligned with ``returns``)."""

@@ -39,6 +39,7 @@ GateName = Literal[
     "phase_sharpe",
     "suspect",
     "failed_solves",
+    "risk_model_sanity",
 ]
 RunSeriesName = Literal["nav", "gross", "net", "drawdown", "turnover", "exante_vol", "gross_exposure", "net_exposure"]
 CostComponent = Literal["spread", "impact", "fees", "borrow"]

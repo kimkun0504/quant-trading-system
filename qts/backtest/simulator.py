@@ -101,6 +101,29 @@ allowed ``|w|`` shrinking linearly to 0 over
 ``cfg.portfolio.exit_ineligible_days`` days (recorded in
 ``diagnostics["forced_exits"]``).
 
+Data-error prices (``cfg.risk.clean_returns``; :mod:`qts.core.returns`): a
+close that would produce a return above ``cfg.risk.return_abs_cap_up`` (+300 %)
+or below ``cfg.risk.return_abs_cap_down`` (-95 %) is a bad print, not tradable
+P&L -- nobody earned +50,000 % on a restated close, and nobody lost 99.8 % on
+its reversal the next day.  Such closes are blanked before the run
+(:func:`qts.core.returns.flag_bad_prices`), so the name takes the *halt* path
+above on that day (frozen, no return, no trade) and the next day's return is
+measured from the last good close.  Blanked closes inside the run are counted
+in ``diagnostics["n_data_error_returns"]`` and listed (first 100) in
+``diagnostics["data_error_returns"]``.  Nothing else is cleaned here: a genuine
+-80 % day is P&L.
+
+Risk-model sanity (``cfg.validation.max_exante_vol``): on every rebalance the
+annualised ex-ante vol of the *incoming* book under the day's risk model (or,
+when the book is empty, of a sqrt-cap-weighted long-only reference book) is
+checked; above the limit the date, the vol and the top-5 contributing names and
+factors are logged, appended to ``diagnostics["exante_vol_alerts"]`` and
+counted in ``diagnostics["n_exante_vol_alerts"]`` -- the ``risk_model_sanity``
+hurdle gate fails when alerts exceed ``max_exante_vol_alert_frac`` of rebalance
+solves.  A target-vol optimizer facing a 10,000 % ex-ante vol liquidates
+everything and the book then stays empty for many covariance half-lives; the
+gate makes that failure visible instead of reporting a quiet flat NAV.
+
 Failed solves: a rebalance whose solve status is not ``optimal`` /
 ``optimal_inaccurate`` holds the current book; it is counted in
 ``diagnostics["n_failed_solves"]`` and listed in
@@ -137,6 +160,7 @@ from qts.backtest.result import COST_COLUMNS, BacktestResult
 from qts.backtest.spec import BacktestSpec
 from qts.core.config import SystemConfig
 from qts.core.costs import VENUE_CONTINUOUS, VENUE_ROUTED, LiquiditySnapshot
+from qts.core.returns import flag_bad_prices
 from qts.core.types import AlphaOutput, MarketData, RiskModelOutput
 from qts.portfolio.costs import Snapshot
 from qts.portfolio.optimizer import OK_STATUSES, SinglePeriodOptimizer
@@ -268,6 +292,9 @@ class _EventLog:
     delistings: list[dict[str, object]] = field(default_factory=list)
     solve_log: list[dict[str, object]] = field(default_factory=list)
     failed_solves: list[dict[str, object]] = field(default_factory=list)
+    exante_vol_alerts: list[dict[str, object]] = field(default_factory=list)
+    n_data_error_returns: int = 0
+    data_error_returns: list[dict[str, object]] = field(default_factory=list)
 
     @property
     def n_failed(self) -> int:
@@ -325,6 +352,44 @@ class _Recorder:
         self.T = T_eff
 
 
+def _reference_weights(market_cap: pd.Series, tickers: pd.Index) -> pd.Series:
+    """Long-only sqrt-cap book (gross 1) over ``tickers``; equal weights without caps."""
+    cap = market_cap.reindex(tickers).to_numpy(dtype=float)
+    w = pd.Series(np.sqrt(np.where(np.isfinite(cap), np.clip(cap, 0.0, None), 0.0)), index=tickers)
+    tot = float(w.sum())
+    if tot <= 0:
+        return pd.Series(1.0 / max(len(tickers), 1), index=tickers)
+    return w / tot
+
+
+def _exante_contributors(
+    risk: RiskModelOutput, w: pd.Series, periods_per_year: float
+) -> tuple[float, list[tuple[str, float]], list[tuple[str, float]]]:
+    """Annualised ex-ante vol of ``w`` under ``risk`` and the top-5 annualised
+    variance contributions of names (specific, ``w_i^2 d_i``) and factors
+    (``(B'w)_k (F B'w)_k``)."""
+    t = w.index
+    B = risk.exposures.reindex(t).fillna(0.0).to_numpy(dtype=float)
+    F = risk.factor_cov.loc[risk.factors, risk.factors].to_numpy(dtype=float)
+    d = risk.specific_var.reindex(t).to_numpy(dtype=float)
+    d = np.where(np.isfinite(d), d, 0.0)
+    wv = w.to_numpy(dtype=float)
+    fw = B.T @ wv
+    fac = fw * (F @ fw)
+    spec = wv**2 * d
+    var = float(fac.sum() + spec.sum()) + (
+        risk.alignment_var * float(risk.alignment_vector.reindex(t).fillna(0.0).to_numpy() @ wv) ** 2
+        if risk.alignment_vector is not None and risk.alignment_var > 0
+        else 0.0
+    )
+    vol = float(np.sqrt(max(var, 0.0) * periods_per_year))
+    kn = np.argsort(-spec)[:5]
+    kf = np.argsort(-np.abs(fac))[:5]
+    names = [(str(t[k]), float(spec[k] * periods_per_year)) for k in kn if spec[k] > 0]
+    factors = [(str(risk.factors[k]), float(fac[k] * periods_per_year)) for k in kf]
+    return vol, names, factors
+
+
 # --------------------------------------------------------------------------- simulator
 class DailyBarSimulator:
     def __init__(self, cfg: SystemConfig, cost_model: Any, adv_window: int = 63, vol_window: int = 63):
@@ -350,6 +415,7 @@ class DailyBarSimulator:
             )
         except (TypeError, ValueError):
             self._pass_prior_streak = False
+        self._bad_prices: list[dict[str, object]] = []  # filled per run by _context
 
     _cost_frame = staticmethod(cost_frame)
 
@@ -464,14 +530,15 @@ class DailyBarSimulator:
         if lag < 0:
             raise ValueError("signal_lag_days must be >= 0")
         tickers = md.tickers
-        close = md.close.loc[dates]
+        close_md, self._bad_prices = self._clean_close(md, dates)
+        close = close_md.loc[dates]
         # return realised on the row date, measured from the last close before it:
         # equals pct_change on consecutive closes; after a halt it carries the whole
         # halt-period move (module docstring, "Halts vs delistings")
         R = close / close.ffill().shift(1) - 1.0
         R = R.where(close.notna())
         # halt / delisting classification inputs (positions in md.dates)
-        have_md = md.close.notna().to_numpy()
+        have_md = close_md.notna().to_numpy()
         last_close_md = (
             pd.DataFrame(np.where(have_md, np.arange(len(md.dates), dtype=float)[:, None], np.nan))
             .ffill()
@@ -512,6 +579,40 @@ class DailyBarSimulator:
             solve_accepts_hl="alpha_half_life_days" in inspect.signature(optimizer.solve).parameters,
             snap_at=_SnapshotCache(lambda d: self._snapshot(md, d), lag),
         )
+
+    def _clean_close(
+        self, md: MarketData, dates: pd.DatetimeIndex
+    ) -> tuple[pd.DataFrame, list[dict[str, object]]]:
+        """``md.close`` with data-error prints blanked (module docstring "Data-error
+        prices"), plus the list of blanked ``(date, ticker)`` cells inside ``dates``
+        (raw close kept for the record).  Raw ``md.close`` and an empty list when
+        ``cfg.risk.clean_returns`` is off."""
+        rcfg = self.cfg.risk
+        if not getattr(rcfg, "clean_returns", False):
+            return md.close, []
+        clean, bad = flag_bad_prices(
+            md.close, cap_up=float(rcfg.return_abs_cap_up), cap_down=float(rcfg.return_abs_cap_down)
+        )
+        inside = bad.loc[dates]
+        raw_close = md.close.loc[dates].to_numpy(dtype=float)
+        cells = np.argwhere(inside.to_numpy())
+        out: list[dict[str, object]] = [
+            {
+                "date": pd.Timestamp(dates[int(i)]),
+                "ticker": str(inside.columns[int(j)]),
+                "close": float(raw_close[int(i), int(j)]),
+            }
+            for i, j in cells
+        ]
+        if out:
+            log.warning(
+                "backtest: %d data-error closes blanked (treated as halts; first: %s %s close=%g)",
+                len(out),
+                pd.Timestamp(dates[int(cells[0][0])]).date(),
+                out[0]["ticker"],
+                out[0]["close"],
+            )
+        return clean, out
 
     @staticmethod
     def _initial_state(ctx: _RunContext, spec: BacktestSpec) -> _BookState:
@@ -614,6 +715,7 @@ class DailyBarSimulator:
         exp_ret[inel] = 0.0
         exp_ret = exp_ret.fillna(0.0)
         state.last_risk = risk_fn(sig_date, exp_ret)
+        self._check_exante_vol(ctx, day, state, events, sig_date)
         solve_kw: dict[str, Any] = {}
         hl = getattr(state.last_alpha, "half_life_days", None)
         if ctx.solve_accepts_hl and hl is not None:
@@ -648,6 +750,52 @@ class DailyBarSimulator:
         rec.TC[day.i] = res.transfer_coefficient
         events.solve_log.append(_solve_log_entry(day, res))
         return w_post
+
+    def _check_exante_vol(
+        self, ctx: _RunContext, day: _Day, state: _BookState, events: _EventLog, sig_date: pd.Timestamp
+    ) -> None:
+        """Risk-model sanity guard (module docstring): annualised ex-ante vol of the
+        incoming book (or of the sqrt-cap reference book when it is empty) under
+        ``state.last_risk``; above ``cfg.validation.max_exante_vol`` the alert is
+        logged with the top-5 contributing names and factors and recorded."""
+        risk = state.last_risk
+        if risk is None:
+            return
+        limit = float(getattr(self.cfg.validation, "max_exante_vol", 2.0))
+        ppy = float(self.cfg.trading_days_per_year)
+        tickers = ctx.tickers
+        held = np.abs(state.w_pre).sum() > _HELD_EPS
+        if held:
+            w = pd.Series(state.w_pre, index=tickers)
+            book = "incoming"
+        else:
+            cap = ctx.md.market_cap.loc[:sig_date]
+            cap_row = cap.iloc[-1] if len(cap) else pd.Series(dtype=float)
+            w = _reference_weights(cap_row, risk.tickers)
+            book = "reference"
+        vol, top_names, top_factors = _exante_contributors(risk, w, ppy)
+        if not np.isfinite(vol) or vol <= limit:
+            return
+        entry: dict[str, object] = {
+            "date": day.t,
+            "signal_date": sig_date,
+            "book": book,
+            "exante_vol": vol,
+            "limit": limit,
+            "top_names": top_names,
+            "top_factors": top_factors,
+        }
+        events.exante_vol_alerts.append(entry)
+        log.warning(
+            "backtest %s: risk model ex-ante vol of the %s book = %.1f%% (limit %.0f%%); "
+            "top names %s; top factors %s",
+            day.t.date(),
+            book,
+            100 * vol,
+            100 * limit,
+            [(n, round(v, 4)) for n, v in top_names],
+            [(f, round(v, 4)) for f, v in top_factors],
+        )
 
     # ----------------------------------------------------------------- step 3: costs (fills)
     def _cost_step(
@@ -856,6 +1004,10 @@ class DailyBarSimulator:
                 "n_failed_solves": events.n_failed,
                 "failed_solves": events.failed_solves,
                 "n_rebalance_solves": len(events.solve_log),
+                "n_exante_vol_alerts": len(events.exante_vol_alerts),
+                "exante_vol_alerts": events.exante_vol_alerts,
+                "n_data_error_returns": len(self._bad_prices),
+                "data_error_returns": self._bad_prices[:100],
                 "run_time_sec": time.perf_counter() - t_start,
                 "rebalance_every": spec.rebalance_every,
                 "venue": spec.venue,
@@ -871,6 +1023,12 @@ class DailyBarSimulator:
         )
         if events.n_failed:
             log.warning("backtest: %d failed solves (see diagnostics['failed_solves'])", events.n_failed)
+        if events.exante_vol_alerts:
+            log.warning(
+                "backtest: %d rebalances with ex-ante vol above %.0f%% (see diagnostics['exante_vol_alerts'])",
+                len(events.exante_vol_alerts),
+                100 * float(getattr(self.cfg.validation, "max_exante_vol", 2.0)),
+            )
         if events.n_out_of_model:
             log.warning(
                 "backtest: %d name-days with alpha/position outside the risk-model universe "

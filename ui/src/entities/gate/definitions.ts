@@ -33,6 +33,7 @@ export const GATE_ORDER: readonly GateName[] = [
   'phase_sharpe',
   'suspect',
   'failed_solves',
+  'risk_model_sanity',
 ];
 
 export const GATES: Readonly<Record<GateName, GateDef>> = {
@@ -126,6 +127,16 @@ export const GATES: Readonly<Record<GateName, GateDef>> = {
     threshold: '≤ 2% of rebalances',
     rationale:
       'A broken optimizer holds the current book every day; the result looks like a strategy but is a stale portfolio.',
+    handbook: GATE_SECTION,
+  },
+  risk_model_sanity: {
+    name: 'risk_model_sanity',
+    label: 'Risk-model sanity',
+    verdictNoun: 'risk-model-sanity',
+    test: 'Share of rebalances where the ex-ante volatility of the book (or of a reference book when empty) exceeded 200% a year.',
+    threshold: '≤ 0.5% of rebalances',
+    rationale:
+      'A covariance blown up by one bad return makes the vol-target optimizer liquidate the book and keep it empty for years (the 2018 incident on real data). The gate makes that visible instead of silent.',
     handbook: GATE_SECTION,
   },
 };

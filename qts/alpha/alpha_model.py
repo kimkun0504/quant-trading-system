@@ -65,7 +65,7 @@ from .composite import THEMES, ThemeComposite, theme_portfolio_returns
 from .evaluation import newey_west_lags, rank_ic_series, signal_half_life
 from .features import FeatureBuilder
 from .models import EnsembleModel, LGBMModel, MLPModel, RidgeModel
-from .targets import ExposuresFn, label_realisation, residualize_forward_returns
+from .targets import DEFAULT_BAD_PRICE_CAPS, ExposuresFn, label_realisation, residualize_forward_returns
 from .trainer import FoldInfo, WalkForwardTrainer
 
 #: Sleeve name of each ML member class in the refit record (``alpha_refits.parquet``).
@@ -192,8 +192,12 @@ class AlphaModel:
         ic_window: int | None = None,
         delisting_return: float | None = None,
         signal_lag_days: int = 0,
+        bad_price_caps: tuple[float, float] | None = DEFAULT_BAD_PRICE_CAPS,
     ):
         self.cfg = cfg or AlphaConfig()
+        #: data-error return caps applied to the label closes (``RiskConfig``
+        #: ``return_abs_cap_up/down``; the pipeline threads the run's values)
+        self.bad_price_caps = bad_price_caps
         #: execution lag L (``ExecutionConfig.signal_lag_days``): the label of
         #: decision date s is the return close_{s+L} -> close_{s+L+h} (what the
         #: book trading the signal earns); purge and IC windows grow by L.
@@ -236,10 +240,16 @@ class AlphaModel:
             delisting_return=self.delisting_return,
             label_lag_days=L,
             delisting_gap_days=G,
+            bad_price_caps=self.bad_price_caps,
         )
         # date at which each label row is fully decided (NaT: not within the data)
         self.label_ready_: pd.Series = label_realisation(
-            md, h, label_lag_days=L, delisting_gap_days=G, valid=self.eligible_
+            md,
+            h,
+            label_lag_days=L,
+            delisting_gap_days=G,
+            valid=self.eligible_,
+            bad_price_caps=self.bad_price_caps,
         )
         self.theme_returns_ = theme_portfolio_returns(self.X_, md)
         self.composite_score_, self.theme_scores_ = self.composite.score_all(

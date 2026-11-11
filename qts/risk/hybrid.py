@@ -165,6 +165,15 @@ class HybridRiskModel:
     def r2(self):
         return self.fundamental.r2
 
+    @property
+    def diagnostics(self) -> dict:
+        """Fundamental model's cleaning / reference-vol diagnostics."""
+        return self.fundamental.diagnostics
+
+    @property
+    def cleaning(self):
+        return self.fundamental.cleaning
+
     def exposures_as_of(self, date: pd.Timestamp) -> pd.DataFrame:
         """Fundamental exposures (labels are residualised on these)."""
         return self.fundamental.exposures_as_of(date)
@@ -290,7 +299,10 @@ class HybridRiskModel:
 
         assert self.md is not None and self.statistical is not None
         Fh = st.factor_returns.tail(self.cfg.statistical_window)
-        Rw = self.md.returns.reindex(index=Fh.index, columns=tickers)
+        rets = self.fundamental.returns_clean  # cleaned panel (md.returns when cleaning is off)
+        if rets is None:
+            rets = self.md.returns
+        Rw = rets.reindex(index=Fh.index, columns=tickers)
         R, mask, _ = _prepare_panel(Rw.values)
         Fv = Fh.values
         active = np.any(Fv != 0, axis=0)  # unused slots (k < n_slots) stay at zero loading

@@ -50,3 +50,24 @@ def test_diagnose_constraints_relaxed_optimizer_scales_caps():
     assert opt.cfg.max_adv_participation == pytest.approx(2 * cfg.portfolio.max_adv_participation)
     assert opt.cfg.industry_band == cfg.portfolio.industry_band
     assert opt.horizon_days == pipe.optimizer.horizon_days
+
+
+def test_find_outlier_returns_synthetic(capsys):
+    mod = _load("find_outlier_returns")
+    rc = mod.main(["--synthetic", "--top", "5", "--windows", "2018-03-01..2018-03-07"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "top 5 |daily return|" in out and "cause" in out
+    assert "rule_a_caps" in out and "rule_a_price_floor" in out
+    assert "cross-sectional sqrt-cap-weighted mean |r| spikes" in out
+    assert "2018-03-01..2018-03-07" in out
+
+
+def test_find_outlier_returns_tags_causes():
+    mod = _load("find_outlier_returns")
+    assert "sub-penny" in mod._likely_cause(5.0, 0.5, 3.0, 0.5, 3.0, 1, False)
+    assert "restatement" in mod._likely_cause(9.0, 20.0, 20.5, 2.0, 20.0, 1, False)
+    assert "split-like" in mod._likely_cause(-0.5, 100.0, 50.0, 100.0, 50.0, 1, False)
+    assert "delisting-day" in mod._likely_cause(-0.97, 10.0, 0.3, 10.0, 0.3, 1, True)
+    assert mod._likely_cause(0.4, 10.0, 14.0, 10.0, 14.0, 4, False) == "gap(4d)"
+    assert mod._likely_cause(0.4, 10.0, 14.0, 10.0, 14.0, 1, False) == "unknown"

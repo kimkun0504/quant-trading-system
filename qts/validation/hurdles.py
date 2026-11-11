@@ -19,6 +19,13 @@ Gates (comparison operators exactly as implemented):
 * ``failed_solves``     share of rebalance solves that failed (book held)
                         **<=** ``max_failed_solve_frac`` (2 %); skipped when no
                         solve count is supplied.
+* ``risk_model_sanity`` share of rebalance solves on which the risk model's
+                        ex-ante vol of the incoming (or reference) book exceeded
+                        ``max_exante_vol`` (200 %) **<=**
+                        ``max_exante_vol_alert_frac`` (0.5 %); skipped when no
+                        alert count is supplied.  A covariance blown up by a
+                        data error makes a target-vol book liquidate and stay
+                        flat for many half-lives (docs/notes/risk_outlier_fix_2026-11-10.md).
 
 Each gate has a status ``PASS`` / ``FAIL`` / ``skipped``; a gate whose input is
 missing is *skipped* and only fails ``overall`` if it is in
@@ -404,6 +411,7 @@ class HurdleReport:
         standalone: bool = True,
         required: Iterable[str] | None = None,
         failed_solve_frac: float | None = None,
+        exante_vol_alert_frac: float | None = None,
     ) -> HurdleResult:
         """Every gate in the module docstring's order; a missing input skips its
         gate unless the gate is required (``required``, default
@@ -419,6 +427,7 @@ class HurdleReport:
             self._pbo_gate(pbo),
             *self._sharpe_gates(net_sharpe, phase),
             self._failed_solves_gate(failed_solve_frac),
+            self._risk_model_sanity_gate(exante_vol_alert_frac),
         ]
         gates = [self._apply_required(g, g.name in req) for g in gates]
         overall = all(bool(g.passed) for g in gates if g.applied)
@@ -439,6 +448,23 @@ class HurdleReport:
             float(frac),
             thr,
             f"failed solves {float(frac):.1%} of rebalances {'<=' if ok else '>'} {thr:.1%}",
+        )
+
+    def _risk_model_sanity_gate(self, frac: float | None) -> GateResult:
+        """``risk_model_sanity``: PASS when the share of rebalance solves with an
+        ex-ante vol alert (``BacktestResult.diagnostics['exante_vol_alerts']``) is
+        at most ``cfg.max_exante_vol_alert_frac``."""
+        thr = float(self.cfg.max_exante_vol_alert_frac)
+        if frac is None or not np.isfinite(float(frac)):
+            return self._skip("risk_model_sanity", thr, "ex-ante vol alert fraction not supplied")
+        ok = float(frac) <= thr
+        lim = float(self.cfg.max_exante_vol)
+        return GateResult(
+            "risk_model_sanity",
+            ok,
+            float(frac),
+            thr,
+            f"ex-ante vol > {lim:.0%} on {float(frac):.2%} of rebalances {'<=' if ok else '>'} {thr:.2%}",
         )
 
     @staticmethod

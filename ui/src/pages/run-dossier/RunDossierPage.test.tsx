@@ -42,7 +42,7 @@ describe('Run dossier (integration, MSW)', () => {
     expect(fact('Invested days')).toMatch(/100%$/);
     expect(fact('Cost/side')).toMatch(/15\.5 bp$/);
     const gates = screen.getByRole('list', { name: 'Hurdle gates' });
-    expect(within(gates).getAllByRole('listitem')).toHaveLength(10);
+    expect(within(gates).getAllByRole('listitem')).toHaveLength(11);
     expect(within(gates).getAllByRole('listitem')[0]).toHaveTextContent('Decile t-stat failed');
     expect(screen.getByText('Gates fail')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Copy config hash' })).toBeInTheDocument();

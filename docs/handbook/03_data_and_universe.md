@@ -280,6 +280,12 @@ Adjusted prices are right for returns and wrong for levels. A stock that traded 
 - **Shares outstanding from market cap.** `qts/data/loaders.py::shares_outstanding_panel(md)` returns `md.shares_outstanding`, else `market_cap / close_raw`, and raises if neither exists rather than dividing by the split-adjusted close.
 - **The synthetic market can plant splits.** `SyntheticSpec(n_splits=k)` plants $k$ forward splits in `close_raw`, `shares_outstanding` and `volume` while leaving `close`, `market_cap` and dollar volume bit-identical, so tests can check that nothing level-based reads the adjusted close.
 
+### What the loader does **not** clean, and why cleaning lives downstream
+
+The Sharadar loader (and every other loader) stores the vendor's prices as delivered: it does not drop, cap or repair a daily return. Real panels nevertheless contain a handful of absurd returns — a restated adjusted close that moved one day and not the next, a sub-penny print where the tick size alone is a ±50 % "return", a split applied to one side of a date — and the first real-data run showed what one of them does to an unprotected estimator: a single return on 2018-03-05 drove the risk model's ex-ante vol from 5 % to 5,110,263 % and emptied the book for four years (`docs/notes/risk_outlier_fix_2026-11-10.md`).
+
+The fix is deliberately *not* in the loader, for three reasons. First, what a bad return means depends on the consumer: for the risk regression it is a cell to drop (and genuine fat tails are something to winsorise), for the label builder it is a missing price, for the simulator it is a halt day, and for TCA it is a price that must stay as traded. Second, a loader that silently edits prices makes the store irreproducible against the vendor's files and hides the data problem from `validate`; the store should be a faithful copy with a hash. Third, the thresholds are a modelling decision that belongs in `SystemConfig` (hashed, in the ledger) rather than in a one-off at sync time. So the store keeps the raw cells, `qts/core/returns.py` defines the rules once (data-error caps, estimation-only price floor and cross-sectional winsorisation, with flags), and each consumer applies the subset that is right for it (→ see **Risk model › Return cleaning and the estimation universe**, **Backtesting › Data-error prices**). `python scripts/find_outlier_returns.py --store data/store ...` lists the worst cells in a store with a likely-cause tag, so a vendor problem is reported rather than quietly absorbed.
+
 ## Universe rules
 
 ### What it is

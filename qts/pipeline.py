@@ -449,6 +449,11 @@ class ResearchPipeline:
                 delisting_return=cfg.cost.delisting_haircut,
                 # labels / purge / trailing IC aligned to what is traded (execution lag L)
                 signal_lag_days=self.signal_lag_days(),
+                bad_price_caps=(
+                    (cfg.risk.return_abs_cap_up, cfg.risk.return_abs_cap_down)
+                    if cfg.risk.clean_returns
+                    else None
+                ),
             )
             # residualize labels on the *risk model's* risk-only exposures (D1; plan 2.3: targets)
             alpha.fit(self.md_u, risk_exposures_fn=self._exposures_fn)
@@ -928,6 +933,7 @@ class ResearchPipeline:
             net_sharpe=summ["sharpe_net"],
             standalone=True,
             failed_solve_frac=bt.failed_solve_fraction(),
+            exante_vol_alert_frac=bt.exante_vol_alert_fraction(),
         )
         notes = self._notes(summ, pbo, blocks, len(net))
         timings = dict(timings or {})

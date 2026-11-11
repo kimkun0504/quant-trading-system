@@ -36,7 +36,8 @@ export type GateName =
   | 'pbo'
   | 'phase_sharpe'
   | 'suspect'
-  | 'failed_solves';
+  | 'failed_solves'
+  | 'risk_model_sanity';
 
 /** Headline numbers shown in the runs list. `null` while running or after a failure. */
 export interface RunHeadline {

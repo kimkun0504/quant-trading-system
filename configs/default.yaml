@@ -113,6 +113,13 @@ risk:
   statistical_refit_every: 21
   missing_factor_alarm_share: 0.1
   exposure_dtype: float64
+  clean_returns: true
+  return_abs_cap_up: 3.0
+  return_abs_cap_down: -0.95
+  return_min_prev_price: 0.25
+  return_winsor_mad_k: 8.0
+  estimation_universe_eligible_only: true
+  max_reference_vol: 1.0
 cost:
   commission_per_share: 0.0035
   commission_min_per_order: 0.35
@@ -186,6 +193,8 @@ validation:
   min_fold_pass_fraction: 0.6666666666666666
   hurdle_t_stat: 3.0
   max_failed_solve_frac: 0.02
+  max_exante_vol: 2.0
+  max_exante_vol_alert_frac: 0.005
   required_gates:
   - phase_sharpe
   - suspect

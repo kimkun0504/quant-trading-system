@@ -122,7 +122,7 @@ class _RefPickler(pickle.Pickler):
         super().__init__(f, protocol=5)
         self._by_id = {id(v): k for k, v in refs.items() if v is not None}
 
-    def persistent_id(self, obj: Any) -> str | None:  # noqa: D102 (pickle hook)
+    def persistent_id(self, obj: Any) -> str | None:
         return self._by_id.get(id(obj))
 
 
@@ -131,7 +131,7 @@ class _RefUnpickler(pickle.Unpickler):
         super().__init__(f)
         self._refs = refs
 
-    def persistent_load(self, pid: Any) -> Any:  # noqa: D102 (pickle hook)
+    def persistent_load(self, pid: Any) -> Any:
         if pid not in self._refs:
             raise pickle.UnpicklingError(
                 f"stage cache entry references {pid!r}, which the caller did not supply"

@@ -36,6 +36,7 @@ def format_result(res: PipelineResult) -> str:
     icr = res.ic_report
     bt = getattr(res, "backtest", None)
     rv = bt.realized_vs_exante() if bt is not None and hasattr(bt, "realized_vs_exante") else None
+    diag: Mapping[str, object] = getattr(bt, "diagnostics", None) or {}
     lines = [
         "=== Backtest summary ===",
         f"period            {s['start']} -> {s['end']}  ({s['n_days']} days)"
@@ -49,6 +50,9 @@ def format_result(res: PipelineResult) -> str:
         f"realized/ex-ante vol {_vol_ratio_text(s, rv)}   invested {_pct(s.get('invested_day_frac'))} of days",
         f"sizing            mean gamma {s.get('mean_risk_aversion', float('nan')):.2f}   "
         f"vol target capped on {100 * s.get('vol_target_caps_share', float('nan')):.0f}% of solves",
+        f"data guards       data-error closes blanked {int(diag.get('n_data_error_returns', 0))}   "
+        f"ex-ante vol alerts {int(diag.get('n_exante_vol_alerts', 0))} of "
+        f"{int(diag.get('n_rebalance_solves', 0))} solves   failed solves {int(diag.get('n_failed_solves', 0))}",
         "",
         "=== Alpha IC (score vs residualised target, sampled every horizon) ===",
         f"mean rank IC {icr.mean_ic:.4f}  ICIR {icr.icir:.2f} "

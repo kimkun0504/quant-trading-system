@@ -83,7 +83,7 @@ IC_KEYS = ("n", "mean_ic", "ic_sd", "icir", "t_stat", "hit_rate", "periods_per_y
 # Gates added after the golden file was written.  They are *not* numerical drift, so
 # they are left out of the comparison and pinned by test_golden_run_is_not_degenerate
 # instead (regenerating the golden file for a new gate would re-bless every number).
-GATES_NOT_IN_GOLDEN = ("failed_solves",)
+GATES_NOT_IN_GOLDEN = ("failed_solves", "risk_model_sanity")
 
 
 def _enc(v):

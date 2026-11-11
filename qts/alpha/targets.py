@@ -65,6 +65,19 @@ the ML fit, ``oos_ic_``, ``ic_used`` and ``expected_return`` at ``t`` --
 identical whether the data end at ``t`` or later (``tests/test_label_halts.py``).
 Without a delisting table a delisting delays its rows by up to ``G`` days; supply
 ``delisting_dates`` for real data.
+
+Data-error prices (rule (a) of :mod:`qts.core.returns`)
+--------------------------------------------------------
+A close that produces a return outside ``(cap_down, cap_up)`` (defaults
+``-95 % / +300 %``, ``RiskConfig.return_abs_cap_down / _up``) is a bad print,
+not a move a label should teach the model: it is blanked
+(:func:`qts.core.returns.flag_bad_prices`) before the window is read, so the
+label of that decision date is NaN and a window ending on it runs to the last
+good close through the halt path above.  Only the absolute caps apply here --
+labels are **not** winsorised by the MAD rule (b) and have no price floor: a
+genuine -80 % crash is a genuine label, and the residualiser already winsorises
+the cross-section at ``winsor_pct``.  Pass ``bad_price_caps=None`` to read the
+raw closes.
 """
 
 from __future__ import annotations
@@ -75,8 +88,9 @@ import numpy as np
 import pandas as pd
 
 from qts.core import stats
-from qts.core.config import AlphaConfig, CostConfig
+from qts.core.config import AlphaConfig, CostConfig, RiskConfig
 from qts.core.crosssection import neutralize, zscore
+from qts.core.returns import flag_bad_prices
 from qts.core.roles import ALPHA_THEME_FEATURES, RISK_ONLY_FEATURES, RISK_ONLY_STYLES
 from qts.core.types import MarketData, Wide
 
@@ -104,6 +118,21 @@ DEFAULT_STYLE_EXPOSURES = RISK_ONLY_FEATURES
 DEFAULT_DELISTING_RETURN = CostConfig().delisting_haircut
 #: default causal gap rule = ``AlphaConfig.delisting_gap_days`` (single source)
 DEFAULT_DELISTING_GAP_DAYS = AlphaConfig().delisting_gap_days
+#: ``(cap_up, cap_down)`` of the data-error rule = ``RiskConfig.return_abs_cap_up /
+#: _down`` (single source; module docstring "Data-error prices")
+DEFAULT_BAD_PRICE_CAPS: tuple[float, float] = (
+    RiskConfig().return_abs_cap_up,
+    RiskConfig().return_abs_cap_down,
+)
+BadPriceCaps = tuple[float, float] | None
+
+
+def _label_close(md: MarketData, bad_price_caps: BadPriceCaps) -> Wide:
+    """``md.close`` with data-error prints blanked (``None`` -> raw)."""
+    if bad_price_caps is None:
+        return md.close
+    up, down = bad_price_caps
+    return flag_bad_prices(md.close, cap_up=float(up), cap_down=float(down))[0]
 
 
 def _delist_pos(md: MarketData) -> np.ndarray:
@@ -118,6 +147,7 @@ def _forward_returns_resolved(
     delisting_return: float | None,
     label_lag_days: int,
     delisting_gap_days: int,
+    bad_price_caps: BadPriceCaps = DEFAULT_BAD_PRICE_CAPS,
 ) -> tuple[Wide, np.ndarray]:
     """Labels plus the position at which each cell's value is decided.
 
@@ -128,7 +158,7 @@ def _forward_returns_resolved(
     L, h, G = int(label_lag_days), int(horizon), int(delisting_gap_days)
     if L < 0 or h < 1 or G < 1:
         raise ValueError("need label_lag_days >= 0, horizon >= 1, delisting_gap_days >= 1")
-    c = md.close
+    c = _label_close(md, bad_price_caps)
     T, N = c.shape
     have = c.notna().to_numpy()
     posmat = np.where(have, np.arange(T, dtype=float)[:, None], np.nan)
@@ -180,6 +210,7 @@ def forward_returns(
     delisting_return: float | None = DEFAULT_DELISTING_RETURN,
     label_lag_days: int = 0,
     delisting_gap_days: int = DEFAULT_DELISTING_GAP_DAYS,
+    bad_price_caps: BadPriceCaps = DEFAULT_BAD_PRICE_CAPS,
 ) -> Wide:
     """``close_{t+L+h} / close_{t+L} - 1`` aligned at ``t`` (``L = label_lag_days``,
     the execution lag; ``L = 0`` -> ``close_{t+h} / close_t - 1``).
@@ -192,9 +223,11 @@ def forward_returns(
     halt is not.  NaN where ``close_t`` or ``close_{t+L}`` is NaN, the window
     extends past the panel, or the halt/delisting question is not yet decided
     within the panel.  ``close.ffill()`` is a *label-only* helper here -- never
-    reuse it for features.
+    reuse it for features.  ``bad_price_caps``: module docstring "Data-error prices".
     """
-    fwd, _ = _forward_returns_resolved(md, horizon, delisting_return, label_lag_days, delisting_gap_days)
+    fwd, _ = _forward_returns_resolved(
+        md, horizon, delisting_return, label_lag_days, delisting_gap_days, bad_price_caps
+    )
     return fwd
 
 
@@ -204,6 +237,7 @@ def label_realisation(
     label_lag_days: int = 0,
     delisting_gap_days: int = DEFAULT_DELISTING_GAP_DAYS,
     valid: Wide | None = None,
+    bad_price_caps: BadPriceCaps = DEFAULT_BAD_PRICE_CAPS,
 ) -> pd.Series:
     """Per decision date ``s``: the date at which the whole label row is decided
     (``NaT`` = not within the panel).
@@ -213,12 +247,12 @@ def label_realisation(
     latest decision date of its cells (at least ``s + L + h``).  Consumers at
     date ``t`` may use row ``s`` only if ``label_realisation(...)[s] <= t``.
     """
-    _, ready = _forward_returns_resolved(md, horizon, 0.0, label_lag_days, delisting_gap_days)
+    _, ready = _forward_returns_resolved(md, horizon, 0.0, label_lag_days, delisting_gap_days, bad_price_caps)
     valid = md.eligibility() if valid is None else valid
     v = valid.reindex(index=md.dates, columns=md.tickers).fillna(False).to_numpy(dtype=bool)
     T = len(md.dates)
     L, h = int(label_lag_days), int(horizon)
-    c = md.close.to_numpy(dtype=float)
+    c = _label_close(md, bad_price_caps).to_numpy(dtype=float)
     entry_ok = np.zeros_like(v)
     if L < T:
         entry_ok[: T - L] = np.isfinite(c[L:])
@@ -278,6 +312,7 @@ def residualize_forward_returns(
     only_dates: pd.DatetimeIndex | None = None,
     label_lag_days: int = 0,
     delisting_gap_days: int = DEFAULT_DELISTING_GAP_DAYS,
+    bad_price_caps: BadPriceCaps = DEFAULT_BAD_PRICE_CAPS,
 ) -> Wide:
     """Per date: neutralise the ``horizon``-day forward return on exposures known
     at ``t`` (intercept + industry dummies + the risk-only styles in
@@ -294,7 +329,7 @@ def residualize_forward_returns(
     rows are usable at :func:`label_realisation` (module docstring).
     """
     valid = md.eligibility()
-    raw = forward_returns(md, horizon, delisting_return, label_lag_days, delisting_gap_days)
+    raw = forward_returns(md, horizon, delisting_return, label_lag_days, delisting_gap_days, bad_price_caps)
     fwd = _winsorize_rows(raw.where(valid), winsor_pct)
     tickers = md.tickers
     dates = md.dates

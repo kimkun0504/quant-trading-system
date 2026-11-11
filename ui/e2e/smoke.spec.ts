@@ -15,7 +15,7 @@ test('experiments → run dossier: header, every section, section nav, data tabl
   await expect(page).toHaveURL(new RegExp(`/runs/${DEMO}$`));
   await expect(page.getByText(/^Passes the .* with 4 trials/)).toBeVisible();
   await expect(page.getByRole('list', { name: 'Hurdle gates' }).getByRole('listitem')).toHaveCount(
-    10,
+    11,
   );
   const facts = page.getByLabel('Headline numbers');
   await expect(facts).toContainText('Net Sharpe');

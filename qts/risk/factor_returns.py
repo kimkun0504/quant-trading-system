@@ -147,19 +147,34 @@ def estimate_factor_return_history(
     exposures_by_date: dict[pd.Timestamp, pd.DataFrame],
     cfg: RiskConfig | None = None,
     dates: Iterable[pd.Timestamp] | None = None,
+    returns: pd.DataFrame | None = None,
+    estimation_universe: pd.DataFrame | None = None,
     **regression_kwargs,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
     """Run the daily regression for every date ``t`` whose previous trading
     day ``t-1`` has an exposure matrix in ``exposures_by_date``.
 
-    ``regression_kwargs`` are forwarded to :func:`estimate_factor_returns`
-    (``constraint_weights``, ``weight_cap_quantile``).
+    ``returns`` replaces ``md.returns`` as the dependent variable (the risk
+    model passes the *cleaned* panel, :mod:`qts.core.returns`).
+    ``estimation_universe`` (boolean date x ticker panel) restricts day ``t``'s
+    regression to names True at ``t-1`` (Barra ESTU: the weights, the industry
+    constraint and the specific returns all come from that set; names outside
+    it have NaN specific returns and later get the structural specific-risk
+    prior).  ``regression_kwargs`` are forwarded to
+    :func:`estimate_factor_returns` (``constraint_weights``,
+    ``weight_cap_quantile``).
 
     Returns ``(factor_returns [date x factor], specific_returns [date x ticker], r2 [date])``.
     """
     cfg = cfg or RiskConfig()
     all_dates = md.dates
-    returns = md.returns
+    if returns is None:
+        returns = md.returns
+    else:
+        returns = returns.reindex(index=all_dates, columns=md.tickers)
+    estu = None
+    if estimation_universe is not None:
+        estu = estimation_universe.reindex(index=all_dates, columns=md.tickers).fillna(False).astype(bool)
     pos = {d: i for i, d in enumerate(all_dates)}
     candidates = all_dates if dates is None else pd.DatetimeIndex(list(dates))
     fr, sr, r2 = {}, {}, {}
@@ -171,7 +186,10 @@ def estimate_factor_return_history(
         B = exposures_by_date.get(prev)
         if B is None:
             continue
-        fit = estimate_factor_returns(returns.iloc[i], B, md.market_cap.iloc[i - 1], cfg, **regression_kwargs)
+        cap_prev = md.market_cap.iloc[i - 1]
+        if estu is not None:
+            cap_prev = cap_prev.where(estu.iloc[i - 1])
+        fit = estimate_factor_returns(returns.iloc[i], B, cap_prev, cfg, **regression_kwargs)
         fr[d], sr[d], r2[d] = fit.factor_returns, fit.specific_returns, fit.r2
     if not fr:
         empty = pd.DataFrame(index=pd.DatetimeIndex([]))

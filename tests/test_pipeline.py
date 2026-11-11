@@ -27,6 +27,7 @@ GATES = {
     "phase_sharpe",
     "suspect",
     "failed_solves",
+    "risk_model_sanity",
 }
 CORE = (
     "sharpe_gross",

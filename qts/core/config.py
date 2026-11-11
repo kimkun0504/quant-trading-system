@@ -339,10 +339,44 @@ class RiskConfig(_ConfigBase):
     # storage dtype of the (T, N, S) style-exposure tensor (qts.risk.exposures.ExposureHistory);
     # "float32" halves its memory at ~1e-7 relative error in the exposures.
     exposure_dtype: str = "float64"
+    # --- return cleaning (qts.core.returns; docs/notes/risk_outlier_fix_2026-11-10.md).
+    # This section is the single home of the thresholds: the risk model applies
+    # rules (a) + (b) to its estimation inputs, the label builder and the simulator
+    # apply the absolute caps of rule (a) as a bad *price* (no winsorising, no
+    # price floor), read from the same fields through SystemConfig.
+    clean_returns: bool = True
+    return_abs_cap_up: float = 3.0  # r > +300 % is a data error
+    return_abs_cap_down: float = -0.95  # r < -95 % is a data error (legit -80 % days exist)
+    return_min_prev_price: float = 0.25  # estimation only: drop returns off a sub-25c close
+    return_winsor_mad_k: float = 8.0  # estimation only: clip at median +- 8 x 1.4826 MAD per day; 0 = off
+    # Estimation universe (Barra ESTU): with True the factor regression and the
+    # specific-return history use only names eligible at t-1 (md.eligible); every
+    # priced name still gets exposures, and names outside the ESTU get specific
+    # risk from the structural (industry/size) prior.  The pipeline already passes
+    # a view with market cap NaN outside the universe, so this is the same set
+    # there; the flag makes the rule explicit when the model is fit standalone.
+    estimation_universe_eligible_only: bool = True
+    # Blow-up guard: after each as_of the annualised ex-ante vol of a sqrt-cap
+    # weighted reference book is recorded (BarraStyleRiskModel.diagnostics); above
+    # this (1.0 = 100 %) or a > 5x day-over-day jump it is logged as a covariance outlier.
+    max_reference_vol: float = 1.0
+
+    def __post_init__(self) -> None:
+        errs = check_bounds(self, RISK_CONFIG_BOUNDS)
+        if errs:
+            raise ValueError("RiskConfig: " + "; ".join(errs))
 
 
 #: ``(low, high, low_inclusive, high_inclusive)``; ``None`` = unbounded on that side.
 FieldBound = tuple[float | None, float | None, bool, bool]
+
+RISK_CONFIG_BOUNDS: dict[str, FieldBound] = {
+    "return_abs_cap_up": (0.0, None, False, True),
+    "return_abs_cap_down": (-1.0, 0.0, True, False),
+    "return_min_prev_price": (0.0, None, True, True),
+    "return_winsor_mad_k": (0.0, None, True, True),
+    "max_reference_vol": (0.0, None, False, True),
+}
 
 
 def check_bounds(obj: object, bounds: Mapping[str, FieldBound]) -> list[str]:
@@ -617,6 +651,13 @@ class ValidationConfig(_ConfigBase):
     # reach an optimal status (the simulator then holds the book) exceeds this.  A
     # broken optimizer must not produce a passing "hold everything" backtest.
     max_failed_solve_frac: float = 0.02
+    # ``risk_model_sanity`` gate: the simulator flags a rebalance day when the risk
+    # model's annualised ex-ante vol of the *incoming* book exceeds
+    # ``max_exante_vol`` (2.0 = 200 %; a covariance blown up by a data error, see
+    # qts.core.returns); FAIL when such days exceed ``max_exante_vol_alert_frac`` of
+    # rebalance days.
+    max_exante_vol: float = 2.0
+    max_exante_vol_alert_frac: float = 0.005
     # Gates that make ``overall`` FAIL when their input is missing.  Any other
     # gate with a missing input is reported as "skipped" (status, reason) and
     # does not count against ``overall``.

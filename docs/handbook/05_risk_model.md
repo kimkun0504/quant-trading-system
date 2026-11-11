@@ -13,6 +13,7 @@ The risk model forecasts how much any portfolio of our ~1,000 stocks can move to
 - **`use_nonlinear_shrinkage` removed** (it never affected `specific_var`; QIS lost to the structural model out of sample, QLIKE 0.07 vs 0.15–0.45) (§7).
 - **Statistical factor count chosen per refit** (Bai–Ng on each refit's window) with fixed `stat_01..stat_05` slots (§8); exposures stored as an `ExposureHistory` tensor (§3).
 - **Alignment $\nu$ recalibrated to `alignment_nu_scale = 0.05`** with production settings; the optimised book's risk is already slightly over-forecast at $\nu = 0$ (§9). Out-of-model names get the 90th-percentile specific variance everywhere (§6).
+- **Return cleaning and an explicit estimation universe (10 Nov 2026).** The first real-data run showed one bad print blowing up the factor covariance for four years. Estimation inputs are now cleaned (data-error rule, cross-sectional winsorisation), the regression is restricted to the eligible universe, and a reference-book guard records covariance outliers (§4a).
 </callout>
 
 ## The risk model at a glance
@@ -287,6 +288,40 @@ Both default to pure USE4. Dropping an industry instead of constraining (the usu
 **References**
 - [Menchero, Orr & Wang (2011), USE4 Methodology Notes](https://www.top1000funds.com/wp-content/uploads/2011/09/USE4_Methodology_Notes_August_2011.pdf)
 - [toraniko (fork)](https://github.com/Pleometric/toraniko)
+
+## 4a. Return cleaning and the estimation universe
+
+**The incident that motivates this section.** The first full real-data run (Sharadar, 3,000 names loaded, top 1,000 eligible, 2000–2026) produced a book that was empty on most days. `scripts/inspect_run.py` showed the mechanism: on 2018-03-05 the ex-ante volatility of the book, as forecast by this risk model, went from 5 % to **5,110,263 %**. The target-vol optimiser did exactly what it should with such a forecast: it liquidated everything. The book then stayed empty until 2022-09. Seven other empty stretches (2003–05, 2008–10, 2010–11, 2011–13, 2014–15, 2023, 2025) had the same signature with smaller shocks.
+
+**How one number does that.** The regression of §4 fits today's cross-section of returns. It is weighted least squares: a single return of, say, +50,000 % (a restated adjusted close, a sub-penny print, a split applied to one day and not the next) is not an outlier the fit can shrug off — the squared error term is $10^{5}$ times larger than every other observation's, so the factor returns of that day move to explain it. The factor covariance (§5) is an EWMA of those factor returns with `vol_half_life` = 84 days: the weight of one day decays as $2^{-n/84}$, so the day's contribution is still $2^{-19} \approx 2 \times 10^{-6}$ of its original size 19 half-lives later. A factor return that is $10^{4}$ times a normal one has a *squared* contribution $10^{8}$ times normal, and $10^{8} \times 2^{-n/84}$ falls back to order 1 only after $n \approx 84 \log_2 10^{8} \approx 2{,}230$ trading days — about 4.4 years. That is the 2018-03 → 2022-09 gap. The specific-risk EWMA (§6, same half-life) does the same to the name's own variance, and the style descriptors (beta, residual vol, momentum, reversal) built from the same price carry the spike for their window length (252 days for beta).
+
+Nothing in the synthetic market produces such a return, so the golden tests could not see it. The data layer (→ see **Data & universe › What the loader does not clean**) deliberately stores what the vendor delivered; the defence lives here, downstream, where each consumer can decide what a bad return means for *it*.
+
+**Three rules (`qts/core/returns.py`).** All use only same-day and past data.
+
+| Rule | What it does | Default | Who uses it |
+|---|---|---|---|
+| (a) data-error | $r > $ `return_abs_cap_up` or $r <$ `return_abs_cap_down` → NaN; optionally also a return off a previous as-traded close below `return_min_prev_price` | +300 % / −95 %; 0.25 USD | risk model (with the price floor); labels and simulator (caps only, as a bad *price*) |
+| (b) cross-sectional winsorisation | per day, clip at median ± `return_winsor_mad_k` × 1.4826 × MAD | 8 | risk model only |
+| (c) flags | boolean panels of what (a) and (b) touched; counts per day and per name | — | diagnostics, `scripts/find_outlier_returns.py` |
+
+Why the caps are asymmetric: genuine −80 % days exist (fraud revelations, failed trials, bank runs in 2008 and 2023) and must stay in the estimation and the P&L; a −95 % day on a name that was eligible the day before, or a +300 % day on any investable name, is in practice always a bad print. Why rule (b) is so loose: 8 robust sigmas (about ±15–18 % around the daily median on real data, where the cross-sectional MAD is ~1.2–1.5 %) only touches a handful of names per day; it is the Barra USE4 practice of winsorising the dependent variable of the regression so that one fat-tailed name does not dominate a factor return, not a model of returns. It applies to estimation inputs only — nothing a book earns is winsorised.
+
+**What the risk model does with them (`BarraStyleRiskModel.fit` → `estimation_inputs`).** With `clean_returns = True`:
+
+1. data-error *closes* are blanked (`flag_bad_prices`: the price-level form of rule (a) — a spike-and-reverse pair is one bad close, not two bad returns; a level shift that persists is blanked for up to three days and then accepted as the new level). The style descriptors are built from this view, so a +99,900 % print does not become every name's beta for a year through the equal-weighted market proxy;
+2. the regression's dependent variable is the return of that view after rule (a) with the price floor and rule (b); the specific returns, hence the specific-risk EWMA and the APCA companion (§8), inherit it; the hybrid's total-return loadings use the same panel;
+3. `model.cleaning` keeps the flags; `model.diagnostics["n_data_error_returns"]` / `["n_winsorized_returns"]` count them and `fit` logs a warning when any data error was removed.
+
+With `clean_returns = False` everything is as before (the real-data failure mode, kept for A/B runs and the guard test).
+
+**The estimation universe (ESTU).** Barra fits the regression on an *estimation universe* — liquid, priced names with a market cap — and then produces exposures and specific risk for a wider coverage universe. Here the same split exists: `estimation_universe_eligible_only = True` restricts the regression (weights, industry constraint, specific returns) to names in `md.eligible` at $t-1$, i.e. names that passed `UniverseConfig.min_price` / `min_adv_usd` / the size screens. Every priced name still gets exposures; a name outside the ESTU has no specific-return history, so its specific risk comes from the structural (industry/size) prior of §6 with $\gamma = 0$. In the research pipeline this was already the behaviour — `ResearchPipeline.fit` passes the risk model a view with market cap NaN outside the universe (`masked_levels`), and the regression only uses names with a cap — so the flag changes no number there; it makes the rule explicit when the model is fit standalone on a panel that carries an eligibility mask.
+
+**The reference-book guard.** After every `as_of` the model computes the annualised ex-ante vol of a long-only, $\sqrt{\text{cap}}$-weighted book over the model's names and stores it in `diagnostics["reference_vol"][date]`. A healthy value sits near the market's (15–25 %). Above `max_reference_vol` (100 %), or more than 5× the previously recorded date, the date is appended to `diagnostics["covariance_outliers"]` with the five largest factor and specific contributions and a warning is logged. The simulator has the matching check on the traded book (→ see **Backtesting › Risk-model sanity**) and the `risk_model_sanity` hurdle gate fails the run when it fires often (→ see **Validation & statistics › The hurdle gates**).
+
+**Golden impact.** The synthetic market has no data errors and no bad prices, so rules (a), the ESTU flag and both guards leave the golden run bitwise unchanged. Rule (b) does touch it: 48 of ~70,000 cells sit beyond 8 MADs (the synthetic cross-section is fat-tailed by construction), and the golden file was regenerated (net Sharpe 2.168 → 2.164; largest move `mean_risk_aversion` 0.2381 → 0.2343; IC statistics, decile spread and gate statuses unchanged). `return_winsor_mad_k = 0` restores the pre-change numbers exactly.
+
+**In the code.** `qts/core/returns.py` (`clean_returns`, `data_error_mask`, `winsorize_cross_section`, `flag_bad_prices`), `qts/risk/model.py::estimation_inputs`, `estimate_factor_return_history(returns=..., estimation_universe=...)`, `BarraStyleRiskModel._check_reference_vol`. Tests: `tests/test_return_cleaning.py` (rules, PIT, an injected 1000× close on two of 150 names: the reference vol stays within 20 % of the clean fit on every later day, the name's specific variance stays finite, the label of that cell is NaN, the simulator counts two blanked closes and a book that does not hold the names has the same NAV; the gate fires with `clean_returns=False` and not with it). Find the culprits in a store with `python scripts/find_outlier_returns.py --store data/store --max-names 3000 --min-mcap-ever 3e8 --start 2000-01-01`. Note: `docs/notes/risk_outlier_fix_2026-11-10.md`.
 
 ## 5. Factor covariance
 
@@ -957,6 +992,12 @@ All defaults from `qts/core/config.py::RiskConfig`.
 | `statistical_refit_every` | 21 | APCA re-extraction frequency (trading days) |
 | `missing_factor_alarm_share` | 0.10 | PC1 share of residual variance that, together with the MP edge, raises the monitor flag |
 | `exposure_dtype` | `"float64"` | storage dtype of the `ExposureHistory` style tensor; `"float32"` halves memory at ~1e-7 relative error |
+| `clean_returns` | True | clean the estimation inputs (§4a); the same flag turns the simulator's data-error path on |
+| `return_abs_cap_up` / `return_abs_cap_down` | 3.0 / −0.95 | rule (a) caps: a return above +300 % or below −95 % is a data error (§4a). Also read by the label builder and the simulator |
+| `return_min_prev_price` | 0.25 | rule (a) price floor (USD, as-traded close of $t-1$); estimation only |
+| `return_winsor_mad_k` | 8.0 | rule (b): clip the regression returns at median ± k × 1.4826 MAD per day; 0 turns it off |
+| `estimation_universe_eligible_only` | True | restrict the regression and the specific-return history to `md.eligible` at $t-1$ (§4a) |
+| `max_reference_vol` | 1.0 | reference-book ex-ante vol above which `as_of` records a covariance outlier (§4a) |
 
 Removed: `use_nonlinear_shrinkage` (never affected `specific_var`; §7). Old YAML files that still set it fail to load, because `from_dict` is strict about unknown keys.
 
@@ -976,6 +1017,7 @@ Exposure window lengths and `BETA_SHRINK` are module constants in `qts/risk/expo
 | Optimised book's bias < 1 already at $\nu = 0$ (the current synthetic result) | risk over-forecast for the book: eigen inflation, VRA or NW too strong for this market | keep `alignment_nu_scale` at the floor; compare $a = 1.0$ vs 1.2 on bias statistics (not Sharpe) |
 | Random books' bias < 1 (risk overstated) | too much NW, too long half-lives after a calm spell, or alignment $\nu$ too large | check `vra_multiplier`. Reduce `alignment_nu_scale` |
 | A few names carry huge specific risk | outliers, thin histories | inspect `specific_risk(..., return_details=True)`: `gamma`, `sigma_ts` vs `sigma_str`. Raise `specific_shrink_q` |
+| Ex-ante vol of any book jumps by orders of magnitude on one day and decays over years; `diagnostics["covariance_outliers"]` non-empty | a data-error return entered the regression (§4a) | run `scripts/find_outlier_returns.py`; check `clean_returns` is on and the caps fit the vendor; the half-life arithmetic says the only cure is removing the return, not waiting |
 | Factor returns noisy, $F$ ill-conditioned | collinear styles, empty industries | drop or merge styles. Merge tiny industries in the data layer |
 | `as_of` slow | eigen simulation | lower `n_eigen_sims` (e.g. 100) or raise `eigen_refresh_days`. Set `eigenfactor_adjust=False` for quick research |
 

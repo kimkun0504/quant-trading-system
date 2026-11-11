@@ -1942,7 +1942,8 @@
               "pbo",
               "phase_sharpe",
               "suspect",
-              "failed_solves"
+              "failed_solves",
+              "risk_model_sanity"
             ],
             "title": "Name"
           },
@@ -2147,7 +2148,8 @@
                 "pbo",
                 "phase_sharpe",
                 "suspect",
-                "failed_solves"
+                "failed_solves",
+                "risk_model_sanity"
               ]
             },
             "type": "array",

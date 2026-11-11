@@ -300,6 +300,7 @@ export function evaluateHurdles(args: {
       0.02,
       `failed solves ${(failedSolveFrac * 100).toFixed(1)}% of rebalances ${failedSolveFrac <= 0.02 ? '<=' : '>'} 2.0%`,
     ),
+    gate('risk_model_sanity', 'PASS', 0, 0.005, 'ex-ante vol alerts 0.0% of rebalances <= 0.5%'),
   ];
   const overall = gates.every((g) => g.status !== 'FAIL') ? 'PASS' : 'FAIL';
   return { overall, phase, required: ['phase_sharpe', 'suspect', 'dsr'], gates };

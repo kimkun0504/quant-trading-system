@@ -204,6 +204,12 @@ Without a vendor delisting table a real delisting is therefore held frozen for 6
 
 Names with no price at $t$ go on the optimiser's no-trade list, and their weights are carried unchanged.
 
+### Data-error prices
+A close that would produce a return above `RiskConfig.return_abs_cap_up` (+300 %) or below `return_abs_cap_down` (−95 %) is a bad print, not tradable P&L: nobody earned +50,000 % on a restated adjusted close, and nobody lost 99.8 % on its reversal the next day. With `RiskConfig.clean_returns` on, the simulator blanks such closes before the run (`qts.core.returns.flag_bad_prices`: a spike-and-reverse pair is one bad close; a level shift that persists is blanked for up to three days and then accepted). The name then takes the **halt** path above on that day — frozen, return 0, no trade — and the next day's return is measured from the last good close, so the P&L across the gap is the true move. Blanked closes inside the run are counted in `diagnostics["n_data_error_returns"]` and listed (first 100, with the raw close) in `diagnostics["data_error_returns"]`; the report card prints the count. Nothing else is cleaned: a genuine −80 % day is P&L, and the risk model's cross-sectional winsorisation (→ see **Risk model › Return cleaning**) never touches the simulator. The motivating incident — one return of this kind emptying a real-data book for four years — is in `docs/notes/risk_outlier_fix_2026-11-10.md`.
+
+### Risk-model sanity
+On every rebalance the simulator computes the annualised ex-ante vol of the *incoming* book under the day's risk model (or, when the book is empty, of a long-only $\sqrt{\text{cap}}$-weighted reference book over the model's names, so a broken covariance is still visible after a liquidation). Above `ValidationConfig.max_exante_vol` (200 %) it logs the date, the vol and the five largest contributing names (specific, $w_i^2 d_i$) and factors ($(B^\top w)_k (F B^\top w)_k$), and appends the entry to `diagnostics["exante_vol_alerts"]` (`n_exante_vol_alerts` counts them). `BacktestResult.exante_vol_alert_fraction()` divides by `n_rebalance_solves`; the `risk_model_sanity` hurdle gate fails the run above `max_exante_vol_alert_frac` (0.5 % of rebalances). A target-vol optimiser facing a 10,000 % forecast liquidates everything and the book then stays empty for many covariance half-lives — a flat NAV that would otherwise read as "no signal".
+
 ### Forced exits (eligibility)
 If a held name is not in the investable universe as of the signal date $s$ (`md.eligible`, or the `eligible_fn` hook), its expected return is set to 0 and the optimiser receives a `force_to_zero` cap on $\lvert w\rvert$:
 
@@ -248,7 +254,7 @@ The day loop in `run_spec` is a fixed pipeline of small steps, one method each: 
 
 `dates` must be a subset of `md.dates` with at least two entries; consecutive trading days are assumed (see the borrow note below).
 
-**Diagnostics.** `BacktestResult.diagnostics` holds `solve_log`, `delistings`, `halts`, `n_halted_name_days`, `forced_exits`, `n_failed_solves`, `failed_solves` (one entry per failed solve: `date`, `status`, `solver_errors`), `n_rebalance_solves` (the denominator of `BacktestResult.failed_solve_fraction()` and of the `failed_solves` hurdle gate), `n_no_signal_days`, `n_ineligible_name_days`, `n_out_of_model_name_days` (names outside the risk model still held after a solve, i.e. forced exits in progress), `signal_lag_days`, `venue`, `rebalance_every` and `run_time_sec`. One `solve_log` entry per solve:
+**Diagnostics.** `BacktestResult.diagnostics` holds `solve_log`, `delistings`, `halts`, `n_halted_name_days`, `forced_exits`, `n_failed_solves`, `failed_solves` (one entry per failed solve: `date`, `status`, `solver_errors`), `n_rebalance_solves` (the denominator of `BacktestResult.failed_solve_fraction()` and of the `failed_solves` hurdle gate), `n_no_signal_days`, `n_ineligible_name_days`, `n_out_of_model_name_days` (names outside the risk model still held after a solve, i.e. forced exits in progress), `n_data_error_returns` / `data_error_returns` (blanked closes, see *Data-error prices*), `n_exante_vol_alerts` / `exante_vol_alerts` (see *Risk-model sanity*), `signal_lag_days`, `venue`, `rebalance_every` and `run_time_sec`. One `solve_log` entry per solve:
 
 | Field | Meaning |
 |---|---|
@@ -413,7 +419,7 @@ Before believing a result, answer these in order. Each question maps to a field 
 3. **How much do costs take, and how fragile is that?** Compare gross and net Sharpe, then read the slope of the cost-sensitivity table. If 2× costs kill the strategy, the cost model has to be right to within a factor of two, and it has never been calibrated on your own fills.
 4. **Is turnover consistent with the signal?** Effective holding days far below the signal half-life means you are paying to trade noise.
 5. **Is the risk real and sized as intended?** `realized_vs_exante_vol_ratio` near 1. Well above 1 means the book is riskier than it was sized to be. A high `vol_target_caps_share` means the book could not reach its vol target. Read it together with `invested_day_frac`: the ratio is estimated on invested days only, so a run whose book was empty on half the days (an alpha that is exactly zero, e.g. an IC floor) still gets an honest ratio for the days it held risk, and `n/a (too few invested days)` instead of a noise number when it barely traded.
-6. **Did the machinery work every day?** `n_failed_solves` (above 2% of rebalances the `failed_solves` gate fails the run), `n_delistings`, `n_out_of_model_name_days`, `n_no_signal_days` and `forced_exits` should all be small and explainable.
+6. **Did the machinery work every day?** `n_failed_solves` (above 2% of rebalances the `failed_solves` gate fails the run), `n_exante_vol_alerts` (above 0.5% the `risk_model_sanity` gate fails: the risk model forecast an absurd vol and the book was sized on it), `n_data_error_returns`, `n_delistings`, `n_out_of_model_name_days`, `n_no_signal_days` and `forced_exits` should all be small and explainable.
 7. **Is it consistent?** Fold Sharpes: one great block and three flat ones is a regime bet.
 8. **How many things did you try?** The DSR only knows about trials logged in the ledger. Running variants outside the pipeline and reporting the best is exactly the snooping the gates exist to catch.
 9. **Does it depend on timing?** Compare lag 0 (optimistic bound) and lag 1 (default) with a paired test. If lag 1 loses most of the edge, the strategy depends on information the live system will not have.
@@ -570,6 +576,8 @@ Each gate is PASS, FAIL or skipped. A skipped gate fails `overall` only if it is
 | `pbo` | probability of backtest overfitting | < 0.5 |
 | `phase_sharpe` | net Sharpe | ≥ 0.3 (phase 1), ≥ 0.5 (phase 2) |
 | `suspect` | implausibly high net Sharpe | ≤ 2 |
+| `failed_solves` | share of rebalance solves that failed (book held) | ≤ 2 % |
+| `risk_model_sanity` | share of rebalances with the risk model's ex-ante vol above 200 % | ≤ 0.5 % |
 
 The demo fails, correctly: four years of a ~1-Sharpe strategy is not enough evidence. Details, formulas and the trial ledger → see **Validation & statistics › The hurdle gates**.
 

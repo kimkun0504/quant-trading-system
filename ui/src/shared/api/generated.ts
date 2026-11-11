@@ -660,7 +660,8 @@ export interface components {
         | 'pbo'
         | 'phase_sharpe'
         | 'suspect'
-        | 'failed_solves';
+        | 'failed_solves'
+        | 'risk_model_sanity';
       /**
        * Status
        * @enum {string}
@@ -736,6 +737,7 @@ export interface components {
         | 'phase_sharpe'
         | 'suspect'
         | 'failed_solves'
+        | 'risk_model_sanity'
       )[];
       /** Gates */
       gates: components['schemas']['GateResult'][];
