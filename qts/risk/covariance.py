@@ -108,7 +108,12 @@ def combine_vol_corr(S_vol: np.ndarray, S_corr: np.ndarray) -> np.ndarray:
 
 # --------------------------------------------------------------------------- VRA
 def factor_vra_multiplier(
-    F: pd.DataFrame, vol_half_life: float, vra_half_life: float, min_periods: int = 20
+    F: pd.DataFrame,
+    vol_half_life: float,
+    vra_half_life: float,
+    min_periods: int = 20,
+    z2_clip: float | None = None,
+    clip: tuple[float, float] | None = None,
 ) -> float:
     """Volatility Regime Adjustment (USE4 section "Volatility regime adjustment").
 
@@ -118,7 +123,13 @@ def factor_vra_multiplier(
     ``t-1``.  The factor volatility multiplier is
         lambda_F = sqrt( EWMA_{vra_half_life}( B_t^2 ) ),
     and the factor covariance is scaled by ``lambda_F^2``.  Returns 1.0 when
-    there is too little history."""
+    there is too little history.
+
+    Robustness (``cfg.vra_z2_clip`` / ``vra_min`` / ``vra_max`` via
+    :func:`factor_covariance`): each factor's ``z^2`` is clipped at ``z2_clip``
+    before the cross-sectional mean (a 5-sigma day counts as 5 sigma, not as
+    the squared ratio of a return to a collapsed forecast) and ``lambda_F`` is
+    clipped to ``clip``.  ``None`` = off (the pre-2026-11-10 behaviour)."""
     f2 = F.pow(2)
     # columns that are identically zero (industries with no members over the
     # whole history) carry no information; an exact 0.0 on a given day means
@@ -130,11 +141,30 @@ def factor_vra_multiplier(
         return 1.0
     sig2_prev = f2.ewm(halflife=vol_half_life, min_periods=min_periods).mean().shift(1)
     z2 = (f2 / sig2_prev.replace(0.0, np.nan)).where(f2 != 0)
+    if z2_clip is not None and np.isfinite(z2_clip):
+        z2 = z2.clip(upper=float(z2_clip))
     B2 = z2.mean(axis=1, skipna=True).dropna()
     if len(B2) < min_periods:
         return 1.0
     lam2 = B2.ewm(halflife=vra_half_life).mean().iloc[-1]
-    return float(np.sqrt(max(lam2, 1e-6)))
+    lam = float(np.sqrt(max(lam2, 1e-6)))
+    return _clip_multiplier(lam, clip)
+
+
+def _clip_multiplier(lam: float, clip: tuple[float, float] | None) -> float:
+    if clip is None:
+        return lam
+    lo, hi = float(clip[0]), float(clip[1])
+    return float(min(max(lam, lo), hi))
+
+
+def vra_clip_from(cfg: RiskConfig) -> tuple[float | None, tuple[float, float] | None]:
+    """``(z2_clip, (vra_min, vra_max))`` for the VRA functions from ``cfg``
+    (``None`` where the config switches the clip off)."""
+    z2 = float(getattr(cfg, "vra_z2_clip", np.inf))
+    lo = float(getattr(cfg, "vra_min", 0.0))
+    hi = float(getattr(cfg, "vra_max", np.inf))
+    return (z2 if np.isfinite(z2) else None), ((lo, hi) if (lo > 0 or np.isfinite(hi)) else None)
 
 
 # --------------------------------------------------------------------------- eigenfactor adjustment
@@ -274,7 +304,8 @@ def factor_covariance(
         )
         F0 = apply_eigen_adjustment(F0, v_scaled)
 
-    lam = factor_vra_multiplier(F, cfg.vol_half_life, cfg.vra_half_life)
+    z2_clip, lam_clip = vra_clip_from(cfg)
+    lam = factor_vra_multiplier(F, cfg.vol_half_life, cfg.vra_half_life, z2_clip=z2_clip, clip=lam_clip)
     Fc = nearest_psd(F0 * lam**2)
     cov = pd.DataFrame(Fc, index=cols, columns=cols)
     if return_details:
@@ -395,6 +426,9 @@ def specific_vra_multiplier(
     half_life: float,
     vra_half_life: float,
     min_periods: int = 20,
+    z2_clip: float | None = None,
+    clip: tuple[float, float] | None = None,
+    floor_frac: float = 0.0,
 ) -> float:
     """Specific-risk VRA (USE4 Methodology Notes, "Specific risk volatility
     regime adjustment"): cap-weighted cross-sectional bias statistic
@@ -414,7 +448,17 @@ def specific_vra_multiplier(
     Bayesian-shrunk) specific forecast -- re-running the full specific-risk
     pipeline for every historical day would multiply the cost of ``as_of`` by
     the VRA window.  The EWMA forecast is the time-series component of the
-    final forecast, so the bias statistic measures the same regime shift."""
+    final forecast, so the bias statistic measures the same regime shift.
+
+    Robustness (``docs/notes/risk_thin_industry_fix_2026-11-10.md``): a name
+    whose residual was exactly zero for a stretch (single-member industry) has
+    ``sigma_{i,t-1} ~ 1e-16``; its first real residual gives ``z^2 ~ 1e26`` and
+    the cap-weighted average -- applied to *every* name -- explodes.  With
+    ``floor_frac > 0`` names whose forecast variance sits below ``floor_frac``
+    times that day's cross-sectional median forecast are excluded from the
+    statistic; each remaining ``z^2`` is clipped at ``z2_clip`` and
+    ``lambda_S`` at ``clip``.  All three default to off (bitwise the earlier
+    estimator); :func:`specific_risk` passes the ``RiskConfig`` values."""
     A = U.values.astype(float)
     T = A.shape[0]
     if min_periods + 1 >= T:
@@ -422,6 +466,17 @@ def specific_vra_multiplier(
     u2 = pd.DataFrame(A**2)
     s2_prev = u2.ewm(halflife=half_life, min_periods=min_periods, ignore_na=True).mean().shift(1).values
     z2 = A**2 / np.where(s2_prev > 0, s2_prev, np.nan)
+    if floor_frac > 0:
+        pos = np.where(s2_prev > 0, s2_prev, np.nan)
+        med = np.full(T, np.nan)
+        has = np.isfinite(pos).any(axis=1)  # all-NaN rows (warm-up) stay NaN without a warning
+        if has.any():
+            med[has] = np.nanmedian(pos[has], axis=1)
+        with np.errstate(invalid="ignore"):
+            at_floor = s2_prev < (floor_frac * med)[:, None]
+        z2 = np.where(at_floor, np.nan, z2)
+    if z2_clip is not None and np.isfinite(z2_clip):
+        z2 = np.minimum(z2, float(z2_clip))
     if isinstance(market_cap, pd.DataFrame):
         w = _vra_cap_weights(market_cap, U)
     else:
@@ -433,7 +488,7 @@ def specific_vra_multiplier(
     if len(B2) < min_periods:
         return 1.0
     lam2 = float(ewma_weights(len(B2), vra_half_life) @ B2)
-    return float(np.sqrt(np.clip(lam2, 1e-6, None)))
+    return _clip_multiplier(float(np.sqrt(np.clip(lam2, 1e-6, None))), clip)
 
 
 def _vra_cap_weights_pandas(market_cap: pd.DataFrame, U: pd.DataFrame) -> np.ndarray:
@@ -591,15 +646,31 @@ def specific_risk(
        (1 - gamma) sigma_STR`` with the structural model of
        :func:`structural_specific_vol`.
     3. Bayesian shrinkage toward the size-decile mean with ``q = specific_shrink_q``.
-    4. Specific VRA multiplier ``lambda_S`` (daily cap weights from
-       ``market_cap_history`` when given, see :func:`specific_vra_multiplier`).
+    4. Specific-variance floor (``cfg.specific_var_floor_frac``): the shrunk
+       variance is floored at ``floor_frac`` times its cross-sectional median
+       over the names observed in the window (the ESTU); the raw EWMA input of
+       step 1 is floored the same way *before* the structural fit, so a
+       residual series that is identically zero (single-member industry) enters
+       as a small-but-real vol, never as ``1e-16``.
+    5. Specific VRA multiplier ``lambda_S`` (daily cap weights from
+       ``market_cap_history`` when given, see :func:`specific_vra_multiplier`;
+       names at the floor are excluded from the bias statistic, ``z^2`` clipped
+       at ``cfg.vra_z2_clip``, ``lambda_S`` clipped to ``[vra_min, vra_max]``).
 
-    Returns ``(lambda_S * sigma_SH)^2`` indexed like ``exposures_latest``."""
+    Returns ``(lambda_S * sigma_SH)^2`` indexed like ``exposures_latest``;
+    with ``return_details`` also ``n_at_floor`` (names whose shrunk variance
+    was raised to the floor) and ``floor_var``."""
     cfg = cfg or RiskConfig()
     tickers = exposures_latest.index
     window = int(max(6 * cfg.specific_half_life, cfg.min_history_days))
     U = specific_returns.reindex(columns=tickers).tail(window)
     var_ts, n_obs = ewma_nw_variance(U, cfg.specific_half_life, cfg.newey_west_lags_vol)
+    floor_frac = float(getattr(cfg, "specific_var_floor_frac", 0.0))
+    estu = n_obs > 0
+    if floor_frac > 0 and estu.any():
+        med_ts = float(np.nanmedian(var_ts[estu].to_numpy(dtype=float)))
+        if np.isfinite(med_ts) and med_ts > 0:
+            var_ts = var_ts.where(~(var_ts < floor_frac * med_ts), floor_frac * med_ts)
     sigma_ts = np.sqrt(var_ts)
 
     # robust-vs-equal sd ratio for outlier damping (USE4: sigma_robust = IQR/1.35,
@@ -616,11 +687,24 @@ def specific_risk(
     sigma = sigma.where(sigma > 0, sigma_str)
 
     sigma_sh = bayesian_shrink_specific(sigma, market_cap, cfg.specific_shrink_q)
+    n_at_floor = 0
+    floor_var = 0.0
+    if floor_frac > 0 and estu.any():
+        med_sh = float(np.nanmedian((sigma_sh[estu] ** 2).to_numpy(dtype=float)))
+        if np.isfinite(med_sh) and med_sh > 0:
+            floor_var = floor_frac * med_sh
+            below = (sigma_sh**2 < floor_var).fillna(False)
+            n_at_floor = int(below.sum())
+            sigma_sh = sigma_sh.where(~below, np.sqrt(floor_var))
+    z2_clip, lam_clip = vra_clip_from(cfg)
     lam = specific_vra_multiplier(
         U,
         market_cap_history if market_cap_history is not None else market_cap,
         cfg.specific_half_life,
         cfg.vra_half_life,
+        z2_clip=z2_clip,
+        clip=lam_clip,
+        floor_frac=floor_frac,
     )
     var = (lam * sigma_sh) ** 2
     var.name = "specific_var"
@@ -632,6 +716,8 @@ def specific_risk(
             "sigma_shrunk": sigma_sh,
             "vra_multiplier": lam,
             "n_obs": n_obs,
+            "n_at_floor": n_at_floor,
+            "floor_var": floor_var,
         }
     return var
 

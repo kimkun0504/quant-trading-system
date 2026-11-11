@@ -501,6 +501,25 @@ SF1's `datekey` is the only filing-date field at individual budgets (build plan 
 
 `FF48_DEFINITIONS` in `qts/data/loaders.py` lists `(short name, long name, [inclusive SIC ranges])`, taken from the French library's `Siccodes48` table. At import a 10,000-entry lookup array is built; `sic_to_ff48(code)` is one array lookup (invalid or unmapped → `"Other"`) and `ff48_from_sic_series` vectorises it. The labels go into the store's `industry` dataset.
 
+**Parent sectors: Fama–French 12.** On a top-1,000 universe many of the 48 industries are thin — on the Sharadar run 22,983 (date, industry) cells had exactly one eligible member (Ships, Smoke, RlEst, Rubbr, Aero, Mines, Other, …) — and a one-member industry breaks the risk model's regression (→ see **Risk model › 4b. Thin industries**). The risk model therefore shrinks a thin industry's factor return toward its parent sector, French's **12-industry** classification (`Siccodes12`). French defines both on SIC ranges directly; `FF48_TO_FF12` in `qts/data/loaders.py` is the crosswalk that assigns each of the 48 to the sector holding the bulk of its SIC codes, following French's own sector descriptions. Five industries straddle two sectors (Hshld, ElcEq, LabEq, PerSv, Toys) and go to the majority sector.
+
+| FF12 sector | French's description | FF48 members |
+|---|---|---|
+| `NoDur` | Consumer non-durables: food, tobacco, textiles, apparel, leather, toys | Agric, Food, Soda, Beer, Smoke, Toys, Books, Clths, Txtls |
+| `Durbl` | Consumer durables: cars, TVs, furniture, household appliances | Hshld, Autos |
+| `Manuf` | Manufacturing: machinery, trucks, planes, office furniture, paper, commercial printing | Rubbr, Steel, FabPr, Mach, ElcEq, Aero, Ships, Guns, Paper, Boxes |
+| `Enrgy` | Oil, gas and coal extraction and products | Coal, Oil |
+| `Chems` | Chemicals and allied products | Chems |
+| `BusEq` | Business equipment: computers, software, electronic equipment | Comps, Chips, LabEq |
+| `Telcm` | Telephone and television transmission | Telcm |
+| `Utils` | Utilities | Util |
+| `Shops` | Wholesale, retail and some services (laundries, repair shops) | Whlsl, Rtail, PerSv |
+| `Hlth` | Healthcare, medical equipment and drugs | Hlth, MedEq, Drugs |
+| `Money` | Finance | Banks, Insur, RlEst, Fin |
+| `Other` | Mines, construction, building materials, transport, hotels, business services, entertainment | BldMt, Cnstr, Gold, Mines, Trans, Meals, BusSv, Fun, Other |
+
+A label that is not in the table (the synthetic market's `IND00..IND11`) has the whole industry block as its parent. `tests/test_risk_thin_industry.py::test_ff48_to_ff12_is_a_complete_crosswalk` pins the table to the 48 names and 12 sectors.
+
 ### Why this choice
 
 Review amendment 3 chose FF48 from SIC over **GICS** (the S&P/MSCI classification behind Barra's USE4). GICS history is proprietary and costly point-in-time; SIC is free in SEC filings and Sharadar's metadata; FF48 is the academic standard, comparable with French's industry portfolios. The build plan's Phase 0 still lists a "GICS mapping"; the code follows the amendment. The trade-off: SIC dates from 1987, lumps much of software and internet into Business Services, and is rarely updated by companies.
@@ -514,6 +533,7 @@ Review amendment 3 chose FF48 from SIC over **GICS** (the S&P/MSCI classificatio
 ### References
 
 - [Ken French Data Library](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html)
+- [Ken French, Detail for 48 industry portfolios (Siccodes48) and 12 industry portfolios (Siccodes12)](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/det_48_ind_port.html)
 
 ## Factor benchmarks: Ken French data
 

@@ -13,7 +13,11 @@ prints:
   with 0, 1 or 2 members;
 * specific-variance extremes per year (min / max annualised specific vol);
 * the reference-book ex-ante vol (``as_of`` on month ends): every month where it
-  exceeds 100% or jumps > 5x, with the top factors by variance contribution.
+  exceeds 100% or jumps > 5x, with the top factors by variance contribution;
+* the specific VRA multiplier on the same month ends (extremes with dates, and
+  how many month ends sit at the configured ``[vra_min, vra_max]`` clip), the
+  number of names at the specific-variance floor per year, and the industries
+  most often shrunk toward their parent sector (``thin_industry_days``).
 
 Usage::
 
@@ -126,6 +130,12 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"(date, industry) cells with 0 / 1 / 2 members: {int((cnt == 0).sum().sum())} / {int((cnt == 1).sum().sum())} / {int((cnt == 2).sum().sum())}"
     )
+    shrunk = fm.diagnostics.get("thin_industry_days", {})
+    print(
+        f"thin-industry shrinkage (< {cfg.risk.thin_industry_min_members} members, prior "
+        f"{cfg.risk.thin_industry_prior_obs:g}): {len(shrunk)} industries shrunk on >= 1 day; most often: "
+        f"{list(shrunk.items())[:10]}"
+    )
 
     # -- specific variance extremes -----------------------------------------------
     sv = sr.rolling(63, min_periods=20).std() * np.sqrt(252)
@@ -176,6 +186,32 @@ def main(argv: list[str] | None = None) -> int:
         )
     if not alerts:
         print("none")
+
+    # -- specific VRA multiplier and the specific-variance floor ------------------
+    lam = pd.Series(fm.diagnostics.get("specific_vra_multiplier", {})).sort_index()
+    lam = lam.loc[[d for d in lam.index if d in ref]] if len(lam) else lam
+    print("\n== specific VRA multiplier lambda_S (month ends) ==")
+    if len(lam):
+        lo, hi = cfg.risk.vra_min, cfg.risk.vra_max
+        print(lam.describe(percentiles=[0.05, 0.5, 0.95]).to_string())
+        print(f"max {lam.max():.3f} on {lam.idxmax().date()}; min {lam.min():.3f} on {lam.idxmin().date()}")
+        print(
+            f"month ends at the clip [{lo:g}, {hi:g}]: {int((lam <= lo).sum())} at vra_min, "
+            f"{int((lam >= hi).sum())} at vra_max (z^2 clip {cfg.risk.vra_z2_clip:g})"
+        )
+        print("5 largest:", lam.nlargest(5).round(3).to_dict())
+    else:
+        print("none recorded")
+    nf = pd.Series(fm.diagnostics.get("n_at_specific_floor", {})).sort_index()
+    print(
+        f"\n== names at the specific-variance floor ({cfg.risk.specific_var_floor_frac:g} x median) per year "
+        f"(month ends: mean / max) =="
+    )
+    if len(nf):
+        g = nf.groupby(nf.index.year)
+        print(pd.DataFrame({"mean": g.mean().round(1), "max": g.max()}).to_string())
+    else:
+        print("none recorded")
     return 0
 
 

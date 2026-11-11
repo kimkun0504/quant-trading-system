@@ -163,12 +163,22 @@ class BarraStyleRiskModel:
         self.cleaning: CleanedReturns | None = None
         #: ``reference_vol`` (date -> annualised ex-ante vol of :func:`reference_book`),
         #: ``covariance_outliers`` (list of dicts), ``n_data_error_returns``,
-        #: ``n_winsorized_returns``; filled by ``fit`` / ``as_of``.
-        self.diagnostics: dict[str, Any] = {
+        #: ``n_winsorized_returns``, ``thin_industry_days`` (industry -> days shrunk
+        #: toward its parent sector), ``specific_vra_multiplier`` / ``n_at_specific_floor``
+        #: (date -> value, one entry per ``as_of``); filled by ``fit`` / ``as_of``.
+        self.diagnostics: dict[str, Any] = self._empty_diagnostics()
+
+    @staticmethod
+    def _empty_diagnostics() -> dict[str, Any]:
+        return {
             "reference_vol": {},
             "covariance_outliers": [],
             "n_data_error_returns": 0,
             "n_winsorized_returns": 0,
+            "thin_industry_days": {},
+            "thin_industry_cells": {},
+            "specific_vra_multiplier": {},
+            "n_at_specific_floor": {},
         }
 
     # ------------------------------------------------------------------ fit
@@ -186,12 +196,9 @@ class BarraStyleRiskModel:
         self.exposures = exposure_history(
             md_est, dates, self.cfg, dtype=np.dtype(getattr(self.cfg, "exposure_dtype", "float64"))
         )
-        self.diagnostics = {
-            "reference_vol": {},
-            "covariance_outliers": [],
-            "n_data_error_returns": 0 if cleaning is None else cleaning.n_data_errors,
-            "n_winsorized_returns": 0 if cleaning is None else cleaning.n_winsorized,
-        }
+        self.diagnostics = self._empty_diagnostics()
+        self.diagnostics["n_data_error_returns"] = 0 if cleaning is None else cleaning.n_data_errors
+        self.diagnostics["n_winsorized_returns"] = 0 if cleaning is None else cleaning.n_winsorized
         if cleaning is not None and cleaning.n_data_errors:
             log.warning(
                 "risk model: %d data-error returns removed (rule (a)), %d winsorised (rule (b)); "
@@ -205,12 +212,52 @@ class BarraStyleRiskModel:
             self.cfg,
             returns=returns,
             estimation_universe=estu,
+            diagnostics=self.diagnostics,
             constraint_weights=self.constraint_weights,
             weight_cap_quantile=self.weight_cap_quantile,
         )
         self.factor_returns, self.specific_returns, self.r2 = fr, sr, r2
         self._eigen_cache.clear()
+        thin = self.diagnostics.get("thin_industry_days", {})
+        if thin:
+            log.info(
+                "risk model: thin-industry shrinkage (< %d members) on %d industries; most often %s",
+                self.cfg.thin_industry_min_members,
+                len(thin),
+                list(thin.items())[:5],
+            )
+        if getattr(self.cfg, "reference_vol_check_in_fit", False):
+            self._check_reference_vol_monthly()
         return self
+
+    def _check_reference_vol_monthly(self) -> None:
+        """Run ``as_of`` (hence :meth:`_check_reference_vol`) on the last
+        factor-return date of every calendar month after ``min_history_days``, so
+        a fit whose covariance blew up warns at fit time instead of on the first
+        rebalance.  Cheap: one specific-risk pass per month; the eigenfactor
+        bias cache is the same one the backtest's ``as_of`` calls reuse."""
+        fr = self.factor_returns
+        if fr is None or len(fr) < self.cfg.min_history_days:
+            return
+        idx = pd.DatetimeIndex(fr.index[self.cfg.min_history_days - 1 :])
+        months = pd.Series(idx, index=idx).groupby(idx.to_period("M")).last()
+        for d in months:
+            try:
+                self.as_of(d)
+            except Exception as e:  # diagnostics only: never fail the fit here
+                log.warning("risk model: reference-vol check as_of(%s) failed: %s", pd.Timestamp(d).date(), e)
+        ref = self.diagnostics["reference_vol"]
+        if ref:
+            worst = max(ref, key=lambda k: ref[k])
+            log.info(
+                "risk model: reference-book ex-ante vol over %d month ends: median %.1f%%, max %.1f%% (%s), "
+                "%d covariance outliers",
+                len(ref),
+                100 * float(np.median(list(ref.values()))),
+                100 * ref[worst],
+                pd.Timestamp(worst).date(),
+                len(self.diagnostics["covariance_outliers"]),
+            )
 
     # ------------------------------------------------------------------ helpers
     def _check_fitted(self):
@@ -286,7 +333,11 @@ class BarraStyleRiskModel:
         F = factor_covariance(F_hist, self.cfg, eigen_bias=v, seed=self.seed)
         mcap = md.market_cap.loc[:date].iloc[-1]
         U_hist = specific_returns.loc[:date]
-        D = specific_risk(U_hist, B, mcap, self.cfg, market_cap_history=md.market_cap.loc[:date])
+        D, det = specific_risk(
+            U_hist, B, mcap, self.cfg, market_cap_history=md.market_cap.loc[:date], return_details=True
+        )
+        self.diagnostics["specific_vra_multiplier"][date] = float(det["vra_multiplier"])
+        self.diagnostics["n_at_specific_floor"][date] = int(det["n_at_floor"])
         self._check_reference_vol(date, B, F, D, mcap)
         y: pd.Series | None = None
         nu = 0.0

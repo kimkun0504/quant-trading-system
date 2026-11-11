@@ -360,9 +360,48 @@ class RiskConfig(_ConfigBase):
     # weighted reference book is recorded (BarraStyleRiskModel.diagnostics); above
     # this (1.0 = 100 %) or a > 5x day-over-day jump it is logged as a covariance outlier.
     max_reference_vol: float = 1.0
+    # --- thin industries, the specific-variance floor and VRA clipping
+    # (docs/notes/risk_thin_industry_fix_2026-11-10.md; handbook 05).  An industry
+    # with one eligible member absorbs that stock's whole return into its dummy: the
+    # residual is exactly 0, the EWMA specific vol ~1e-16, and every downstream
+    # 1/sigma (VRA bias statistic, APCA scaling) explodes.  Three defences:
+    # (1) industry factor returns of industries with fewer than
+    # ``thin_industry_min_members`` members on the day are shrunk toward the
+    # cap-weighted return of their Fama-French-12 parent sector,
+    # f_k <- lam f_k + (1 - lam) f_parent, lam = n / (n + thin_industry_prior_obs)
+    # (Barra uses a minimum of roughly 5 names per industry before an industry is
+    # estimated on its own -- USE4 Methodology Notes, "Thin industries");
+    # 0 = off (every industry on its own).
+    thin_industry_min_members: int = 5
+    thin_industry_prior_obs: float = 5.0
+    # (2) specific variance is floored at this fraction of the cross-sectional
+    # median specific variance over the ESTU on the day (0.10 -> specific vol never
+    # below ~32 % of the median name); 0 = off.
+    specific_var_floor_frac: float = 0.10
+    # (3) VRA robustness: each name's (or factor's) squared bias z^2 = u^2 / sigma^2
+    # is clipped at this value before the cross-sectional average (inf = off) and
+    # the resulting volatility multiplier is clipped to [vra_min, vra_max].
+    vra_z2_clip: float = 25.0
+    vra_min: float = 0.5
+    vra_max: float = 4.0
+    # Run the reference-vol guard on a month-end grid at the end of ``fit`` (one
+    # ``as_of`` per month) so a blown fit warns before the backtest starts.
+    reference_vol_check_in_fit: bool = True
 
     def __post_init__(self) -> None:
         errs = check_bounds(self, RISK_CONFIG_BOUNDS)
+        if self.vra_min > self.vra_max:
+            errs.append(f"vra_min ({self.vra_min}) must be <= vra_max ({self.vra_max})")
+        # inf is the documented "off" value of these two, so they are not in RISK_CONFIG_BOUNDS
+        for name in ("vra_z2_clip", "vra_max"):
+            z: Any = getattr(self, name)
+            if (
+                isinstance(z, bool)
+                or not isinstance(z, (int, float))
+                or math.isnan(float(z))
+                or float(z) <= 0
+            ):
+                errs.append(f"{name} must be > 0 (inf = off), got {z!r}")
         if errs:
             raise ValueError("RiskConfig: " + "; ".join(errs))
 
@@ -376,6 +415,10 @@ RISK_CONFIG_BOUNDS: dict[str, FieldBound] = {
     "return_min_prev_price": (0.0, None, True, True),
     "return_winsor_mad_k": (0.0, None, True, True),
     "max_reference_vol": (0.0, None, False, True),
+    "thin_industry_min_members": (0.0, None, True, True),
+    "thin_industry_prior_obs": (0.0, None, False, True),
+    "specific_var_floor_frac": (0.0, 1.0, True, False),
+    "vra_min": (0.0, None, True, True),
 }
 
 

@@ -192,13 +192,28 @@ class APCAResult:
     ok: np.ndarray  # N bool: enough observations
     mu: np.ndarray  # N column means removed
     n_iter: int = 0
+    n_winsorized: int = 0  # scaled-input cells clipped at +-max_abs_scaled (last iteration)
+
+
+#: Guard on the heteroskedasticity-scaled APCA input ``R / sigma``: a cell beyond
+#: this many residual standard deviations is winsorised (and counted).  A stock
+#: whose residual was exactly zero for most of the window (single-member
+#: industry) has a tiny ``sigma`` and would otherwise dominate the extraction.
+MAX_ABS_SCALED = 50.0
 
 
 def apca(
-    X: np.ndarray, n_factors: int, n_iter: int = 3, half_life: float | None = None, min_stock_obs: int = 20
+    X: np.ndarray,
+    n_factors: int,
+    n_iter: int = 3,
+    half_life: float | None = None,
+    min_stock_obs: int = 20,
+    max_abs_scaled: float = MAX_ABS_SCALED,
 ) -> APCAResult:
     """Asymptotic PCA with heteroskedasticity iteration on a ``T x N`` panel
-    (NaN allowed).  See the module docstring."""
+    (NaN allowed).  See the module docstring.  The scaled panel fed to the
+    extraction is checked to be finite and winsorised at ``max_abs_scaled``
+    (``None`` / ``inf`` = off); the count is in ``APCAResult.n_winsorized``."""
     R, mask, mu = _prepare_panel(X)
     T, N = R.shape
     w = _weights(T, half_life)
@@ -207,15 +222,25 @@ def apca(
     var = np.ones(N)
     eig = None
     ok = np.ones(N, dtype=bool)
+    n_wins = 0
     for _ in range(max(1, int(n_iter) + 1)):
         Rs = R / sigma[None, :]
+        if not np.all(np.isfinite(Rs)):
+            Rs = np.where(np.isfinite(Rs), Rs, 0.0)
+        if max_abs_scaled is not None and np.isfinite(max_abs_scaled):
+            big = np.abs(Rs) > max_abs_scaled
+            n_wins = int(big.sum())
+            if n_wins:
+                Rs = np.where(big, np.sign(Rs) * max_abs_scaled, Rs)
         F, eig = _extract_factors(Rs, n_factors)
         B, ok = _ts_regress(R, mask, F, min_stock_obs)
         var = _weighted_resid_var(R, mask, F, B, w)
         med = np.nanmedian(var[ok]) if ok.any() else 1.0
         var = np.where(np.isfinite(var) & (var > 0), var, med)
         sigma = np.sqrt(np.clip(var, 1e-3 * med, None))
-    return APCAResult(F=F, B=B, specific_var=var, eigvals=eig, ok=ok, mu=mu, n_iter=n_iter)
+    return APCAResult(
+        F=F, B=B, specific_var=var, eigvals=eig, ok=ok, mu=mu, n_iter=n_iter, n_winsorized=n_wins
+    )
 
 
 # --------------------------------------------------------------------------- factor count
@@ -367,6 +392,8 @@ class StatisticalRiskModel:
         self.factor_names: list[str] = [f"{STAT_FACTOR_PREFIX}{j + 1:02d}" for j in range(self.n_factors)]
         self._refits: dict[int, _Refit] = {}
         self._refit_positions: list[int] = []
+        #: scaled-input cells winsorised at +-MAX_ABS_SCALED, summed over refits
+        self.n_scaled_winsorized: int = 0
         self.factor_returns: pd.DataFrame | None = None  # real-time chain
         self._R = self._mask = None
         self._cache: dict[pd.Timestamp, RiskModelOutput] = {}
@@ -393,6 +420,7 @@ class StatisticalRiskModel:
                 if last < 0:
                     last = T_all - 1
         self._refits.clear()
+        self.n_scaled_winsorized = 0
         self._refit_positions = list(range(i0, last + 1, self.refit_every))
         prev: _Refit | None = None
         for i in self._refit_positions:
@@ -416,6 +444,7 @@ class StatisticalRiskModel:
         X = self.returns.values[rows]
         k = self._select_k(X)
         res = apca(X, k, self.apca_iters, self.half_life, self.min_stock_obs)
+        self.n_scaled_winsorized += res.n_winsorized
         k = res.F.shape[1]  # apca caps k at min(T - 1, N)
         F, B = res.F, res.B
         if prev is not None:

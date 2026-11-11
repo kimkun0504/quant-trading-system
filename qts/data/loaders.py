@@ -477,6 +477,47 @@ FF48_DEFINITIONS: List[Tuple[str, str, List[Tuple[int, int]]]] = [
 FF48_NAMES = [d[0] for d in FF48_DEFINITIONS]
 FF48_LONG_NAMES = {d[0]: d[1] for d in FF48_DEFINITIONS}
 
+# Fama-French 12 sectors (Siccodes12, Ken French data library) as parents of the
+# 48 industries.  French defines both classifications directly on SIC ranges;
+# this crosswalk assigns each FF48 industry to the FF12 sector that holds the
+# bulk of its SIC codes, following French's own one-line sector descriptions:
+#   NoDur  Consumer NonDurables -- Food, Tobacco, Textiles, Apparel, Leather, Toys
+#   Durbl  Consumer Durables -- Cars, TVs, Furniture, Household Appliances
+#   Manuf  Manufacturing -- Machinery, Trucks, Planes, Off Furn, Paper, Com Printing
+#   Enrgy  Oil, Gas, and Coal Extraction and Products
+#   Chems  Chemicals and Allied Products
+#   BusEq  Business Equipment -- Computers, Software, and Electronic Equipment
+#   Telcm  Telephone and Television Transmission
+#   Utils  Utilities
+#   Shops  Wholesale, Retail, and Some Services (Laundries, Repair Shops)
+#   Hlth   Healthcare, Medical Equipment, and Drugs
+#   Money  Finance
+#   Other  Other -- Mines, Constr, BldMt, Trans, Hotels, Bus Serv, Entertainment
+# Industries whose SIC ranges straddle two sectors (Hshld, ElcEq, LabEq, PerSv,
+# Toys) go to the sector holding most of their codes.  Used by the risk model's
+# thin-industry shrinkage (qts.risk.factor_returns): an industry with too few
+# members on a day borrows its parent sector's factor return.
+FF12_NAMES = ["NoDur", "Durbl", "Manuf", "Enrgy", "Chems", "BusEq", "Telcm", "Utils", "Shops", "Hlth",
+              "Money", "Other"]
+FF48_TO_FF12: Dict[str, str] = {
+    "Agric": "NoDur", "Food": "NoDur", "Soda": "NoDur", "Beer": "NoDur", "Smoke": "NoDur",
+    "Toys": "NoDur", "Books": "NoDur", "Clths": "NoDur", "Txtls": "NoDur",
+    "Hshld": "Durbl", "Autos": "Durbl",
+    "Rubbr": "Manuf", "Steel": "Manuf", "FabPr": "Manuf", "Mach": "Manuf", "ElcEq": "Manuf",
+    "Aero": "Manuf", "Ships": "Manuf", "Guns": "Manuf", "Paper": "Manuf", "Boxes": "Manuf",
+    "Coal": "Enrgy", "Oil": "Enrgy",
+    "Chems": "Chems",
+    "Comps": "BusEq", "Chips": "BusEq", "LabEq": "BusEq",
+    "Telcm": "Telcm",
+    "Util": "Utils",
+    "Whlsl": "Shops", "Rtail": "Shops", "PerSv": "Shops",
+    "Hlth": "Hlth", "MedEq": "Hlth", "Drugs": "Hlth",
+    "Banks": "Money", "Insur": "Money", "RlEst": "Money", "Fin": "Money",
+    "BldMt": "Other", "Cnstr": "Other", "Gold": "Other", "Mines": "Other", "Trans": "Other",
+    "Meals": "Other", "BusSv": "Other", "Fun": "Other", "Other": "Other",
+}
+assert set(FF48_TO_FF12) == set(FF48_NAMES) and set(FF48_TO_FF12.values()) == set(FF12_NAMES)
+
 
 def _build_sic_lookup() -> np.ndarray:
     table = np.full(10000, -1, dtype=np.int16)

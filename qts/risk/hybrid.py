@@ -213,6 +213,7 @@ class HybridRiskModel:
             "n_slots": k,
             "by_refit": self.statistical.n_factors_by_refit(),
         }
+        self.fundamental.diagnostics["apca_scaled_winsorized"] = int(self.statistical.n_scaled_winsorized)
         return self
 
     # ------------------------------------------------------------------ as_of
@@ -247,6 +248,8 @@ class HybridRiskModel:
         tot = sys_var + np.where(np.isfinite(spec_s), spec_s, 0.0)
         share = np.where(tot > 0, sys_var / np.where(tot > 0, tot, 1.0), 0.0)
         keep = np.clip(1.0 - share, SPECIFIC_FLOOR, 1.0)
+        # D_fund is the floored, VRA-clipped fundamental specific variance (specific_risk):
+        # the statistical block below is expressed in its units, so the floor carries over
         D_fund = fund.specific_var.reindex(tickers).values
         D_h = D_fund * keep
         # express the statistical block in the fundamental specific-variance units so

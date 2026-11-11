@@ -120,6 +120,13 @@ risk:
   return_winsor_mad_k: 8.0
   estimation_universe_eligible_only: true
   max_reference_vol: 1.0
+  thin_industry_min_members: 5
+  thin_industry_prior_obs: 5.0
+  specific_var_floor_frac: 0.1
+  vra_z2_clip: 25.0
+  vra_min: 0.5
+  vra_max: 4.0
+  reference_vol_check_in_fit: true
 cost:
   commission_per_share: 0.0035
   commission_min_per_order: 0.35
