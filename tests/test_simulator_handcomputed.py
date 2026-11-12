@@ -68,7 +68,7 @@ NAV_RTOL = 1e-12  # NAV / USD (1e6 scale: 1e-12 rel = 1e-6 USD)
 
 
 def _lag0_config() -> SystemConfig:
-    cfg = SystemConfig().with_overrides({"execution.signal_lag_days": 0})
+    cfg = SystemConfig().with_overrides({"execution.signal_lag_days": 0, "portfolio.rebalance_every_days": 1})
     return cfg
 
 
@@ -172,9 +172,8 @@ def alpha_fn(t) -> AlphaOutput:
 
 def run(cost, targets, md=None, gap_days: int | None = None):
     md = md or make_md()
-    cfg = SystemConfig().with_overrides(
-        {"execution.signal_lag_days": 0}
-    )  # mechanics test: trade at the signal close
+    # mechanics test: trade at the signal close, solve every day
+    cfg = SystemConfig().with_overrides({"execution.signal_lag_days": 0, "portfolio.rebalance_every_days": 1})
     if gap_days is not None:
         cfg = cfg.with_overrides({"alpha.delisting_gap_days": gap_days})
     opt = PresetOptimizer(targets)

@@ -28,6 +28,9 @@ export type MetricKey =
   | 'breakeven_cost_bps'
   | 'transfer_coefficient_mean'
   | 'realized_vs_exante_vol_ratio'
+  | 'effective_n_names'
+  | 'specific_var_share'
+  | 'exante_vol_at_gross2'
   | 'mean_ic'
   | 'icir'
   | 'ic_t_stat'
@@ -371,6 +374,49 @@ const defs: MetricDef[] = [
       if (v < 0.9)
         return `Ratio ${times(v)} — realised risk is ${pct(1 - v, { digits: 0 })} below forecast; the risk model is conservative.`;
       return `Ratio ${times(v)} — the risk model forecasts this book’s volatility well.`;
+    },
+  },
+  {
+    key: 'effective_n_names',
+    label: 'Effective names',
+    definition:
+      'Inverse Herfindahl index of the absolute weights, averaged over invested days: n for n equal positions, 1 for a single name.',
+    formula: 'N_eff = 1 / Σ pᵢ², pᵢ = |wᵢ| / Σ|w|',
+    handbook: { page: 'backtesting', section: 'Metrics › Diversification' },
+    format: (v) => num(v, { digits: 0 }),
+    interpret(v) {
+      if (!isFiniteNumber(v)) return na('Effective names');
+      if (v < 100)
+        return `About ${num(v, { digits: 0 })} effective names — at a 2 % position cap and gross 2 the floor is 100: the book sits in its largest positions.`;
+      return `About ${num(v, { digits: 0 })} effective names — the gross is spread, not parked in a handful of positions.`;
+    },
+  },
+  {
+    key: 'specific_var_share',
+    label: 'Specific share of risk',
+    definition:
+      'Share of the risk model’s ex-ante variance of the book that is stock-specific, averaged over invested days. Read it with the vol at gross 2: a high share is fine when total risk per unit of gross is low.',
+    formula: 'Σ wᵢ² dᵢ / w′Σw',
+    handbook: { page: 'backtesting', section: 'Metrics › Diversification' },
+    format: (v) => pct(v, { digits: 0 }),
+    interpret(v) {
+      if (!isFiniteNumber(v)) return na('Specific share of risk');
+      return `${pct(v, { digits: 0 })} of forecast variance is stock-specific; the rest is factor risk the bands allow.`;
+    },
+  },
+  {
+    key: 'exante_vol_at_gross2',
+    label: 'Ex-ante vol at gross 2',
+    definition:
+      'Forecast annual volatility the book would have at 100 % long / 100 % short: risk per unit of leverage, comparable across runs of different size.',
+    formula: 'σ_ex-ante × 2 / gross',
+    handbook: { page: 'backtesting', section: 'Metrics › Diversification' },
+    format: (v) => pct(v, { digits: 1 }),
+    interpret(v) {
+      if (!isFiniteNumber(v)) return na('Ex-ante vol at gross 2');
+      if (v > 0.07)
+        return `${pct(v, { digits: 1 })} at gross 2 — high for a market-neutral book of several hundred names; look for concentration.`;
+      return `${pct(v, { digits: 1 })} at gross 2 — in the range of a diversified market-neutral book.`;
     },
   },
   {

@@ -253,7 +253,9 @@ def main(argv: list[str] | None = None) -> int:
     add_data_args(ap)
     ap.add_argument("--n-dates", type=int, default=24, help="rebalance dates sampled evenly (default 24)")
     ap.add_argument("--nav", type=float, default=5e6, help="NAV of the replayed solves (qts run default)")
-    ap.add_argument("--rebalance-every", type=int, default=1)
+    ap.add_argument(
+        "--rebalance-every", type=int, default=None, help="default: portfolio.rebalance_every_days"
+    )
     ap.add_argument("--relax-bands", action="store_true", help="also relax industry/style/beta bands x2")
     ap.add_argument("--no-relax", action="store_true", help="skip the relaxation solves (fastest)")
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -288,6 +290,9 @@ def main(argv: list[str] | None = None) -> int:
     n_dec = len(dates) - 1
     n = max(1, min(a.n_dates, n_dec))
     idx = np.unique(np.linspace(0, n_dec - 1, n).round().astype(int))
+    # only solve days are replayed (portfolio.rebalance_every_days): snap to the solve before
+    k = max(int(rep.ctx.rebalance_every), 1)
+    idx = np.unique(idx // k * k)
     target = pc.target_vol_annual if pc.risk_aversion_mode == "target_vol" else None
     relax = dict(RELAXATIONS)
     if a.relax_bands:

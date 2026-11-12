@@ -47,6 +47,7 @@ def ls_cfg(**kw) -> PortfolioConfig:
         "risk_aversion": 2.0,
         "target_vol_annual": None,
         "risk_aversion_mode": "fixed",
+        "min_trade_weight": 0.0,  # exact optimum: the min-trade projection is tested in test_construction.py
     }
     base.update(kw)
     return PortfolioConfig(**base)
@@ -702,6 +703,9 @@ def test_simulator_eligibility_hook_unwinds_and_blocks(md, risk_model, alpha_mod
             "execution.signal_lag_days": 0,  # mechanics test: trade on the signal date's close
             "portfolio.risk_aversion": 3.0,
             "portfolio.exit_ineligible_days": 4,
+            # a solve every day (forced exits on hold days: tests/test_construction.py)
+            "portfolio.rebalance_every_days": 1,
+            "portfolio.min_trade_weight": 0.0,
         }
     )
     cm = SimpleCostModel(zero=True)

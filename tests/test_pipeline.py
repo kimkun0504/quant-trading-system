@@ -293,6 +293,7 @@ def test_backtest_dates_leave_room_for_the_signal_lag(result, md):
             nav0=pipe.nav0,
             neutral_styles=pipe.neutral_styles(),
             signal_lag_days=2,
+            rebalance_every=1,  # a solve on each of the three decision dates
         )
         assert bt.diagnostics["n_no_signal_days"] == 0
         assert [c["signal_date"] for c in bt.diagnostics["solve_log"]] == list(d0[:3])
@@ -318,7 +319,8 @@ def test_planted_oracle_through_pipeline_is_flagged_suspect():
     am.ml_score_ = oracle  # the extra component (ML sleeve slot)
     am.composite_weight = 0.0
     am.combined_score_ = am._combine_history().where(am.eligible_.reindex_like(am.composite_score_))
-    am.oos_ic_ = rank_ic_series(am.combined_score_, am.target_)
+    am.traded_score_ = am.combined_score_  # the oracle is traded as it is (no neutralisation / smoothing)
+    am.oos_ic_ = rank_ic_series(am.traded_score_, am.target_)
     am._half_life_cache = {}
     dates = pipe.backtest_dates()
     dates = dates[dates <= md_o.dates[-H - 2]][-80:]  # oracle exists only where the label is realised
@@ -353,7 +355,7 @@ def test_pipeline_ledger_key_and_family(md, cfg, tmp_path, monkeypatch):
     fam = p1.ledger_family()
     assert led.n_trials(fam) == 5 and r5.dsr_inputs["n_trials_raw"] == 5
     specs = [r["run_spec"] for r in led.records(fam)]
-    assert {s["rebalance_every"] for s in specs} == {1, 2}
+    assert {s["rebalance_every"] for s in specs} == {cfg.portfolio.rebalance_every_days, 2}
     assert all(s["signal_lag_days"] == cfg.execution.signal_lag_days for s in specs)
     # other data -> other family
     md2 = generate(SyntheticSpec(n_stocks=120, n_days=900, seed=8, ic_true=0.08))

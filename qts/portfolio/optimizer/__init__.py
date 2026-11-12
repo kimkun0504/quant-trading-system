@@ -59,8 +59,24 @@ cost-free problem ``w* = Sigma^-1 alpha_H / (2 gamma H)``, so
 ``sigma_ann(w*) = IR_ann / (2 gamma)`` with ``IR_ann = sqrt(252)/H *
 sqrt(alpha_H' Sigma_d^-1 alpha_H)`` (Grinold & Kahn ch. 14).
 
-* ``"target_vol"`` (default; second-pass audit finding 1): per solve, gamma
-  is chosen so that the optimal book of the *alpha-aware* objective has
+* ``"target_vol"`` (default; second-pass audit finding 1): gamma is chosen
+  per solve against ``cfg.target_vol_annual``, in one of two forms.
+
+  **The target as a cap** (``cfg.vol_target_is_cap``, default since
+  2026-11-12; :func:`~qts.portfolio.optimizer.sizing.gamma_cap_search`;
+  docs/notes/construction_fix_2026-11-12.md): gamma starts at the base
+  ``cfg.risk_aversion`` and is only ever *raised* -- until the ex-ante vol is
+  at or under the target and, with ``cfg.leverage_cap_raises_gamma``
+  (long/short books), until the gross limit stops binding.  A target the
+  caps make unreachable is not chased: lowering gamma against a binding
+  gross limit cannot add leverage, it only concentrates the book into the
+  names with the largest alpha, while raising gamma scales the whole
+  mean-variance book down to fit.  ``vol_target_binding`` is
+  ``"below_target"`` (base book admissible), ``"leverage"`` or ``"target"``
+  (gamma raised for the gross limit / the vol cap).
+
+  **The target as a level** (``cfg.vol_target_is_cap=False``): gamma is
+  chosen so that the optimal book of the *alpha-aware* objective has
   ex-ante annual vol ``cfg.target_vol_annual`` subject to every constraint.
   Start at the closed form ``gamma0 = IR_ann / (2 sigma_target)``
   (:meth:`SinglePeriodOptimizer.closed_form_gamma`, ``Sigma^-1`` in factor
@@ -101,6 +117,13 @@ the ADV cap) with zero exposure and the conservative out-of-model specific
 variance (:func:`qts.core.risk_fill.out_of_model_specific_var`).
 ``n_out_of_model`` counts out-of-model names still held *after* the solve.
 
+Minimum trade size (``cfg.min_trade_weight``, default 5 bp of NAV): after
+sizing, trades below the threshold are cancelled unless they close a position
+or belong to a forced exit (:meth:`SinglePeriodOptimizer._drop_small_trades`).
+A post-solve projection: the returned book can sit marginally outside a band;
+``n_small_trades_dropped`` / ``max_constraint_violation`` /
+``violated_constraint`` on the result say by how much.
+
 Failure semantics: a solve that is not ``optimal`` / ``optimal_inaccurate``
 returns ``status`` as reported by the solver, ``w_target = w_current``,
 ``expected_cost = nan`` and logs a warning.  Dropping the ADV participation
@@ -118,7 +141,8 @@ module                      contents
 ``dpp``                     expression parametrisation (:class:`_Parametrizer`)
 ``constraints``             the constraint menu, binding counts
 ``compiled``                :class:`_Compiled` (one DPP problem), structure key
-``sizing``                  closed-form gamma, gamma search, weight clean-up
+``sizing``                  closed-form gamma, gamma searches (cap form and
+                            two-sided), weight clean-up
 ``solvers``                 solver chain with narrow exception handling
 ``spo``                     :class:`SinglePeriodOptimizer` (orchestration)
 ==========================  ==============================================

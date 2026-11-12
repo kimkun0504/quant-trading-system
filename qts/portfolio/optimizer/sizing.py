@@ -1,5 +1,9 @@
-"""Sizing: the risk aversion that hits the vol target (``risk_aversion_mode="target_vol"``).
+"""Sizing: the risk aversion that hits the vol target (``risk_aversion_mode="target_vol"``),
+or -- with ``PortfolioConfig.vol_target_is_cap`` -- the smallest risk aversion at or
+above the configured base that keeps the book inside the vol cap (and, with
+``leverage_cap_raises_gamma``, off the leverage cap).
 
+* :func:`gamma_cap_search` -- the cap form: upward-only search from the base gamma.
 * :func:`closed_form_gamma` -- the start: the gamma at which the unconstrained,
   cost-free optimum has the target vol (Grinold & Kahn ch. 14).
 * :func:`gamma_search` -- safeguarded root search on ``log gamma`` that
@@ -19,6 +23,10 @@ from qts.portfolio.optimizer.compiled import _Compiled
 from qts.portfolio.optimizer.constants import (
     CAPS_ELASTICITY,
     GAMMA_BRACKET,
+    GAMMA_CAP_ELASTICITY,
+    GAMMA_CAP_FIRST_STEP,
+    GAMMA_CAP_GROSS_TOL,
+    GAMMA_CAP_MIN_RATIO,
     GAMMA_MAX_SOLVES,
     GAMMA_NUDGE,
     GAMMA_SEARCH_VOL_TOL,
@@ -96,7 +104,9 @@ class GammaSearchResult:
     gamma: float
     status: str
     solver: str
-    outcome: str  # target / caps / bracket / max_solves / no_alpha / solve_failed:<status>
+    # target / caps / bracket / max_solves / no_alpha / solve_failed:<status>; cap form
+    # (gamma_cap_search): below_target / target / leverage / bracket / max_solves / ...
+    outcome: str
     n_extra: int  # solves beyond the starting one (nudged retries included)
     note: str
 
@@ -256,11 +266,191 @@ def gamma_search(
     )
 
 
+def _cap_step(adm: list[_Point], need: Callable[[_Point], float], aim: float) -> float:
+    """Next gamma of :func:`gamma_cap_search` once an admissible book exists
+    (``adm``: the admissible points by increasing gamma): the gamma at which
+    ``need`` -- the book's distance to the tighter cap, 1 = at it -- would reach
+    ``aim``, from the log-log secant through the two lowest-gamma admissible points,
+    or with the prior elasticity ``GAMMA_CAP_ELASTICITY`` while there is only one
+    (unconstrained and cost-free it is -1; trade costs anchor the book to the
+    current holdings and make it flatter)."""
+    p = adm[0]
+    e = GAMMA_CAP_ELASTICITY
+    if len(adm) >= 2:
+        q = adm[1]
+        num, dg = np.log(need(p) / need(q)), np.log(p.g / q.g)
+        if abs(dg) > 1e-9 and num / dg < -0.05:
+            e = float(num / dg)
+    return float(p.g * (aim / need(p)) ** (1.0 / e))
+
+
+def gamma_cap_search(
+    comp: _Compiled,
+    pdat: _ProblemData,
+    H: int,
+    with_part: bool,
+    target: float,
+    gamma: float,
+    wv: np.ndarray,
+    binding: dict[str, int],
+    obj: float,
+    solve: SolveFn,
+    gross_cap: float | None = None,
+) -> GammaSearchResult:
+    """The vol target as a **cap** (``PortfolioConfig.vol_target_is_cap``): return
+    the book of the smallest ``gamma >= base`` (``gamma``, the configured
+    ``risk_aversion``, already solved: ``wv``) that is *admissible*:
+
+    * ex-ante annual vol ``<= target (1 + tol)``, and
+    * with ``gross_cap`` given (``leverage_cap_raises_gamma``, long/short books):
+      the leverage limit is not binding (no dual on ``gross``).
+
+    Gamma is never lowered below the base.  Why upward only: when the caps make the
+    vol target unreachable, lowering gamma cannot add leverage -- the gross limit
+    already binds -- it only moves the same gross into the names with the largest
+    alpha (the gross limit's multiplier ``lam`` acts as an L1 penalty: a name is
+    held only if ``|alpha_i| > lam``), i.e. into few, volatile names.  Raising gamma
+    instead scales the mean-variance book down *proportionally* (cost-free and
+    otherwise unconstrained, ``w*(gamma) = w*(1) / gamma``), so the book that just
+    fits under the leverage limit keeps every name of the diversified optimum.
+
+    Search: the base book is admissible -> done (``outcome="below_target"``).
+    Otherwise ``lo`` = base (not admissible) and gamma is stepped up -- a Newton
+    step on ``log vol`` with the measured elasticity (-1 before two points exist)
+    when the vol cap is the violated one, else by ``GAMMA_CAP_FIRST_STEP`` -- until an admissible ``hi`` is found; then the
+    bracket ``[lo, hi]`` is closed from above with :func:`_cap_step` (log-log
+    secant on the distance to the tighter cap, ``max(vol / target, gross /
+    gross_cap)``), falling back to the geometric mean when the step leaves the
+    bracket.  It stops when ``hi`` is *tight* -- vol within ``tol`` of the
+    target (``"target"``: the vol cap decides) or gross within
+    ``GAMMA_CAP_GROSS_TOL`` of the limit (``"leverage"``: the leverage cap
+    decides) -- or the bracket ratio is below ``GAMMA_CAP_MIN_RATIO``, or after
+    ``GAMMA_MAX_SOLVES`` solves with an admissible ``hi`` in hand (same labels:
+    the book is admissible, only less tight than asked).  Without any admissible
+    book the most risk-averse one solved is returned (``"max_solves"``, or
+    ``"bracket"`` at the end of ``GAMMA_BRACKET``).  A numerical solver failure is
+    retried once at ``GAMMA_NUDGE`` x gamma."""
+    tol = GAMMA_SEARCH_VOL_TOL
+    g_max = GAMMA_BRACKET[1]
+
+    def vol(w: np.ndarray) -> float:
+        return float(np.sqrt(max(pdat.variance(w), 0.0) * TRADING_DAYS))
+
+    def over_vol(p: _Point) -> bool:
+        return p.vol > target * (1.0 + tol)
+
+    def levered(p: _Point) -> bool:
+        return gross_cap is not None and caps_bind(p.binding)
+
+    def admissible(p: _Point) -> bool:
+        return not over_vol(p) and not levered(p)
+
+    def need(p: _Point) -> float:
+        """Factor by which an unconstrained book at ``p`` would have to scale gamma
+        to sit exactly at the tighter of the two caps (< 1: room to lower gamma)."""
+        f = p.vol / target
+        if gross_cap is not None and gross_cap > 0:
+            f = max(f, float(np.abs(p.w).sum()) / gross_cap)
+        return f
+
+    def tight(p: _Point) -> str:
+        if p.vol >= target * (1.0 - tol):
+            return "target"
+        if gross_cap is not None and float(np.abs(p.w).sum()) >= gross_cap * (1.0 - GAMMA_CAP_GROSS_TOL):
+            return "leverage"
+        return ""
+
+    # aim inside the tolerance band of whichever cap is tighter
+    aim = 1.0 - 0.5 * min(tol, GAMMA_CAP_GROSS_TOL if gross_cap is not None else tol)
+    cur = _Point(gamma, vol(wv), wv, binding, obj, "optimal", "")
+    hist = [cur]
+    n_failed = 0
+    lo: _Point | None = None  # highest gamma known not admissible
+    hi: _Point | None = None  # lowest gamma known admissible
+    outcome = "max_solves"
+    if not np.any(pdat.a != 0) or cur.vol <= 0:
+        outcome = "no_alpha"
+    elif admissible(cur):
+        outcome = "below_target" if cur.vol < target * (1.0 - tol) else "target"
+    else:
+        lo = cur
+    while outcome == "max_solves":
+        assert lo is not None
+        if hi is not None:
+            label = tight(hi)
+            if not label and hi.g / lo.g < GAMMA_CAP_MIN_RATIO:
+                label = "leverage" if levered(lo) and not over_vol(lo) else "target"
+            if label:
+                outcome = label
+                break
+        if len(hist) + n_failed >= GAMMA_MAX_SOLVES:
+            if hi is not None:  # admissible but not yet tight: accepted, named by the cap that decided
+                outcome = "leverage" if levered(lo) and not over_vol(lo) else "target"
+            break
+        if hi is None:
+            step = 1.0
+            if over_vol(lo):  # Newton on log vol with the measured elasticity (-1 before two points)
+                e = _elasticity(hist, lo)
+                e = e if np.isfinite(e) and e < -0.05 else -1.0
+                step = float(np.clip((lo.vol / (aim * target)) ** (-1.0 / e), 1.0 + 2.0 * tol, 10.0))
+            if levered(lo):
+                step = max(step, GAMMA_CAP_FIRST_STEP)
+            g_new = min(lo.g * step, g_max)
+            if g_new <= lo.g * (1.0 + 1e-9):
+                outcome = "bracket"
+                break
+        else:
+            g_new = _cap_step(sorted((h for h in hist if admissible(h)), key=lambda h: h.g), need, aim)
+            if not (lo.g * GAMMA_NUDGE <= g_new <= hi.g / GAMMA_NUDGE):  # outside the bracket: bisect
+                g_new = float(np.sqrt(lo.g * hi.g))
+        comp.set_kappa(pdat, g_new * H)
+        st, solver = solve(True)
+        if st not in OK_STATUSES or comp.w.value is None:  # numerical failure: nudge once
+            g_new *= GAMMA_NUDGE
+            comp.set_kappa(pdat, g_new * H)
+            st, solver = solve(False)
+            n_failed += 1
+        if st not in OK_STATUSES or comp.w.value is None:
+            outcome = f"solve_failed:{st}"
+            break
+        w_new = clean_weights(np.asarray(comp.w.value).ravel(), pdat.w0)
+        cur = _Point(g_new, vol(w_new), w_new, comp.binding(pdat, with_part), _objective(comp), st, solver)
+        hist.append(cur)
+        if admissible(cur):
+            hi = cur if hi is None or cur.g < hi.g else hi
+        else:
+            lo = cur if cur.g > lo.g else lo
+    if hi is not None:
+        best = hi
+    elif outcome in ("below_target", "target", "no_alpha"):
+        best = cur
+    else:  # never reached an admissible book: the most risk-averse one solved
+        best = max(hist, key=lambda h: h.g)
+    path = ", ".join(f"{h.g:.3g}:{h.vol:.4f}/{float(np.abs(h.w).sum()):.2f}" for h in hist)
+    note = (
+        f"gamma cap search ({outcome}): gamma {best.g:.3f} (base {gamma:.3f}), vol {best.vol:.4f} vs cap "
+        f"{target:.4f}, gross {float(np.abs(best.w).sum()):.3f} after {len(hist)} solves "
+        f"[gamma:vol/gross {path}]"
+    )
+    return GammaSearchResult(
+        w=best.w,
+        binding=best.binding,
+        obj=best.obj,
+        gamma=float(best.g),
+        status=best.status,
+        solver=best.solver,
+        outcome=outcome,
+        n_extra=len(hist) - 1 + n_failed,
+        note=note,
+    )
+
+
 __all__ = [
     "GammaSearchResult",
     "caps_bind",
     "clean_weights",
     "closed_form_gamma",
+    "gamma_cap_search",
     "gamma_search",
     "position_caps_bind",
 ]

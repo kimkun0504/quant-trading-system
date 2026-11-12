@@ -221,6 +221,9 @@ export function PortfolioSection({ run }: { run: RunDetail }) {
             { key: 'effective_holding_days', value: s.effective_holding_days },
             { key: 'transfer_coefficient_mean', value: s.transfer_coefficient_mean },
             { key: 'realized_vs_exante_vol_ratio', value: s.realized_vs_exante_vol_ratio },
+            { key: 'effective_n_names', value: s.effective_n_names },
+            { key: 'specific_var_share', value: s.specific_var_share },
+            { key: 'exante_vol_at_gross2', value: s.exante_vol_at_gross2 },
           ]}
         />
       </Panel>

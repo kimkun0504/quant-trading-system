@@ -33,10 +33,18 @@ class OptimizationResult:
     risk_aversion: float = float("nan")  # annual gamma of the returned book (searched or fixed)
     # risk_aversion_mode="target_vol": "target" (vol within 2 % of target), "caps" (gross /
     # position / ADV caps bind below target; capped book accepted), "bracket" (gamma at a
-    # GAMMA_BRACKET end), "max_solves", "no_alpha", "solve_failed:<status>"; "" otherwise
+    # GAMMA_BRACKET end), "max_solves", "no_alpha", "solve_failed:<status>"; "" otherwise.
+    # With vol_target_is_cap: "below_target" (the base-gamma book is under the cap, gamma
+    # untouched) or "target" (gamma raised until the vol came down to the cap)
     vol_target_binding: str = ""
     n_solves: int = 0  # convex solves for this date (search steps / projection included)
     n_excluded_alpha: int = 0  # names with alpha outside the risk model (excluded, w = 0)
+    # min-trade projection (PortfolioConfig.min_trade_weight): trades dropped after the
+    # solve, and the largest constraint violation of the returned book (0 = none) with
+    # the name of that constraint
+    n_small_trades_dropped: int = 0
+    max_constraint_violation: float = 0.0
+    violated_constraint: str = ""
     # solver exceptions caught while solving this date ("<SOLVER>: <ExcType>: <message>");
     # only cvxpy SolverError / numerical errors are caught, anything else propagates
     solver_errors: list[str] = field(default_factory=list)

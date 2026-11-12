@@ -12,6 +12,8 @@ a sibling module:
 5. :func:`~qts.portfolio.optimizer.sizing.gamma_search` (``target_vol``) or
    :meth:`SinglePeriodOptimizer._vol_target_projection` (``fixed`` +
    ``projection``);
+5b. :meth:`SinglePeriodOptimizer._drop_small_trades` -- the min-trade projection
+   (``cfg.min_trade_weight``);
 6. :meth:`SinglePeriodOptimizer._final_result` -- diagnostics and the result.
 
 A failed alpha solve returns the current book (:meth:`_hold_result`).
@@ -42,12 +44,13 @@ from qts.portfolio.optimizer.constants import (
     MAX_SCALE_UP,
     OK_STATUSES,
     RISK_AVERSION_MODES,
+    SOLVER_TOL,
     TERMINAL_STATUSES,
     TRADING_DAYS,
     VOL_TARGET_MODES,
     ExtraConstraint,
 )
-from qts.portfolio.optimizer.constraints import n_binding
+from qts.portfolio.optimizer.constraints import max_constraint_violation, n_binding
 from qts.portfolio.optimizer.dpp import _assign, _constants, _leaf_sig
 from qts.portfolio.optimizer.problem import (
     _ProblemData,
@@ -57,10 +60,12 @@ from qts.portfolio.optimizer.problem import (
 )
 from qts.portfolio.optimizer.result import OptimizationResult
 from qts.portfolio.optimizer.sizing import (
+    GammaSearchResult,
     _objective,
     caps_bind,
     clean_weights,
     closed_form_gamma,
+    gamma_cap_search,
     gamma_search,
     position_caps_bind,
 )
@@ -79,6 +84,7 @@ class _SizingPlan:
     projection: bool  # fixed mode + "projection": re-solve toward s w*
     tgt_daily: float | None  # daily vol cap (slightly loosened)
     gamma0: float  # starting annual risk aversion
+    gamma_floor: float | None = None  # vol_target_is_cap: gamma is never searched below this
 
 
 @dataclass
@@ -108,6 +114,9 @@ class _Book:
     n_solves: int
     vt_binding: str = ""
     scalar: float = 1.0
+    n_dropped: int = 0  # trades removed by the min-trade projection
+    violation: float = 0.0  # largest constraint violation after it
+    violated: str = ""
     notes: list[str] = field(default_factory=list)
 
 
@@ -342,7 +351,13 @@ class SinglePeriodOptimizer:
         search = target is not None and getattr(cfg, "risk_aversion_mode", "fixed") == "target_vol"
         mode = getattr(cfg, "vol_target_mode", "projection")
         gamma = float(cfg.risk_aversion)
-        if search and target is not None:
+        floor: float | None = None
+        if search and target is not None and getattr(cfg, "vol_target_is_cap", False):
+            # the target is a cap: start at the base gamma and only ever raise it
+            gamma = float(np.clip(gamma, *GAMMA_BRACKET))
+            floor = gamma
+            notes.append(f"vol target {target:.3f} is a cap: base gamma {gamma:.3f}, raised only")
+        elif search and target is not None:
             g0, ir = closed_form_gamma(pdat, H, target)
             if np.isfinite(g0) and g0 > 0:
                 gamma = float(np.clip(g0, *GAMMA_BRACKET))
@@ -355,6 +370,7 @@ class SinglePeriodOptimizer:
             projection=fixed and mode == "projection",
             tgt_daily=target / np.sqrt(TRADING_DAYS) * (1.0 + 1e-7) if target is not None else None,
             gamma0=gamma,
+            gamma_floor=floor,
         )
 
     # ------------------------------------------------------------------ step 4: alpha problem
@@ -448,8 +464,31 @@ class SinglePeriodOptimizer:
 
     # ------------------------------------------------------------------ step 5: sizing
     def _apply_gamma_search(
-        self, book: _Book, s: _AlphaSolve, pdat: _ProblemData, H: int, target: float
+        self,
+        book: _Book,
+        s: _AlphaSolve,
+        pdat: _ProblemData,
+        H: int,
+        target: float,
+        gamma_floor: float | None = None,
     ) -> _Book:
+        if gamma_floor is not None:  # vol_target_is_cap: upward only from the base gamma
+            cfg = self.cfg
+            lever = bool(getattr(cfg, "leverage_cap_raises_gamma", False)) and cfg.book == "long_short"
+            sr = gamma_cap_search(
+                s.comp,
+                pdat,
+                H,
+                s.with_part,
+                target,
+                book.gamma,
+                book.w,
+                book.binding,
+                book.obj,
+                self._solve_fn(s.comp),
+                gross_cap=float(cfg.gross_leverage_max) if lever else None,
+            )
+            return self._take_search(book, sr)
         sr = gamma_search(
             s.comp,
             pdat,
@@ -462,6 +501,10 @@ class SinglePeriodOptimizer:
             book.obj,
             self._solve_fn(s.comp),
         )
+        return self._take_search(book, sr)
+
+    @staticmethod
+    def _take_search(book: _Book, sr: GammaSearchResult) -> _Book:
         book.w, book.binding, book.obj, book.gamma = sr.w, sr.binding, sr.obj, sr.gamma
         book.status, book.vt_binding = sr.status, sr.outcome
         book.solver = sr.solver or book.solver
@@ -538,6 +581,45 @@ class SinglePeriodOptimizer:
             1,
         )
 
+    # ------------------------------------------------------------------ step 5b: min trade
+    def _drop_small_trades(self, book: _Book, pdat: _ProblemData) -> _Book:
+        """Post-solve projection of ``cfg.min_trade_weight``: a trade with ``0 < |x_i|
+        < min_trade_weight`` is cancelled (the name keeps ``w0_i``) **unless** it
+        closes the position (target weight 0) or the name is being forced out
+        (``force_to_zero``: universe exits must proceed however small the daily
+        step).  On the real run two thirds of all trades were below 5 bp of NAV:
+        the solver's continuous optimum re-trims every name every day, and each of
+        those orders pays the per-order minimum commission and the spread for no
+        measurable change in the book.
+
+        This is a projection, not a constraint (a hard minimum trade size makes
+        the problem a mixed-integer one): the returned book is no longer the
+        optimum of the solved problem and can sit marginally outside a band the
+        solve honoured -- by at most the sum of the cancelled trades' exposures.
+        The number of cancelled trades and the largest violation
+        (:func:`~qts.portfolio.optimizer.constraints.max_constraint_violation`)
+        go on the result; they are not repaired."""
+        thr = float(getattr(self.cfg, "min_trade_weight", 0.0) or 0.0)
+        if thr <= 0:
+            return book
+        w, w0 = book.w, pdat.w0
+        x = w - w0
+        small = (np.abs(x) > 0) & (np.abs(x) < thr)
+        keep = (w == 0.0) | pdat.force_mask  # exits and forced unwinds always trade
+        drop = small & ~keep
+        n = int(drop.sum())
+        if n:
+            book.w = np.where(drop, w0, w)
+        book.n_dropped = n
+        book.violation, book.violated = max_constraint_violation(pdat, self.cfg, self.beta_band, book.w)
+        if book.violation <= SOLVER_TOL:  # solver-tolerance slack is not a violation
+            book.violation, book.violated = 0.0, ""
+        book.notes.append(
+            f"min trade {thr:.4%}: {n} trades dropped"
+            + (f", max violation {book.violation:.2e} ({book.violated})" if book.violated else "")
+        )
+        return book
+
     # ------------------------------------------------------------------ step 6: result
     def _expected_cost(
         self, pdat: _ProblemData, wv: np.ndarray, H: int, nav: float, venue: str, notes: list[str]
@@ -603,6 +685,9 @@ class SinglePeriodOptimizer:
             vol_target_binding=book.vt_binding,
             n_solves=book.n_solves,
             n_excluded_alpha=len(pdat.excluded_alpha),
+            n_small_trades_dropped=book.n_dropped,
+            max_constraint_violation=book.violation,
+            violated_constraint=book.violated,
             solver_errors=list(self._solve_errors),
         )
 
@@ -681,7 +766,7 @@ class SinglePeriodOptimizer:
         book = _Book(wv, binding, s.obj, s.gamma, s.status, s.solver, s.n_solves, notes=notes)
         if plan.search:
             assert plan.target is not None
-            book = self._apply_gamma_search(book, s, pdat, H, plan.target)
+            book = self._apply_gamma_search(book, s, pdat, H, plan.target, plan.gamma_floor)
         elif plan.projection:  # vol targeting by projection onto the same feasible set (fixed gamma)
             book.w, book.scalar, proj_note, k = self._vol_target_projection(
                 wv,
@@ -696,6 +781,7 @@ class SinglePeriodOptimizer:
             book.n_solves += k
             if proj_note:
                 notes.append(proj_note)
+        book = self._drop_small_trades(book, pdat)
         return self._final_result(pdat, risk, book, H, nav, venue, g, s.reused, t0, notes)
 
 

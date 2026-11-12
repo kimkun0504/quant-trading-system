@@ -255,6 +255,22 @@ class AlphaConfig(_ConfigBase):
     ic_floor_frac: float = 0.25  # IC_used >= this fraction of the shrunk prior
     # combined score = zscore(w * composite + (1 - w) * ML) where both exist
     composite_weight: float = 0.5
+    # --- the traded score (qts.alpha.score_processing; handbook 04;
+    # docs/notes/construction_fix_2026-11-12.md).  Applied to the combined score,
+    # in this order, before Grinold scaling; the trailing IC is the IC of the result.
+    # (1) Per date, residualise the combined score on an intercept + industry
+    # dummies + beta + the risk-only styles as of that date (the exposures the
+    # labels are residualised on and the optimizer bands), equal-weighted OLS over
+    # the eligible names, then re-standardise to unit cross-sectional sd.  The
+    # optimizer cannot hold those directions, so a score that asks for them pins
+    # the bands and distorts the rest of the book.  False = trade the raw score.
+    neutralize_score: bool = True
+    # (2) Causal EWMA of each name's neutralised score across trading days
+    # (half-life in trading days; weights normalised over the days the name had a
+    # score, so a new name starts at its own first score), projected on the day's
+    # exposures again and re-standardised.  Slows the score to the horizon's pace
+    # and blends across ML refit days.  0 = off.
+    score_smoothing_halflife_days: float = 10.0
     dynamic_weights: bool = True  # factor-momentum / crash / vol theme weights
     half_life_lookback_days: int = 504  # score history for the half-life fit
     model_seeds: int = 3
@@ -279,6 +295,11 @@ class AlphaConfig(_ConfigBase):
     # delisting assumption for labels and backtest accounting (the former
     # ``AlphaConfig.delisting_return`` was removed; ResearchPipeline passes
     # cfg.cost.delisting_haircut to AlphaModel).
+
+    def __post_init__(self) -> None:
+        hl: Any = self.score_smoothing_halflife_days
+        if isinstance(hl, bool) or not isinstance(hl, (int, float)) or not math.isfinite(hl) or hl < 0:
+            raise ValueError(f"AlphaConfig: score_smoothing_halflife_days must be >= 0 (0 = off), got {hl!r}")
 
 
 @dataclass(frozen=True)
@@ -638,8 +659,34 @@ class PortfolioConfig(_ConfigBase):
     #   "fixed": gamma = risk_aversion; the target, if any, is then enforced by
     #       vol_target_mode ("projection" / "constraint").
     risk_aversion_mode: str = "target_vol"
+    # In "target_vol" mode: is the vol target a *cap* (True, default) or a level to
+    # *reach* (False, the pre-2026-11-12 search)?  As a level, a target the caps
+    # make unreachable (a diversified market-neutral book at gross 2 runs at 3-4 %
+    # vol; the target is 10 %) sends the search to ever lower gamma: with the gross
+    # cap binding, a lower gamma cannot add leverage, only concentration, so the
+    # book moves into the few names with the largest alpha (specific risk 82 % of
+    # variance, realised/ex-ante 1.46 on the real run).  As a cap, gamma starts at
+    # ``risk_aversion`` and is only ever searched *upward*, to bring the ex-ante vol
+    # down to the target when the base book exceeds it; it is never lowered below
+    # ``risk_aversion``.  ``vol_target_binding`` then reads "below_target" (base
+    # book under the target: nothing to do), "target" (gamma raised to the vol cap)
+    # or "leverage" (next field).  False = the old two-sided search.
+    vol_target_is_cap: bool = True
+    # With ``vol_target_is_cap`` (long/short books): the *leverage* cap is handled the
+    # same way.  While ``gross_leverage_max`` binds, the constraint's multiplier
+    # works as an L1 penalty -- only names with |alpha| above it are held -- so at
+    # the base gamma a strong signal (unconstrained gross of 10+) is cut down to
+    # the ~100 highest-|alpha| names at the position cap instead of being scaled.
+    # Measured on the synthetic market at 800 names: effective names 156 vs 587 for
+    # the rank-weighted neutral book, ex-ante vol at gross 2 of 8.5 % vs 4.3 % for
+    # the scaled book.  True: gamma is raised (never lowered) until the gross limit
+    # stops binding, i.e. the book is the mean-variance optimum *scaled* to fit
+    # under the limit (``vol_target_binding = "leverage"``).  False: the gross
+    # limit stays a plain constraint at the base gamma.
+    leverage_cap_raises_gamma: bool = True
     # Annual risk aversion of the objective alpha'w - gamma*H*w'Sigma_d*w ("fixed"
     # mode; fallback otherwise).  2 ~ IR / (2 x 10 % target) on the measured alpha.
+    # With ``vol_target_is_cap`` it is the *base* (smallest) gamma of the search.
     risk_aversion: float = 2.0
     trade_aversion: float = 1.0
     hold_aversion: float = 1.0
@@ -685,6 +732,29 @@ class PortfolioConfig(_ConfigBase):
     # N=1000) while canonicalisation is only ~20% of a daily solve; False builds the
     # same parametrised problem and canonicalises it with values as constants.
     reuse_problem: bool = False
+    # --- trade slower (docs/notes/construction_fix_2026-11-12.md; handbook 07, 09)
+    # Solve on every k-th backtest date and let the book drift in between (forced
+    # exits of ineligible names and delistings still run every day).  1 = daily.
+    # ``ResearchPipeline(rebalance_every=...)`` / ``qts run --rebalance-every``
+    # override it for one run.
+    rebalance_every_days: int = 5
+    # Trades smaller than this fraction of NAV are dropped after the solve (the
+    # name keeps its current weight) unless the trade closes the position or the
+    # name is being forced out.  A post-solve projection, not a constraint: the
+    # book can end marginally outside a band; the count of dropped trades and the
+    # largest band violation are recorded per solve.  0 = off.
+    min_trade_weight: float = 0.0005
+
+    def __post_init__(self) -> None:
+        errs: list[str] = []
+        k: Any = self.rebalance_every_days
+        if isinstance(k, bool) or not isinstance(k, int) or k < 1:
+            errs.append(f"rebalance_every_days must be an integer >= 1, got {k!r}")
+        mt: Any = self.min_trade_weight
+        if isinstance(mt, bool) or not isinstance(mt, (int, float)) or not math.isfinite(mt) or mt < 0:
+            errs.append(f"min_trade_weight must be >= 0 (0 = off), got {mt!r}")
+        if errs:
+            raise ValueError("PortfolioConfig: " + "; ".join(errs))
 
 
 @dataclass(frozen=True)

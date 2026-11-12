@@ -835,6 +835,61 @@ $$
 
 where $M$ is the z-scored ML ensemble; where ML has no OOS prediction yet, $S$ is the composite alone. Only eligible names are kept. Fifty-fifty is a prior, not a fit: the composite is the robust anchor, ML the incremental bet.
 
+### Neutralising the score
+
+**What.** Before the combined score $S$ is scaled into expected returns, the part of it that lies along directions the portfolio is not allowed to hold is removed. Per date $t$, over the $n_t$ eligible names with a score, `qts/alpha/score_processing.py::process_scores` runs an ordinary least-squares regression of the score on
+
+- an intercept,
+- one dummy per industry,
+- beta and the other **risk-only styles** (`qts.core.roles.RISK_ONLY_STYLES`: beta, size, residual volatility, liquidity, short-term reversal),
+
+all **as of $t$**, keeps the residual, and re-standardises it to cross-sectional mean 0 and SD 1:
+
+$$
+\tilde S_t = \text{zscore}\!\left(S_t - X_t\,(X_t^\top X_t)^{+} X_t^\top S_t\right)
+$$
+
+where:
+- $S_t$ is the vector of combined scores of the eligible names on $t$;
+- $X_t$ is the $n_t \times K$ matrix of the regressors above ($^{+}$ is the pseudo-inverse: collinear columns such as "intercept + every industry dummy" are harmless);
+- $\tilde S_t$ is the **neutralised score**: it sums to zero overall, within every industry, and against every risk-only style.
+
+The exposures are the ones the labels are residualised on (→ **4. Targets**): the fitted risk model's market, industry and risk-only style columns (`ResearchPipeline._exposures_fn`), and on dates before the risk model has exposures, the alpha layer's own proxies (`default_exposures`). A date with fewer than 20 scored names is left as it is. Names the risk model does not cover have zero exposures, so only the intercept is removed for them.
+
+**Why.** The optimizer bands exactly these directions (→ see **Portfolio construction › Constraints**): industries within ±3 % of NAV, beta within ±0.05, the other risk-only styles within ±0.1 SD. The label is already residualised on them, so the model is not *trained* to predict them — but the composite's low-risk theme, and whatever the ML sleeve picks up from correlated features, still leave the score loaded on them. A score that asks for a hedged direction has two costs. The optimizer spends its bands on it: on the first real ML run (60-day horizon, 2026-11-12) the risk-only style exposures of the book sat at their ±0.1 limits on 48–80 % of days and the industry band on every day. And the rest of the book is bent to pay for it: the realised book had a correlation of only 0.61 with the paper portfolio built from the *residual* of the same score, and a gross Sharpe of 0.20 against that paper portfolio's 1.04 (`docs/notes/construction_fix_2026-11-12.md`). Removing the hedged part before scaling means Grinold's rule, the trailing IC and the optimizer all work with the part of the signal the book can express.
+
+<callout icon="🤔" color="purple_bg">
+Why equal-weighted, not √cap-weighted? Two reasons. The evidence the default rests on is the paper portfolio "(c)" of `scripts/attribute_run.py`, an equal-weighted residual; and the optimizer's bands are plain sums $\sum_i w_i B_{ik}$ with no cap weighting, so an equal-weighted residual is what makes a score-proportional book band-neutral. A √cap-weighted regression would leave an equal-weighted exposure in the residual.
+</callout>
+
+Share of the score removed: `AlphaModel.neutralization_r2_` holds, per date, the $R^2$ of that regression — how much of the combined score's cross-sectional variance was a hedged direction (about 0.2 on the synthetic market).
+
+Switch: `AlphaConfig.neutralize_score` (default `True`). `False` trades the raw combined score.
+
+### Smoothing the score
+
+**What.** A causal exponentially weighted mean, per stock, of its neutralised score over trading days, with half-life `AlphaConfig.score_smoothing_halflife_days` = 10. With $\lambda = 0.5^{1/10} \approx 0.933$:
+
+$$
+\text{num}_{i,t} = \lambda\,\text{num}_{i,t-1} + \tilde S_{i,t}, \qquad \text{den}_{i,t} = \lambda\,\text{den}_{i,t-1} + 1, \qquad \bar S_{i,t} = \frac{\text{num}_{i,t}}{\text{den}_{i,t}}
+$$
+
+where:
+- the updates with $\tilde S_{i,t}$ and $+1$ happen only on days the stock has a score; on other days both sums just decay by $\lambda$;
+- $\bar S_{i,t}$ is defined for stocks with a score on $t$.
+
+Dividing by $\text{den}$ normalises the weights over the days the stock was actually scored, which settles the edge cases: a stock **entering** the universe starts at its own first score (no ramp up from zero, which would under-weight every new name for weeks); a stock that was away has its old scores discounted by the whole gap. The smoothed cross-section is then projected on the exposures of $t$ **once more** — each past day was neutral to *that day's* exposures, and reversal or beta loadings move — and re-standardised. The result is `AlphaModel.traded_score_`.
+
+**Why.** Three numbers from the same run. The book traded 13.6 % of NAV a day against the 2.2 % of gross a day that the 60-day signal needs when sampled monthly; only 44 % of a day's trading survived netting over the following 21 days (the rest was undone); and on days when the ML sleeve was refit the book turned over 37 % against 13 % on other days, because a refit model re-ranks the whole cross-section at once. A paper portfolio on a 20-day EWMA of the score lost almost nothing (Sharpe 0.97 against 1.04). Smoothing slows the score to the pace the horizon can use and spreads a refit jump over a few weeks.
+
+<callout icon="💡" color="blue_bg">
+Half-life 10 days means: today's score has weight $1-\lambda \approx 6.7\%$ of the total in steady state, the last ten days together half of it, the last month about 77 %. For a 20–60-day forecast horizon that is a small delay; for a 5-day signal it would be far too slow — lower the half-life or set it to 0 (off).
+</callout>
+
+**Point in time.** Row $t$ of the traded score is a function of scores and exposures dated $\le t$ only; `tests/test_construction.py::test_processed_score_is_point_in_time` changes everything after $t$ and checks that rows $\le t$ do not move, and `test_alpha_as_of_is_point_in_time_with_neutralisation_and_smoothing` compares `as_of(t)` with a fit that never saw anything after $t$.
+
+**What reads the traded score.** Everything downstream: `as_of` standardises it and applies Grinold's rule; `oos_ic_` — and with it the trailing IC, $\widehat{\text{IC}}$ and $\text{IC}_t$ below — is the rank IC of the **traded** score, so the IC that sizes the book is the IC of what the book holds; the signal half-life is the traded score's. `combined_score_` is kept as the raw blend for diagnostics (`scripts/attribute_run.py` builds its paper portfolios from it). With `neutralize_score=False` and a half-life of 0, `traded_score_ is combined_score_`.
+
 ### Grinold's rule: alpha = IC × volatility × score
 
 **What.** Convert a dimensionless score into an expected return the optimizer can trade off against risk and cost:
@@ -844,7 +899,7 @@ $$
 $$
 
 where:
-- $z_{i,t}$ is the score re-standardised over eligible names at $t$ (mean 0, SD 1);
+- $z_{i,t}$ is the traded score (neutralised, smoothed; previous two subsections) re-standardised over eligible names at $t$ (mean 0, SD 1);
 - $\sigma_i$ is the stock's **residual** volatility over the **forecast horizon**;
 - $\text{IC}$ is the (shrunk) information coefficient;
 - $\alpha_{i,t}$ is an expected *residual* return over 20 days (fraction).
@@ -870,7 +925,7 @@ $$
 $$
 
 where:
-- $\overline{\text{IC}}^{\text{OOS}}_t$ (`AlphaModel.trailing_ic`) is the mean daily rank IC of the combined score against its label over the trailing `ic_window` = 756 signal dates (three years) whose labels are **realised by $t$**: the window ends at position $t - h - L$ (label of $s$ complete at $s + h + L$) and each row must also satisfy `label_realisation[s] <= t` (halts resolved); $n_t$ is the number of such dates (`trailing_ic_obs`), set to 0 below `ic_min_obs` = 60 so that the prior alone applies;
+- $\overline{\text{IC}}^{\text{OOS}}_t$ (`AlphaModel.trailing_ic`) is the mean daily rank IC of the traded score against its label over the trailing `ic_window` = 756 signal dates (three years) whose labels are **realised by $t$**: the window ends at position $t - h - L$ (label of $s$ complete at $s + h + L$) and each row must also satisfy `label_realisation[s] <= t` (halts resolved); $n_t$ is the number of such dates (`trailing_ic_obs`), set to 0 below `ic_min_obs` = 60 so that the prior alone applies;
 - $k$ = `ic_prior_obs` = 252 is the weight of the prior, in dates: the blend is a precision-weighted average, so three years of realised IC count three times the prior and sixty days count a quarter of it;
 - `ic_shrink` = 0.5 is the fraction of the estimate **kept**;
 - `default_ic` = 0.03 is a **pre-shrink** prior, shrunk the same way: with no realised IC, $0.5 \times 0.03 = 0.015$;
@@ -902,11 +957,13 @@ $\sigma_i$ = `idio_vol_252` × $\sqrt{h}$ (`AlphaModel.resid_vol_h_`): the daily
 
 ### In the code
 
-`AlphaModel(cfg, composite_weight=None, ml_factory=None, use_ml=True, dynamic_weights=None, ic_window=None, delisting_return=None, signal_lag_days=0)`; `None` means "take it from `AlphaConfig`" (`composite_weight` 0.5, `dynamic_weights` True, `ic_window` 756; the delisting haircut from `CostConfig`). `.fit(md, risk_exposures_fn)`; `.as_of(date)` → `AlphaOutput`; `.ic_used(date)`, `.trailing_ic(date)`, `.half_life_as_of(date)`, `.component_half_lives_as_of(date)`. Config: `ic_shrink` (0.5), `default_ic` (0.03), `ic_window` (756), `ic_min_obs` (60), `ic_prior_obs` (252), `ic_floor_frac` (0.25), `horizon_days` (20), `half_life_lookback_days` (504).
+`AlphaModel(cfg, composite_weight=None, ml_factory=None, use_ml=True, dynamic_weights=None, ic_window=None, delisting_return=None, signal_lag_days=0)`; `None` means "take it from `AlphaConfig`" (`composite_weight` 0.5, `dynamic_weights` True, `ic_window` 756; the delisting haircut from `CostConfig`). `.fit(md, risk_exposures_fn)`; `.as_of(date)` → `AlphaOutput`; `.ic_used(date)`, `.trailing_ic(date)`, `.half_life_as_of(date)`, `.component_half_lives_as_of(date)`. Config: `neutralize_score` (True), `score_smoothing_halflife_days` (10), `ic_shrink` (0.5), `default_ic` (0.03), `ic_window` (756), `ic_min_obs` (60), `ic_prior_obs` (252), `ic_floor_frac` (0.25), `horizon_days` (20), `half_life_lookback_days` (504). Score processing: `qts/alpha/score_processing.py::process_scores`; the panels are `AlphaModel.combined_score_` (raw), `traded_score_` and `neutralization_r2_`.
 
 ### Pitfalls & checks
 
 - **Unit errors:** alpha, $\sigma$ and the optimizer's risk term must share the 20-day horizon (→ see **Portfolio construction**).
+- **Neutral is not the same as banded.** The neutralised score has zero loading on the hedged directions; the *alpha* is $\text{IC}\cdot\sigma_i\cdot z_i$, and multiplying by $\sigma_i$ re-introduces a little residual-volatility exposure. The optimizer's bands still do the final hedging; the neutralisation only stops the score from fighting them.
+- **Smoothing and fast signals.** A 10-day half-life is tuned to 20–60-day horizons. On the 100-name synthetic market, whose planted signal decays over 20 days, the daily rank IC of the traded score is slightly *higher* with smoothing (0.119 against 0.097 for the neutralised score alone: averaging removes feature noise), but a short backtest window can still go either way.
 - **IC look-ahead:** `trailing_ic` stops at position $t-h-L$ and drops rows not yet decided, so only realised labels count; the second-pass audit verified `ic_estimate` and `half_life` match a refit on truncated data exactly, and `test_halt_labels_ic_and_expected_return_are_pit` covers halts.
 - `tests/test_alpha.py::test_alpha_model_as_of` checks scores are standardised, `expected_return / (ic_estimate · score)` is a positive volatility, the half-life is finite, and the ML component is absent before the first OOS fold.
 
@@ -977,6 +1034,8 @@ where $h$ is the number of consecutive observations that share label days (`over
 | `theme_weights` | all 1.0 | Never on backtest results alone; only with an ex-ante economic argument |
 | `factor_momentum_max_tilt` | 0.25 | 0 to switch off; above 0.25 reintroduces crowding risk |
 | `composite_weight` | 0.5 | Raise if ML incremental IC fails the gate in a fold majority |
+| `neutralize_score` | True | Off only to reproduce a pre-2026-11-12 run or to measure what the bands cost the raw score |
+| `score_smoothing_halflife_days` | 10 | Trading days; lower for a fast signal, 0 = off; raise if refit-day turnover is still a multiple of other days |
 | `ic_shrink` | 0.5 | Fraction of the IC kept; lower (more shrink) as more trials are logged |
 | `default_ic` | 0.03 | Pre-shrink prior; applies alone below 60 realised IC dates and is blended in with weight `ic_prior_obs` afterwards; lower it for an untested signal |
 | `ic_window` | 756 | Trailing signal dates for the OOS IC mean (was 252; D6) |

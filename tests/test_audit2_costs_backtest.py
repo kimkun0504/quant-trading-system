@@ -39,7 +39,7 @@ def test_gross_after_borrow_and_breakeven_net_of_borrow():
     on the realisation axis, and breakeven / cost sensitivity start from it."""
     w = {"A": 0.3, "B": -0.5, "C": -0.4}
     targets = dict.fromkeys(HC_DATES[:4], w)
-    cfg = SystemConfig().with_overrides({"execution.signal_lag_days": 0})
+    cfg = SystemConfig().with_overrides({"execution.signal_lag_days": 0, "portfolio.rebalance_every_days": 1})
     cost = ConstantBpsCost(spread_bps=1.0, impact_bps=2.0, fees_bps=0.5, borrow_fee_annual=0.5)
     res = DailyBarSimulator(cfg, cost).run(
         make_md(), HC_DATES, alpha_fn, risk_fn, PresetOptimizer(targets), nav0=NAV0
@@ -65,7 +65,7 @@ def test_gross_after_borrow_and_breakeven_net_of_borrow():
 
 
 def test_gross_after_borrow_fallback_for_old_results():
-    cfg = SystemConfig().with_overrides({"execution.signal_lag_days": 0})
+    cfg = SystemConfig().with_overrides({"execution.signal_lag_days": 0, "portfolio.rebalance_every_days": 1})
     targets = {d: {"A": 0.2, "B": -0.2, "C": 0.0} for d in HC_DATES[:4]}
     res = DailyBarSimulator(cfg, ConstantBpsCost(borrow_fee_annual=0.1)).run(
         make_md(), HC_DATES, alpha_fn, risk_fn, PresetOptimizer(targets), nav0=NAV0
@@ -243,7 +243,7 @@ def test_simulator_books_exact_streak_increment(weights):
     md = _md_long(dates)
     run_dates = dates[-5:]
     targets = {d: {"A": w, "B": 0.0, "C": 0.0} for d, w in zip(run_dates[:4], weights, strict=True)}
-    cfg = SystemConfig().with_overrides({"execution.signal_lag_days": 0})
+    cfg = SystemConfig().with_overrides({"execution.signal_lag_days": 0, "portfolio.rebalance_every_days": 1})
     tcm = TransactionCostModel(cfg.cost)
     res = DailyBarSimulator(cfg, tcm).run(
         md, run_dates, alpha_fn, risk_fn, PresetOptimizer(targets), nav0=NAV0, venue="continuous"
@@ -271,7 +271,9 @@ def test_optimizer_snapshot_uses_execution_date_auction_share():
     md = _md_long(dates, seed=1)
     run_dates = dates[-6:]  # 2026-03-18 .. 2026-03-25
     targets = {d: {"A": 0.05, "B": -0.05, "C": 0.0} for d in dates}
-    cfg = SystemConfig()  # lag 1 (default)
+    cfg = SystemConfig().with_overrides(
+        {"portfolio.rebalance_every_days": 1}
+    )  # lag 1 (default), daily solves
     tcm = TransactionCostModel(cfg.cost)
     opt = PresetOptimizer(targets)
     DailyBarSimulator(cfg, tcm).run(md, run_dates, alpha_fn, risk_fn, opt, nav0=NAV0)

@@ -104,6 +104,12 @@ export interface BacktestSummary {
   realized_vs_exante_vol_ratio: number;
   /** Share of decision days with gross exposure > 1e-4 of NAV. */
   invested_day_frac: number;
+  /** Mean over invested days of 1 / Σ pᵢ², pᵢ = |wᵢ| / gross (null for older runs). */
+  effective_n_names: number;
+  /** Mean specific share of the risk model's ex-ante variance of the book (null for older runs). */
+  specific_var_share: number;
+  /** Mean ex-ante annual vol scaled to gross exposure 2 (null for older runs). */
+  exante_vol_at_gross2: number;
   breakeven_cost_bps: number;
   n_delistings: number;
   n_failed_solves: number;

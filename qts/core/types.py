@@ -311,6 +311,12 @@ class RiskModelOutput:
             v += self.alignment_var * float(y @ wv) ** 2
         return v
 
+    def specific_variance(self, w: pd.Series) -> float:
+        """The specific (idiosyncratic) part ``sum_i w_i^2 d_i`` of
+        :meth:`portfolio_variance` (same out-of-model fill)."""
+        d = fill_specific_var(self.specific_var, w.index)
+        return float((w.to_numpy(dtype=np.float64) ** 2 * d).sum())
+
 
 @dataclass(frozen=True)
 class AlphaOutput:

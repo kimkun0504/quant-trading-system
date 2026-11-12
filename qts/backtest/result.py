@@ -70,6 +70,9 @@ class BacktestSummary(SizingSummary):
     transfer_coefficient_mean: float
     realized_vs_exante_vol_ratio: float
     invested_day_frac: float
+    effective_n_names: float
+    specific_var_share: float
+    exante_vol_at_gross2: float
     breakeven_cost_bps: float
     n_delistings: int
     n_failed_solves: int
@@ -84,6 +87,8 @@ class BacktestResult:
     costs: pd.DataFrame  # USD by decision date: spread, impact, fees, borrow, total
     diagnostics: dict[str, object] = field(default_factory=dict)
     exante_var: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
+    #: specific (idiosyncratic) part of ``exante_var`` by decision date
+    exante_specific_var: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
     turnover: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
     transfer_coefficient: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
     periods_per_year: int = 252
@@ -144,6 +149,7 @@ class BacktestResult:
         gross_w = self.weights.abs().sum(axis=1)
         invested = self.invested_days()
         rv = self.realized_vs_exante(g)
+        div = self.diversification()
         out: BacktestSummary = {
             "start": str(self.nav.index[0].date()) if len(self.nav) else "",
             "end": str(self.nav.index[-1].date()) if len(self.nav) else "",
@@ -176,12 +182,56 @@ class BacktestResult:
             else float("nan"),
             "realized_vs_exante_vol_ratio": rv["ratio"],
             "invested_day_frac": float(invested.mean()) if len(invested) else float("nan"),
+            "effective_n_names": div["effective_n_names"],
+            "specific_var_share": div["specific_var_share"],
+            "exante_vol_at_gross2": div["exante_vol_at_gross2"],
             # per-side breakeven net of borrow (borrow is not a per-side cost; audit 2 #1)
             "breakeven_cost_bps": M.breakeven_cost_bps(gb, self.turnover_on_return_dates().reindex(gb.index)),
             "n_delistings": len(cast(list[object], self.diagnostics.get("delistings", []))),
             "n_failed_solves": int(cast(int, self.diagnostics.get("n_failed_solves", 0))),
             **self.sizing_summary(),
         }
+        return out
+
+    def diversification(self) -> dict[str, float]:
+        """Is the book spread out or sitting in a handful of names?  Means over the
+        *invested* decision days (:meth:`invested_days`) of
+
+        * ``effective_n_names``: ``1 / sum_i p_i^2`` with ``p_i = |w_i| / sum_j
+          |w_j|`` (the inverse Herfindahl index of the absolute weights: ``n`` for
+          ``n`` equal positions, 1 for a single name);
+        * ``specific_var_share``: the specific (idiosyncratic) share of the risk
+          model's ex-ante variance of the book.  A broad market-neutral book of a
+          few hundred names diversifies most stock-specific risk away and is left
+          with a moderate share; a share near 1 with a low ``effective_n_names``
+          is a concentrated book;
+        * ``exante_vol_at_gross2``: the ex-ante annual vol the book would have at
+          gross exposure 2 (100 % long / 100 % short): ``vol * 2 / gross`` -- the
+          risk per unit of leverage, comparable across runs with different sizes.
+
+        NaN where the inputs are missing (no invested day; no risk model output)."""
+        nan = float("nan")
+        out = {"effective_n_names": nan, "specific_var_share": nan, "exante_vol_at_gross2": nan}
+        if not len(self.weights):
+            return out
+        inv = self.invested_days().to_numpy()
+        if not inv.any():
+            return out
+        aw = np.abs(self.weights.to_numpy(dtype=float))[inv]
+        gross = aw.sum(axis=1)
+        p = aw / gross[:, None]
+        out["effective_n_names"] = float((1.0 / (p**2).sum(axis=1)).mean())
+        if len(self.exante_var):
+            var = self.exante_var.reindex(self.weights.index).to_numpy(dtype=float)[inv]
+            ok = np.isfinite(var) & (var > 0)
+            if ok.any():
+                vol2 = np.sqrt(var[ok] * self.periods_per_year) * 2.0 / gross[ok]
+                out["exante_vol_at_gross2"] = float(vol2.mean())
+            if len(self.exante_specific_var):
+                spec = self.exante_specific_var.reindex(self.weights.index).to_numpy(dtype=float)[inv]
+                ok2 = ok & np.isfinite(spec)
+                if ok2.any():
+                    out["specific_var_share"] = float((spec[ok2] / var[ok2]).mean())
         return out
 
     def invested_days(self, eps: float = INVESTED_GROSS_EPS) -> pd.Series:
@@ -225,7 +275,9 @@ class BacktestResult:
     def sizing_summary(self) -> SizingSummary:
         """From ``diagnostics["solve_log"]``: ``vol_target_caps_share`` = share of the
         target-vol solves (non-empty ``vol_target_binding``) whose book was capped below
-        the vol target by the gross / position / ADV limits (``"caps"``);
+        the vol target by the gross / position / ADV limits (``"caps"``; always 0 with
+        ``vol_target_is_cap``, where a book under the target is the intended outcome
+        -- see :meth:`vol_target_outcomes` for the shares of every outcome);
         ``mean_risk_aversion`` = mean annual gamma of the returned books.  NaN when the
         log has no such entries (fixed gamma without a search, or no solves)."""
         log_ = self.diagnostics.get("solve_log") or []
@@ -240,6 +292,16 @@ class BacktestResult:
             else float("nan"),
             "mean_risk_aversion": float(gam.mean()) if len(gam) else float("nan"),
         }
+
+    def vol_target_outcomes(self) -> dict[str, float]:
+        """Share of the target-vol solves per ``vol_target_binding`` outcome
+        (``target``, ``below_target``, ``caps``, ...); empty without such solves."""
+        log_ = self.diagnostics.get("solve_log") or []
+        entries = [e for e in log_ if isinstance(e, dict)] if isinstance(log_, list) else []
+        searched = [b for b in (str(e.get("vol_target_binding") or "") for e in entries) if b]
+        if not searched:
+            return {}
+        return {k: searched.count(k) / len(searched) for k in sorted(set(searched))}
 
     def failed_solve_fraction(self) -> float | None:
         """Failed rebalance solves / rebalance solves (``diagnostics``), or

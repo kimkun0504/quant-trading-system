@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from qts.validation import HurdleReport
 
@@ -15,6 +15,32 @@ if TYPE_CHECKING:
 def _pct(v: object) -> str:
     x = float(v) if isinstance(v, (int, float)) else float("nan")
     return f"{100 * x:.0f}%" if math.isfinite(x) else "n/a"
+
+
+def _pct1(v: object) -> str:
+    x = float(v) if isinstance(v, (int, float)) else float("nan")
+    return f"{100 * x:.1f}%" if math.isfinite(x) else "n/a"
+
+
+def _num(v: object, fmt: str) -> str:
+    x = float(v) if isinstance(v, (int, float)) else float("nan")
+    return format(x, fmt) if math.isfinite(x) else "n/a"
+
+
+def _sizing_text(s: Mapping[str, object], bt: object) -> str:
+    """What the vol target did: with ``vol_target_is_cap`` the share of solves on
+    which the cap bound (gamma raised) vs the base-gamma book was already under it;
+    otherwise the share capped below the target by the gross / position limits."""
+    fn = getattr(bt, "vol_target_outcomes", None)
+    shares = cast("Mapping[str, float]", fn()) if callable(fn) else {}
+    if "below_target" in shares or ("target" in shares and "caps" not in shares and len(shares) == 1):
+        return (
+            f"vol cap binding on {100 * shares.get('target', 0.0):.0f}% of solves, "
+            f"book under the cap on {100 * shares.get('below_target', 0.0):.0f}%"
+        )
+    v = s.get("vol_target_caps_share", float("nan"))
+    x = float(v) if isinstance(v, (int, float)) else float("nan")
+    return f"vol target capped on {100 * x:.0f}% of solves"
 
 
 def _vol_ratio_text(s: Mapping[str, object], rv: Mapping[str, float] | None = None) -> str:
@@ -48,8 +74,13 @@ def format_result(res: PipelineResult) -> str:
         f"cost per side     {s['avg_cost_bps_per_side']:.1f} bp   gross exp {s['avg_gross_exposure']:.2f}  net exp {s['avg_net_exposure']:+.2f}",
         f"transfer coeff    {s.get('transfer_coefficient_mean', float('nan')):.2f}   "
         f"realized/ex-ante vol {_vol_ratio_text(s, rv)}   invested {_pct(s.get('invested_day_frac'))} of days",
-        f"sizing            mean gamma {s.get('mean_risk_aversion', float('nan')):.2f}   "
-        f"vol target capped on {100 * s.get('vol_target_caps_share', float('nan')):.0f}% of solves",
+        f"sizing            mean gamma {s.get('mean_risk_aversion', float('nan')):.2f}   {_sizing_text(s, bt)}",
+        f"diversification   effective names {_num(s.get('effective_n_names'), '.0f')}   "
+        f"specific share of ex-ante variance {_pct(s.get('specific_var_share'))}   "
+        f"ex-ante vol at gross 2 {_pct1(s.get('exante_vol_at_gross2'))}",
+        f"trading           solve every {_num(diag.get('rebalance_every', 1), '.0f')}d   "
+        f"small trades dropped {_num(diag.get('n_small_trades_dropped', 0), '.0f')}   "
+        f"max constraint violation after {_num(diag.get('max_min_trade_violation', 0.0), '.1e')}",
         f"data guards       data-error closes blanked {int(diag.get('n_data_error_returns', 0))}   "
         f"ex-ante vol alerts {int(diag.get('n_exante_vol_alerts', 0))} of "
         f"{int(diag.get('n_rebalance_solves', 0))} solves   failed solves {int(diag.get('n_failed_solves', 0))}",

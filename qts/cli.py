@@ -130,7 +130,12 @@ def _add_pipeline_args(ap: argparse.ArgumentParser) -> None:
         action="store_true",
         help="run the backtest with signal lag 0 and 1 and print both Sharpe ratios",
     )
-    ap.add_argument("--rebalance-every", type=int, default=1)
+    ap.add_argument(
+        "--rebalance-every",
+        type=int,
+        default=None,
+        help="solve every k-th day (default: portfolio.rebalance_every_days of the config)",
+    )
     ap.add_argument("--nav", type=float, default=5e6)
     ap.add_argument("--ledger", default=DEFAULT_LEDGER, help="trial ledger JSONL ('' disables)")
     ap.add_argument("--runs-root", default=DEFAULT_RUNS_ROOT, help="where run directories are written")

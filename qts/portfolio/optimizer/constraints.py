@@ -130,3 +130,44 @@ def binding_counts(
         if cnt:
             binding["participation"] = cnt
     return binding
+
+
+def max_constraint_violation(
+    pdat: _ProblemData, cfg: PortfolioConfig, beta_band: float, w: np.ndarray
+) -> tuple[float, str]:
+    """``(largest violation, constraint name)`` of ``w`` against the constraint menu,
+    evaluated numerically (no solve): how far the book sits outside the gross / net /
+    leg limits, the per-name cap, the beta, industry and style bands and the forced-
+    exit caps, each in its own units (weight, or exposure in sd for the style bands).
+    ``(0.0, "")`` when every one holds.  Used after the min-trade projection
+    (``PortfolioConfig.min_trade_weight``), which moves the solved book and can leave
+    it marginally outside a band."""
+    viol: dict[str, float] = {}
+    gross, net = float(np.abs(w).sum()), float(w.sum())
+    if cfg.book == "long_only":
+        viol["long_only"] = float(np.maximum(-w, 0.0).max(initial=0.0))
+        viol["fully_invested"] = abs(net - 1.0)
+    elif cfg.book == "130_30":
+        viol["long_leg"] = float(np.maximum(w, 0.0).sum()) - 1.3
+        viol["short_leg"] = float(np.maximum(-w, 0.0).sum()) - 0.3
+        viol["net_hi"] = net - (1.0 + cfg.net_exposure_band)
+        viol["net_lo"] = (1.0 - cfg.net_exposure_band) - net
+    else:
+        viol["gross"] = gross - cfg.gross_leverage_max
+        viol["net_hi"] = net - (cfg.net_exposure_target + cfg.net_exposure_band)
+        viol["net_lo"] = (cfg.net_exposure_target - cfg.net_exposure_band) - net
+    viol["max_position"] = float(np.abs(w).max(initial=0.0)) - cfg.max_position_weight
+    if pdat.beta_col is not None:
+        viol["beta_neutral"] = abs(float(pdat.cols([pdat.beta_col])[:, 0] @ w)) - beta_band
+    if pdat.ind_cols:
+        f = pdat.cols(pdat.ind_cols).T @ w - pdat.offsets(pdat.ind_cols)
+        viol["industry_band"] = float(np.abs(f).max()) - cfg.industry_band
+    if pdat.sty_cols:
+        f = pdat.cols(pdat.sty_cols).T @ w - pdat.offsets(pdat.sty_cols)
+        viol["style_band"] = float(np.abs(f).max()) - cfg.style_band_sd
+    if pdat.force_mask.any():
+        m = pdat.force_mask
+        viol["force_to_zero"] = float((np.abs(w[m]) - np.clip(pdat.force_caps[m], 0.0, None)).max())
+    name = max(viol, key=lambda k: viol[k])
+    worst = viol[name]
+    return (float(worst), name) if worst > 0 else (0.0, "")

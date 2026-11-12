@@ -543,6 +543,10 @@ export function generateRun(spec: RunSpec): GeneratedRun {
     transfer_coefficient_mean: 0.38 + 0.12 * rng(),
     realized_vs_exante_vol_ratio: annualizedVol(gross) / mean(exanteVol),
     invested_day_frac: 1 - emptyDays.size / n,
+    // fixed (no rng draw: the random stream of the fields below must not shift)
+    effective_n_names: spec.signal_lag_days === 0 ? 268 : 312,
+    specific_var_share: spec.signal_lag_days === 0 ? 0.61 : 0.56,
+    exante_vol_at_gross2: (mean(exanteVol) * 2) / Math.max(grossExposure, 1e-9),
     breakeven_cost_bps: breakeven,
     n_delistings: Math.floor(rng() * 9),
     n_failed_solves: spec.signal_lag_days === 0 ? 2 : 0,

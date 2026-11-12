@@ -357,7 +357,7 @@ class ResearchPipeline:
         ledger_path: str | None = None,
         composite_weight: float | None = None,
         ml_factory: Callable[[], object] | None = None,
-        rebalance_every: int = 1,
+        rebalance_every: int | None = None,
         venue: str = "routed",
         nav0: float = 1_000_000.0,
         warmup_days: int | None = None,
@@ -370,7 +370,10 @@ class ResearchPipeline:
         self.ledger = TrialLedger(ledger_path) if ledger_path else None
         self.composite_weight = composite_weight
         self.ml_factory = ml_factory
-        self.rebalance_every = rebalance_every
+        #: solve every k-th backtest date; ``None`` -> ``cfg.portfolio.rebalance_every_days``
+        self.rebalance_every = int(
+            self.cfg.portfolio.rebalance_every_days if rebalance_every is None else rebalance_every
+        )
         self.venue = venue
         self.nav0 = nav0
         self.warmup_days = warmup_days

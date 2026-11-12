@@ -160,7 +160,11 @@ def test_ic_by_year_falls_back_to_the_sampled_ic(client, run_dir, summary):
 def test_constraints(client, run_id, run_dir, summary):
     c = S.RunConstraints.model_validate(client.get(f"/api/runs/{run_id}/constraints").json())
     cs = pd.read_parquet(run_dir / "constraints.parquet")
-    assert c.n_rebalances == len(cs) == len(c.dates) == summary["backtest"]["n_days"]
+    # one row per solve: every ``portfolio.rebalance_every_days``-th decision day
+    import yaml
+
+    k = int(yaml.safe_load((run_dir / "config.yaml").read_text())["portfolio"]["rebalance_every_days"])
+    assert c.n_rebalances == len(cs) == len(c.dates) == -(-summary["backtest"]["n_days"] // k)
     assert c.dates == sorted(c.dates)
     assert c.names == sorted(c.names) and set(c.binding) == set(c.names)
     for nm in c.names:

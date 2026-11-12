@@ -416,7 +416,7 @@ A single-period optimiser re-run daily, with a turnover-aware cost term and half
 
 ### In the code
 
-`ResearchPipeline(cfg=None, use_ml=True, phase=None, ledger_path=None, composite_weight=None, ml_factory=None, rebalance_every=1, venue="routed", nav0=1_000_000.0, warmup_days=None, runs_root=None)`; `use_ml=False` is phase 1 (rank composite only), and `composite_weight=None` means `AlphaConfig.composite_weight = 0.5`. The CLI and the API use NAV \$5M so that fixed per-order fee minimums do not dominate costs (`docs/REVIEW_NOTES.md`). `run(md, dates=None, max_days=None)` restricts the backtest window. A changed `cfg.execution.signal_lag_days` triggers a full `fit` again inside `run` (labels, purge and IC windows depend on it), so `qts demo --compare-lag` fits twice. Fitted components are exposed for inspection: `universe_mask`, `md_u`, `risk`, `alpha`, `cost`, `optimizer`, `timings_`, `data_hash_`.
+`ResearchPipeline(cfg=None, use_ml=True, phase=None, ledger_path=None, composite_weight=None, ml_factory=None, rebalance_every=None, venue="routed", nav0=1_000_000.0, warmup_days=None, runs_root=None)`; `use_ml=False` is phase 1 (rank composite only), and `composite_weight=None` means `AlphaConfig.composite_weight = 0.5`. The CLI and the API use NAV \$5M so that fixed per-order fee minimums do not dominate costs (`docs/REVIEW_NOTES.md`). `run(md, dates=None, max_days=None)` restricts the backtest window. A changed `cfg.execution.signal_lag_days` triggers a full `fit` again inside `run` (labels, purge and IC windows depend on it), so `qts demo --compare-lag` fits twice. Fitted components are exposed for inspection: `universe_mask`, `md_u`, `risk`, `alpha`, `cost`, `optimizer`, `timings_`, `data_hash_`.
 
 ### Pitfalls & checks
 

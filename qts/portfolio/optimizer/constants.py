@@ -26,3 +26,8 @@ GAMMA_NUDGE = 1.02  # gamma multiplier for one retry after a numerical solver fa
 CAPS_ELASTICITY = 0.1  # |d log vol / d log gamma| below this (vol under target) ...
 POSITION_CAPS_SHARE = 0.1  # ... with per-name / ADV caps binding on >= 10 % of held names = caps bind
 GROSS_CAP_CONSTRAINTS = ("gross", "long_leg", "short_leg")  # leverage limits that cap the vol
+# --- gamma cap search (vol_target_is_cap): upward only from the base risk aversion
+GAMMA_CAP_FIRST_STEP = 4.0  # gamma multiplier per step while the leverage cap still binds
+GAMMA_CAP_GROSS_TOL = 0.03  # stop when the un-capped gross is within 3 % of the leverage limit
+GAMMA_CAP_MIN_RATIO = 1.05  # ... or the gamma bracket is narrower than 5 %
+GAMMA_CAP_ELASTICITY = -0.7  # prior d log gross / d log gamma before two admissible books exist

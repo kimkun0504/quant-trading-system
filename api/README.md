@@ -89,7 +89,9 @@ says when) — plus, per run, the headline numbers, the DSR trial count, fold Sh
 and `config_leaves`. `config_leaves` (also on every `RunSummary`) is the run's `config.yaml`
 flattened to dotted paths → scalars (`portfolio.trade_aversion: 1.0`); lists are compact JSON
 strings so a differing list still diffs as one key. The UI clusters runs into families and
-builds the config diff from it. `RunHeadline` also carries `invested_day_frac`.
+builds the config diff from it. `RunHeadline` also carries `invested_day_frac`. The run detail's
+`BacktestSummary` carries the diversification numbers `effective_n_names`, `specific_var_share` and
+`exante_vol_at_gross2` (null for runs recorded before 2026-11-12).
 
 ## Architecture
 

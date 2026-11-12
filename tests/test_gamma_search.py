@@ -72,7 +72,15 @@ def _check_bands(res, cfg, risk, opt, nav, w0, snap):
 
 
 def _fixed(g: float, **kw) -> PortfolioConfig:
+    kw.setdefault("min_trade_weight", 0.0)  # exact optimum: no post-solve projection
     return PortfolioConfig(risk_aversion_mode="fixed", risk_aversion=g, target_vol_annual=None, **kw)
+
+
+def _two_sided(**kw) -> PortfolioConfig:
+    """The two-sided gamma search (``vol_target_is_cap=False``: the vol target is a
+    level to reach), without the min-trade projection.  The cap form that is now the
+    default is tested in tests/test_construction.py."""
+    return PortfolioConfig(vol_target_is_cap=False, min_trade_weight=0.0, **kw)
 
 
 # ----------------------------------------------------------------- closed form
@@ -112,7 +120,7 @@ def test_target_vol_hits_reachable_target_within_bands(gctx):
     lo = SinglePeriodOptimizer(_fixed(64.0), cost).solve(a, r, gctx["w0"], NAV, snap, neutral_styles=STYLES)
     hi = SinglePeriodOptimizer(_fixed(1.0), cost).solve(a, r, gctx["w0"], NAV, snap, neutral_styles=STYLES)
     target = float(np.sqrt(_vol(lo) * _vol(hi)))  # strictly inside the reachable range
-    cfg = PortfolioConfig(target_vol_annual=target)
+    cfg = _two_sided(target_vol_annual=target)
     assert cfg.risk_aversion_mode == "target_vol"  # the default
     opt = SinglePeriodOptimizer(cfg, cost)
     res = opt.solve(a, r, gctx["w0"], NAV, snap, neutral_styles=STYLES)
@@ -134,7 +142,7 @@ def test_target_vol_accepts_capped_book(gctx):
     """An unreachable target: the search stops once the caps bind (vol below
     target, gross at its limit or vol insensitive to gamma) and keeps that book."""
     r, a, snap, cost = gctx["risk"], gctx["alpha"], gctx["snap"], gctx["cost"]
-    cfg = PortfolioConfig(target_vol_annual=0.40)
+    cfg = _two_sided(target_vol_annual=0.40)
     opt = SinglePeriodOptimizer(cfg, cost)
     res = opt.solve(a, r, gctx["w0"], NAV, snap, neutral_styles=STYLES)
     assert res.ok and res.vol_target_binding == "caps"
@@ -169,10 +177,10 @@ def test_gp_shrink_survives_gamma_search(gctx):
     hi = SinglePeriodOptimizer(_fixed(1.0), cost).solve(a, r, w_prev, NAV, snap, neutral_styles=STYLES)
     target = float(np.sqrt(_vol(lo) * _vol(hi)))
     kw = {"neutral_styles": STYLES, "alpha_half_life_days": 20.0}
-    off = SinglePeriodOptimizer(PortfolioConfig(target_vol_annual=target), cost).solve(
+    off = SinglePeriodOptimizer(_two_sided(target_vol_annual=target), cost).solve(
         a, r, w_prev, NAV, snap, **kw
     )
-    on = SinglePeriodOptimizer(PortfolioConfig(target_vol_annual=target, use_gp_shrink=True), cost).solve(
+    on = SinglePeriodOptimizer(_two_sided(target_vol_annual=target, use_gp_shrink=True), cost).solve(
         a, r, w_prev, NAV, snap, **kw
     )
     assert off.ok and on.ok and on.gp_shrink < 0.9 and off.gp_shrink == 1.0
@@ -198,7 +206,7 @@ def test_no_positions_outside_risk_model_from_flat(gctx):
         for k, v in snap.items()
     }
     w0 = pd.Series(0.0, index=a2.index)
-    cfg = PortfolioConfig()
+    cfg = PortfolioConfig(min_trade_weight=0.0)  # exact bands: no post-solve projection
     opt = SinglePeriodOptimizer(cfg, cost)
     res = opt.solve(a2, r, w0, NAV, snap2, neutral_styles=STYLES)
     assert res.ok
@@ -262,7 +270,7 @@ def test_routed_cost_problem_is_dpp_and_reuse_matches_rebuild(gctx):
     x.value, w.value = 0.01 * rng.standard_normal(len(t)), 0.01 * rng.standard_normal(len(t))
     assert float(tc_p.value) == pytest.approx(float(tc.value), rel=1e-9)  # same function
 
-    cfg = PortfolioConfig(target_vol_annual=0.08)
+    cfg = _two_sided(target_vol_annual=0.08)
     reuse = SinglePeriodOptimizer(cfg, cost, reuse_problem=True)
     fresh = SinglePeriodOptimizer(cfg, cost, reuse_problem=False)
     w_prev = gctx["w0"]

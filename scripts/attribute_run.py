@@ -18,7 +18,12 @@ book the run actually held.
    residual, sigma = the alpha model's 252-day idiosyncratic vol); (e) top /
    bottom decile, equal and cap weighted; (f) (c) inside each size tercile; and
    (c) from a 20-day EWMA of the rank and from the score sampled every 5 / 21
-   days.  Sharpe, exposure and turnover at a common 10 % ex-post vol, by fold.
+   days; (g) the rank of the alpha model's *traded* score (``AlphaModel.traded_score_``:
+   the combined score neutralised and smoothed inside the model, what the optimizer
+   is actually given -- with ``alpha.neutralize_score`` on it is the model's own
+   version of (c), with both knobs off it equals (a)).  (a)-(f) are built from the
+   raw combined score, so they are comparable across runs whatever the run's score
+   processing was.  Sharpe, exposure and turnover at a common 10 % ex-post vol, by fold.
 2. **Realised book attribution.**  Long vs short side, by year, by size tercile,
    by sector, and the risk model's factor attribution (``w_t' B_t f_{t+1}`` per
    market / industry / style, specific = total - factors), the book's style
@@ -92,6 +97,7 @@ IDEAL_LABELS: dict[str, str] = {
     "c_ewma": f"(c) on {EWMA_SPAN}d-EWMA score",
     "c_hold5": "(c) sampled every 5d",
     "c_hold21": "(c) sampled every 21d",
+    "g_traded": "(g) traded score, rank L/S",
 }
 
 
@@ -256,7 +262,12 @@ class Market:
         self.R = np.nan_to_num(R.where(close.notna()).to_numpy(dtype=float))
         self.elig = md.eligibility().reindex(index=md.dates, columns=md.tickers).to_numpy(dtype=bool)
         self.mcap = md.market_cap.reindex(index=md.dates, columns=md.tickers).to_numpy(dtype=float)
+        # (a)-(f): the raw combined score (comparable across runs); (g): what the model trades
         self.score = alpha.combined_score_.reindex(index=md.dates, columns=md.tickers).to_numpy(dtype=float)
+        traded = getattr(alpha, "traded_score_", alpha.combined_score_)
+        self.traded = traded.reindex(index=md.dates, columns=md.tickers).to_numpy(dtype=float)
+        # solve days of the run (gamma is recorded per solve); every day when not recorded
+        self.solved = np.isfinite(run.gamma) if np.isfinite(run.gamma).any() else np.ones(len(run.dec), bool)
         self.sigma = alpha.resid_vol_h_.reindex(index=md.dates, columns=md.tickers).to_numpy(dtype=float)
         # exposures (fundamental model): row of the most recent exposure date <= d
         ex = risk.exposures
@@ -360,6 +371,12 @@ def ideal_portfolios(mk: Market, keep_w_at: set[int]) -> Ideal:
             continue  # EWMA warm-up only
         w: dict[str, np.ndarray] = dict.fromkeys(names, zeros)
         expo = mk.exposures_at(p) if n >= MIN_NAMES else None
+        st = mk.traded[p]
+        mt = np.isfinite(st)
+        if int(mt.sum()) >= MIN_NAMES:
+            xt = np.zeros(N)
+            xt[mt] = (rankdata(st[mt]) - 0.5) / int(mt.sum()) - 0.5
+            w["g_traded"] = _normalise(xt)
         if n >= MIN_NAMES:
             w["a_rank"] = _normalise(np.where(m, x, 0.0))
             top, bot = m & (x >= 0.4), m & (x < -0.4)
@@ -476,7 +493,9 @@ def print_ideal(mk: Market, run: RunPanels, ideal: Ideal) -> None:
     c = ideal.pnl["c_resid"]
     print(
         f"corr(realised gross, ideal (c)) = {_corr(run.gross, c):+.2f}; "
-        f"corr(realised gross, ideal (a)) = {_corr(run.gross, ideal.pnl['a_rank']):+.2f}"
+        f"corr(realised gross, ideal (a)) = {_corr(run.gross, ideal.pnl['a_rank']):+.2f}; "
+        f"corr(realised gross, traded-score book (g)) = {_corr(run.gross, ideal.pnl['g_traded']):+.2f}; "
+        f"corr((g), (c)) = {_corr(ideal.pnl['g_traded'], c):+.2f}"
     )
 
 
@@ -976,19 +995,19 @@ def print_turnover(mk: Market, run: RunPanels, ideal: Ideal, att: Attribution, s
     # -- (b) gamma ---------------------------------------------------------------
     gam = run.gamma
     dlog = np.full(n, np.nan)
-    if np.isfinite(gam).sum() > 10:
-        with np.errstate(divide="ignore", invalid="ignore"):
-            dlog[1:] = np.diff(np.log(np.where(gam > 0, gam, np.nan)))
+    solves = np.flatnonzero(np.isfinite(gam) & (gam > 0))  # gamma is recorded on solve days only
+    if len(solves) > 10:
+        dlog[solves[1:]] = np.diff(np.log(gam[solves]))  # change since the previous solve
         ok = np.isfinite(dlog)
         jump = ok & (np.abs(dlog) > GAMMA_JUMP)
         calm = ok & ~jump
-        print("\n-- (b) risk aversion (gamma) from day to day --")
+        print(f"\n-- (b) risk aversion (gamma) from solve to solve ({len(solves)} solves in {n} days) --")
         print(
             f"gamma: mean {np.nanmean(gam):.2f}, median {np.nanmedian(gam):.2f}, p5 {np.nanquantile(gam, 0.05):.2f}, "
-            f"p95 {np.nanquantile(gam, 0.95):.2f};  std of daily dlog(gamma) {np.nanstd(dlog):.3f}"
+            f"p95 {np.nanquantile(gam, 0.95):.2f};  std of dlog(gamma) between solves {np.nanstd(dlog):.3f}"
         )
         print(
-            f"days with |dlog gamma| > {GAMMA_JUMP:.0%}: {100 * jump.sum() / max(ok.sum(), 1):.0f} % of days; "
+            f"solves with |dlog gamma| > {GAMMA_JUMP:.0%}: {100 * jump.sum() / max(ok.sum(), 1):.0f} % of solves; "
             f"turnover on those days {100 * to[jump].mean() if jump.any() else float('nan'):.2f} %/day vs "
             f"{100 * to[calm].mean() if calm.any() else float('nan'):.2f} %/day on the others; "
             f"corr(|dlog gamma|, turnover) = {_corr(np.abs(dlog), to):+.2f}"
@@ -1286,7 +1305,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         mk = Market(pipe, run)
         # solves sampled for the ex-ante split (their signal dates also keep the ideal book (c))
-        usable = np.flatnonzero(mk.sig_pos >= 0)
+        usable = np.flatnonzero((mk.sig_pos >= 0) & mk.solved)  # solve days: the risk model the solve used
         step = max(len(usable) // max(a.risk_dates, 1), 1)
         sample = usable[step // 2 :: step][: max(a.risk_dates, 1)]
         t1 = time.time()

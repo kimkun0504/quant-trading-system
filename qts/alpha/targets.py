@@ -105,6 +105,7 @@ __all__ = [
     "ExposuresFn",
     "default_exposures",
     "forward_returns",
+    "internal_design",
     "label_realisation",
     "residualize_forward_returns",
 ]
@@ -301,6 +302,30 @@ def default_exposures(md: MarketData, features: dict[str, Wide] | None = None) -
     return out
 
 
+def internal_design(md: MarketData, styles: dict[str, Wide]) -> tuple[dict[int, np.ndarray], np.ndarray]:
+    """The built-in neutralisation design shared by the label residualiser and the
+    score neutraliser (:mod:`qts.alpha.score_processing`): ``(D_of_row, S)`` with
+    ``D_of_row[i]`` the PIT industry dummies (first level dropped) in force on row
+    ``i`` of ``md.dates`` -- one matrix per block of constant classification
+    (``md.industry_as_of``), a single static matrix without ``industry_history`` --
+    and ``S`` the ``(T, N, n_styles)`` stack of the style panels from
+    :func:`default_exposures`."""
+    dates, tickers = md.dates, md.tickers
+    D_of_row: dict[int, np.ndarray] = {}
+    for seg_dates, labels in industry_segments(md):
+        Dm = stats.industry_dummies(labels, tickers, drop_first=True).to_numpy(dtype=float)
+        for i in dates.get_indexer(seg_dates):
+            D_of_row[int(i)] = Dm
+    S = (
+        np.stack(
+            [styles[k].reindex(index=dates, columns=tickers).to_numpy(dtype=float) for k in styles], axis=2
+        )
+        if styles
+        else np.zeros((len(dates), len(tickers), 0))
+    )
+    return D_of_row, S
+
+
 def residualize_forward_returns(
     md: MarketData,
     horizon: int,
@@ -342,20 +367,7 @@ def residualize_forward_returns(
     # Always build the internal (fast) exposures: they are the fallback for dates
     # where an external exposures_fn has no model yet (e.g. risk-model warm-up).
     styles = default_exposures(md, features)
-    # PIT industry dummies: one matrix per block of constant classification
-    # (md.industry_as_of); a single static matrix without industry_history.
-    D_of_row: dict[int, np.ndarray] = {}
-    for seg_dates, labels in industry_segments(md):
-        Dm = stats.industry_dummies(labels, tickers, drop_first=True).to_numpy(dtype=float)
-        for i in dates.get_indexer(seg_dates):
-            D_of_row[int(i)] = Dm
-    S = (
-        np.stack(
-            [styles[k].reindex(index=dates, columns=tickers).to_numpy(dtype=float) for k in styles], axis=2
-        )
-        if styles
-        else np.zeros((len(dates), len(tickers), 0))
-    )
+    D_of_row, S = internal_design(md, styles)
     ones = np.ones((len(tickers), 1))
     rows = np.flatnonzero(valid_rows)
     external = {}

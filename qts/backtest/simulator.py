@@ -124,6 +124,17 @@ solves.  A target-vol optimizer facing a 10,000 % ex-ante vol liquidates
 everything and the book then stays empty for many covariance half-lives; the
 gate makes that failure visible instead of reporting a quiet flat NAV.
 
+Rebalance schedule (``cfg.portfolio.rebalance_every_days = k``, overridden by
+``BacktestSpec.rebalance_every``): the optimizer is solved on the dates with
+``i % k == 0`` (``i`` = position in the run's dates) and the book drifts with
+prices on the others -- no solve, no trade, except that names in a forced exit
+(left the eligible universe) keep unwinding on their linear schedule every day,
+and delistings are liquidated on the day they are decided.  ``k = 1`` solves
+daily.  The optimizer's min-trade projection
+(``cfg.portfolio.min_trade_weight``) is counted in
+``diagnostics["n_small_trades_dropped"]``, and the largest constraint violation
+it left on any solve in ``diagnostics["max_min_trade_violation"]``.
+
 Failed solves: a rebalance whose solve status is not ``optimal`` /
 ``optimal_inaccurate`` holds the current book; it is counted in
 ``diagnostics["n_failed_solves"]`` and listed in
@@ -150,7 +161,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from dataclasses import replace as dc_replace
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -295,6 +306,9 @@ class _EventLog:
     exante_vol_alerts: list[dict[str, object]] = field(default_factory=list)
     n_data_error_returns: int = 0
     data_error_returns: list[dict[str, object]] = field(default_factory=list)
+    n_small_dropped: int = 0  # trades cancelled by the optimizer's min-trade projection
+    max_violation: float = 0.0  # largest constraint violation it left on any solve
+    n_violations: int = 0  # solves on which it left one
 
     @property
     def n_failed(self) -> int:
@@ -313,6 +327,7 @@ class _Recorder:
         self.X = np.zeros((T, N))
         self.C = np.zeros((T, 5))
         self.EXV = np.full(T, np.nan)
+        self.EXS = np.full(T, np.nan)  # specific part of the ex-ante variance
         self.TO = np.zeros(T)
         self.TC = np.full(T, np.nan)
         self.navs = np.empty(T + 1)
@@ -332,6 +347,7 @@ class _Recorder:
         g_ret: float,
         n_ret: float,
         exante_var: float | None,
+        exante_specific_var: float | None = None,
     ) -> None:
         self.W[i] = w_post
         self.X[i] = x
@@ -339,6 +355,8 @@ class _Recorder:
         self.TO[i] = float(np.abs(x).sum())
         if exante_var is not None:
             self.EXV[i] = exante_var
+        if exante_specific_var is not None:
+            self.EXS[i] = exante_specific_var
         self.gross[i] = g_ret
         self.net[i] = n_ret
         self.borrow_ret[i] = costs.borrow / nav
@@ -347,6 +365,7 @@ class _Recorder:
     def truncate(self, T_eff: int) -> None:
         self.W, self.X, self.C = self.W[:T_eff], self.X[:T_eff], self.C[:T_eff]
         self.EXV, self.TO, self.TC = self.EXV[:T_eff], self.TO[:T_eff], self.TC[:T_eff]
+        self.EXS = self.EXS[:T_eff]
         self.navs, self.gross, self.net = self.navs[: T_eff + 1], self.gross[:T_eff], self.net[:T_eff]
         self.borrow_ret = self.borrow_ret[:T_eff]
         self.T = T_eff
@@ -449,7 +468,7 @@ class DailyBarSimulator:
         risk_fn: RiskFn,
         optimizer: SinglePeriodOptimizer,
         nav0: float = 1e6,
-        rebalance_every: int = 1,
+        rebalance_every: int | None = None,
         venue: str = VENUE_ROUTED,
         neutral_styles: Sequence[str] | None = None,
         warm_start_weights: pd.Series | None = None,
@@ -571,7 +590,11 @@ class DailyBarSimulator:
             exit_days=max(exit_days, 1),
             haircut=float(self.cfg.cost.delisting_haircut),
             venue=spec.venue,
-            rebalance_every=spec.rebalance_every,
+            rebalance_every=int(
+                spec.rebalance_every
+                if spec.rebalance_every is not None
+                else getattr(self.cfg.portfolio, "rebalance_every_days", 1)
+            ),
             neutral_styles=None if spec.neutral_styles is None else list(spec.neutral_styles),
             progress=spec.progress,
             # signal half-life (handbook fix #5): AlphaOutput.half_life_days drives the
@@ -697,12 +720,13 @@ class DailyBarSimulator:
         no_trade: list[str],
         force_caps: dict[str, float],
     ) -> np.ndarray:
-        """Post-trade target weights: the current book on non-rebalance days and
-        before the first signal date, else the optimizer's solution (names
-        without a price keep their weight)."""
+        """Post-trade target weights: on a rebalance day (``i % rebalance_every ==
+        0`` and a signal date exists) the optimizer's solution (names without a
+        price keep their weight); otherwise the current, drifted book with the
+        day's forced exits applied (:meth:`_forced_exit_step`)."""
         w_post = state.w_pre.copy()
         if day.i % ctx.rebalance_every != 0:
-            return w_post
+            return self._forced_exit_step(ctx, day, w_post, force_caps)
         if not day.rebalance:
             events.n_no_signal += 1
             return w_post
@@ -745,11 +769,31 @@ class DailyBarSimulator:
                 "optimizer solve failed on %s: status=%s (holding current book)", day.t.date(), res.status
             )
         events.n_out_of_model += int(getattr(res, "n_out_of_model", 0) or 0)
+        events.n_small_dropped += int(getattr(res, "n_small_trades_dropped", 0) or 0)
+        viol = float(getattr(res, "max_constraint_violation", 0.0) or 0.0)
+        if viol > 0:
+            events.n_violations += 1
+            events.max_violation = max(events.max_violation, viol)
         w_post = np.array(res.w_target.reindex(tickers).fillna(0.0).values, dtype=float, copy=True)
         w_post[~alive] = state.w_pre[~alive]  # cannot trade names without a price
         rec.TC[day.i] = res.transfer_coefficient
         events.solve_log.append(_solve_log_entry(day, res))
         return w_post
+
+    @staticmethod
+    def _forced_exit_step(
+        ctx: _RunContext, day: _Day, w: np.ndarray, force_caps: dict[str, float]
+    ) -> np.ndarray:
+        """Non-rebalance day: no solve, but names that left the eligible universe keep
+        unwinding on their linear schedule -- each one's ``|w|`` is cut to the day's
+        cap from :meth:`_universe_step` (never increased, never flipped; a name
+        without a price cannot trade).  Everything else drifts.  Delistings are
+        handled in the mark-to-market step on every day regardless."""
+        for tk, cap in force_caps.items():
+            j = cast(int, ctx.tickers.get_loc(tk))
+            if day.alive[j] and abs(w[j]) > cap:
+                w[j] = np.sign(w[j]) * cap
+        return w
 
     def _check_exante_vol(
         self, ctx: _RunContext, day: _Day, state: _BookState, events: _EventLog, sig_date: pd.Timestamp
@@ -956,12 +1000,12 @@ class DailyBarSimulator:
         g_ret = float(w_post @ r)
         nav1 = nav * (1.0 + g_ret) - costs.total
         n_ret = nav1 / nav - 1.0
-        exv = (
-            float(state.last_risk.portfolio_variance(pd.Series(w_post, index=ctx.tickers)))
-            if state.last_risk is not None
-            else None
-        )
-        rec.record(day.i, w_post, x, costs, nav, nav1, g_ret, n_ret, exv)
+        exv = exs = None
+        if state.last_risk is not None:
+            w_ser = pd.Series(w_post, index=ctx.tickers)
+            exv = float(state.last_risk.portfolio_variance(w_ser))
+            exs = float(state.last_risk.specific_variance(w_ser))
+        rec.record(day.i, w_post, x, costs, nav, nav1, g_ret, n_ret, exv, exs)
         w_next = w_post * (1.0 + r) * nav / nav1 if nav1 > 0 else np.zeros(ctx.n_names)
         w_next[liquidate] = 0.0
         state.w_pre = w_next
@@ -993,6 +1037,7 @@ class DailyBarSimulator:
             trades=pd.DataFrame(rec.X, index=dec, columns=tickers),
             costs=pd.DataFrame(rec.C, index=dec, columns=COST_COLUMNS),
             exante_var=pd.Series(rec.EXV, index=dec, name="exante_var_daily"),
+            exante_specific_var=pd.Series(rec.EXS, index=dec, name="exante_specific_var_daily"),
             turnover=pd.Series(rec.TO, index=dec, name="turnover"),
             transfer_coefficient=pd.Series(rec.TC, index=dec, name="transfer_coefficient"),
             periods_per_year=self.cfg.trading_days_per_year,
@@ -1009,7 +1054,10 @@ class DailyBarSimulator:
                 "n_data_error_returns": len(self._bad_prices),
                 "data_error_returns": self._bad_prices[:100],
                 "run_time_sec": time.perf_counter() - t_start,
-                "rebalance_every": spec.rebalance_every,
+                "rebalance_every": ctx.rebalance_every,
+                "n_small_trades_dropped": events.n_small_dropped,
+                "max_min_trade_violation": events.max_violation,
+                "n_min_trade_violations": events.n_violations,
                 "venue": spec.venue,
                 "signal_lag_days": ctx.lag,
                 "n_no_signal_days": events.n_no_signal,
@@ -1057,4 +1105,8 @@ def _solve_log_entry(day: _Day, res: Any) -> dict[str, object]:
         "vol_target_binding": str(getattr(res, "vol_target_binding", "") or ""),
         "n_solves": int(getattr(res, "n_solves", 0) or 0),
         "n_excluded_alpha": int(getattr(res, "n_excluded_alpha", 0) or 0),
+        # min-trade projection (PortfolioConfig.min_trade_weight)
+        "n_small_trades_dropped": int(getattr(res, "n_small_trades_dropped", 0) or 0),
+        "max_constraint_violation": float(getattr(res, "max_constraint_violation", 0.0) or 0.0),
+        "violated_constraint": str(getattr(res, "violated_constraint", "") or ""),
     }

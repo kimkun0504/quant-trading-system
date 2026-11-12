@@ -44,6 +44,8 @@ alpha:
   ic_prior_obs: 252
   ic_floor_frac: 0.25
   composite_weight: 0.5
+  neutralize_score: true
+  score_smoothing_halflife_days: 10.0
   dynamic_weights: true
   half_life_lookback_days: 504
   model_seeds: 3
@@ -173,6 +175,8 @@ portfolio:
   industry_band: 0.03
   style_band_sd: 0.1
   risk_aversion_mode: target_vol
+  vol_target_is_cap: true
+  leverage_cap_raises_gamma: true
   risk_aversion: 2.0
   trade_aversion: 1.0
   hold_aversion: 1.0
@@ -190,6 +194,8 @@ portfolio:
   use_gp_shrink: false
   neutralize_risk_only_styles: true
   reuse_problem: false
+  rebalance_every_days: 5
+  min_trade_weight: 0.0005
 execution:
   auction_max_pct_of_auction_volume: 0.02
   algo_max_pct_adv: 0.05

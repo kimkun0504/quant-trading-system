@@ -307,9 +307,8 @@ def test_signal_lag_shifts_decisions_by_one_day():
     )
 
     md = make_md()
-    cfg = SystemConfig().with_overrides(
-        {"execution.signal_lag_days": 0}
-    )  # mechanics test: trade at the signal close
+    # mechanics test: trade at the signal close, solve every day
+    cfg = SystemConfig().with_overrides({"execution.signal_lag_days": 0, "portfolio.rebalance_every_days": 1})
     seen = []
 
     def alpha_rec(t):
@@ -334,7 +333,9 @@ def test_signal_lag_shifts_decisions_by_one_day():
     assert list(res1.weights.index) == list(DATES[:4])
     # the production default is a one-day delay (decision D4); the kwarg overrides the config
     assert SystemConfig().execution.signal_lag_days == 1
-    cfg1 = SystemConfig().with_overrides({"execution.signal_lag_days": 1})
+    cfg1 = SystemConfig().with_overrides(
+        {"execution.signal_lag_days": 1, "portfolio.rebalance_every_days": 1}
+    )
     res_cfg = DailyBarSimulator(cfg1, ConstantBpsCost()).run(
         md, DATES, alpha_fn, risk_fn, PresetOptimizer(TARGETS), nav0=NAV0
     )

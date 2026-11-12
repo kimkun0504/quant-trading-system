@@ -131,6 +131,15 @@ class BacktestSummary(_Model):
         description="realised / ex-ante vol over invested days only; NaN (null) with too few"
     )
     invested_day_frac: float = Field(description="share of decision days with gross exposure > 1e-4 of NAV")
+    effective_n_names: float = Field(
+        description="mean over invested days of 1 / sum p_i^2, p_i = |w_i| / gross (null for runs recorded before it)"
+    )
+    specific_var_share: float = Field(
+        description="mean specific share of the risk model's ex-ante variance of the book (null when not recorded)"
+    )
+    exante_vol_at_gross2: float = Field(
+        description="mean ex-ante annual vol scaled to gross exposure 2: vol x 2 / gross (null when not recorded)"
+    )
     breakeven_cost_bps: float
     n_delistings: int
     n_failed_solves: int

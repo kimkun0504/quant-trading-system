@@ -219,8 +219,21 @@ $$
 
 where $w_0$ is the weight when the exit started, $k$ the number of days since, and $n$ = `PortfolioConfig.exit_ineligible_days` = 5 (→ see **Portfolio construction › Constraints**). The second-pass audit's hand-built run reproduced the sequence exactly: 0.0373, 0.0280, 0.0186, 0.0093, 0. A name that re-enters the universe, or is already flat, leaves the forced set. Ineligible names that are not held go on the no-trade list. Events go to `diagnostics["forced_exits"]`; `n_ineligible_name_days` counts the exposure.
 
-### `rebalance_every`
-With `rebalance_every = k > 1`, the optimiser runs only every $k$-th date. On other days the book drifts with no trade, but borrow is still charged daily. The forced-exit clock advances every day, but the caps only bind on rebalance days.
+### Rebalance schedule
+
+**What.** The optimiser is not solved every day. `PortfolioConfig.rebalance_every_days` = $k$ = **5** (default since 2026-11-12): it runs on the backtest dates with index $i$ where $i \bmod k = 0$ — the first date, then every fifth — and on the days in between the book **drifts**: weights move with prices (→ **Weight drift**), nothing is traded, borrow is still charged daily. `BacktestSpec.rebalance_every`, `DailyBarSimulator.run(rebalance_every=...)`, `ResearchPipeline(rebalance_every=...)` and `qts run --rebalance-every` override the config for one run; `None` (their default) means "use the config". $k = 1$ is the old daily schedule.
+
+**Two things still happen every day:**
+- **Forced exits.** A held name that leaves the eligible universe is unwound on its linear schedule (previous subsection) without waiting for the next solve: on a hold day its $\lvert w\rvert$ is cut to the day's cap (`DailyBarSimulator._forced_exit_step`; never increased, never flipped) and the trade is costed like any other. Nothing else trades on that day.
+- **Delistings and halts** are handled in the mark-to-market step, which runs daily regardless.
+
+**Why.** The first real ML run traded 13.6% of NAV a day. Only 44% of a day's trading survived netting over the next 21 days — the rest was undone — and the paper portfolio built from the same score lost little when it was sampled every 21 days instead of daily (gross Sharpe 0.92 against 1.04, at 2.2% of gross a day). A 20–60-day forecast does not change enough in a day to pay for a round of trades; solving weekly removes four fifths of the opportunities to re-trim. The two other pace controls are the score's smoothing half-life (→ see **Alpha model › Smoothing the score**) and the minimum trade size (→ see **Portfolio construction › Minimum trade size**).
+
+<callout icon="⚠️" color="yellow_bg">
+What a hold day does *not* do. No risk model is evaluated and no band is re-checked: the recorded ex-ante variance of a hold day uses the last solve's risk model with the drifted weights, and after five days of drift the book can sit slightly outside a band (gross 2.01 against a limit of 2.0 is normal). `diagnostics["solve_log"]`, `constraints.parquet` and `n_rebalance_solves` have one row per **solve**, not per day; the `failed_solves` and `risk_model_sanity` gates divide by solves.
+</callout>
+
+Tests: `tests/test_construction.py::test_rebalance_schedule_is_exact` (solve dates are exactly `dates[::k]`, zero turnover and exact drift in between, the kwarg overrides the config) and `test_forced_exits_run_on_hold_days`.
 
 ### In the code
 `DailyBarSimulator(cfg, cost_model, adv_window=63, vol_window=63).run_spec(md, spec, alpha_fn, risk_fn, optimizer)` is the whole engine; `spec` is a frozen `qts/backtest/spec.py::BacktestSpec` (validated on construction). `run(md, dates, alpha_fn, risk_fn, optimizer, nav0=..., ...)` still accepts the dates plus keyword arguments and packs them into a spec. `cost_model` is a `qts.core.costs.CostModel` (production: `TransactionCostModel(cfg.cost, cfg.execution)`); a legacy model without `snapshot()` is wrapped once by `qts/backtest/cost_adapter.py::_LegacyCostModel`, and the window arguments only apply to that legacy path. The pipeline builds the spec for you:
@@ -244,7 +257,7 @@ The day loop in `run_spec` is a fixed pipeline of small steps, one method each: 
 | Argument | Default | Effect |
 |---|---|---|
 | `nav0` | 1e6 (pipeline 1e6; CLI demo `--nav` 5e6) | starting NAV in USD; drives ADV caps and impact (capacity) |
-| `rebalance_every` | 1 | optimise every k-th date; drift in between |
+| `rebalance_every` | `None` → `cfg.portfolio.rebalance_every_days` (5) | optimise every k-th date; drift in between (forced exits daily) |
 | `venue` | `"routed"` | venue the optimiser and the cost estimate price |
 | `signal_lag_days` | `None` → `cfg.execution.signal_lag_days` (1) | execution delay $L$ |
 | `neutral_styles` | `None` | styles given the style band (pipeline: risk-only styles) |
@@ -386,11 +399,35 @@ This tests "is the mean daily return different from zero?" while allowing for au
 | `total_costs_usd` | sum of all booked costs including borrow and delisting liquidations |
 | `transfer_coefficient_mean` | mean per-solve TC (→ see **Portfolio construction › Diagnostics**) |
 | `realized_vs_exante_vol_ratio` | realised gross vol / mean ex-ante vol over **invested** decision days only (post-trade gross exposure > `INVESTED_GROSS_EPS` = 1e-4 of NAV), forecast at $t$ aligned to the return $t\to t+1$; NaN when fewer than `MIN_INVESTED_DAYS_FOR_VOL_RATIO` = 20 such days have a forecast. An empty-book day holds solver-noise weights (|w| ~ 1e-9–1e-6), whose positive forecast and ~0 return would otherwise pass the `v > 0` filter; `BacktestResult.realized_vs_exante()` also returns the two annual vols and `n_invested_days` |
+| `effective_n_names`, `specific_var_share`, `exante_vol_at_gross2` | the diversification numbers (next subsection) |
 | `invested_day_frac` | share of decision days whose post-trade gross exposure exceeds 1e-4 of NAV (`BacktestResult.invested_days()`); the report card prints it next to the vol ratio and the pipeline adds a note below 0.5 |
 | `breakeven_cost_bps` | per-side breakeven from `gross_after_borrow` (above) |
 | `n_delistings`, `n_failed_solves` | counts from `diagnostics` |
 | `mean_risk_aversion` | mean annual $\gamma$ over the solve log (`sizing_summary`); NaN if no solve reported one |
-| `vol_target_caps_share` | share of target-vol solves whose book was capped below the vol target (`vol_target_binding == "caps"`); NaN in `fixed` mode |
+| `vol_target_caps_share` | share of target-vol solves whose book was capped below the vol target (`vol_target_binding == "caps"`); NaN in `fixed` mode; always 0 with `vol_target_is_cap` (the default), where `BacktestResult.vol_target_outcomes()` gives the share of each outcome (`below_target` / `leverage` / `target`) and the report card prints them |
+
+### Diversification
+Three summary fields answer one question: is the gross exposure spread over the universe, or parked in a handful of names? All are means over **invested** decision days (`BacktestResult.diversification()`).
+
+**`effective_n_names`** — the inverse Herfindahl index of the absolute weights:
+
+$$
+N_{\text{eff}} = \frac{1}{\sum_i p_i^2}, \qquad p_i = \frac{\lvert w_i\rvert}{\sum_j \lvert w_j\rvert}
+$$
+
+where $w_i$ are the post-trade weights. $n$ equal positions give $N_{\text{eff}} = n$; one position gives 1. With a 2% position cap and gross 2 the floor is 100 (every name at the cap); a rank-weighted book over $n$ names has $N_{\text{eff}} \approx 0.75\,n$.
+
+**`specific_var_share`** — the stock-specific share of the risk model's ex-ante variance of the book, $\sum_i w_i^2 d_i \,/\, w^\top \Sigma w$ (`RiskModelOutput.specific_variance` over `portfolio_variance`; recorded per day in `BacktestResult.exante_specific_var`). Read it together with the next number: a factor-hedged book *should* have a high specific share, because the factor part has been hedged away. It is a warning only when the risk per unit of gross is high too.
+
+**`exante_vol_at_gross2`** — the predicted annual vol the book would have at 100% long / 100% short:
+
+$$
+\sigma_{\text{gross 2}} = \hat\sigma \cdot \frac{2}{\sum_i \lvert w_i\rvert}
+$$
+
+Risk per unit of leverage, comparable across runs of different size. A diversified market-neutral book of several hundred names runs at roughly 3–5% here; the concentrated book of the first real ML run ran at 7.5% against 3.4% for the paper portfolio built from the same score (`docs/notes/construction_fix_2026-11-12.md`).
+
+The report card prints the three on the `diversification` line, and the solve schedule, the number of cancelled small trades and the largest constraint violation they left on the `trading` line.
 
 ### References
 - [Harvey, Liu & Zhu via CXO Advisory, Taming the Factor Zoo](https://www.cxoadvisory.com/big-ideas/taming-the-factor-zoo/)
@@ -418,7 +455,7 @@ Before believing a result, answer these in order. Each question maps to a field 
 2. **Where does the money come from?** Run `brinson_like_attribution`, and look at `exposures.parquet` in the run directory. Steady PnL from `market` or an industry is an unintended bet, not alpha.
 3. **How much do costs take, and how fragile is that?** Compare gross and net Sharpe, then read the slope of the cost-sensitivity table. If 2× costs kill the strategy, the cost model has to be right to within a factor of two, and it has never been calibrated on your own fills.
 4. **Is turnover consistent with the signal?** Effective holding days far below the signal half-life means you are paying to trade noise.
-5. **Is the risk real and sized as intended?** `realized_vs_exante_vol_ratio` near 1. Well above 1 means the book is riskier than it was sized to be. A high `vol_target_caps_share` means the book could not reach its vol target. Read it together with `invested_day_frac`: the ratio is estimated on invested days only, so a run whose book was empty on half the days (an alpha that is exactly zero, e.g. an IC floor) still gets an honest ratio for the days it held risk, and `n/a (too few invested days)` instead of a noise number when it barely traded.
+5. **Is the risk real and sized as intended?** `realized_vs_exante_vol_ratio` near 1. Well above 1 means the book is riskier than it was sized to be — and if `effective_n_names` is low and `exante_vol_at_gross2` high, the gap is concentration: specific risk is the part a risk model forecasts worst for a book the optimizer picked. A high `vol_target_caps_share` (two-sided search only) means the book could not reach its vol target. Read it together with `invested_day_frac`: the ratio is estimated on invested days only, so a run whose book was empty on half the days (an alpha that is exactly zero, e.g. an IC floor) still gets an honest ratio for the days it held risk, and `n/a (too few invested days)` instead of a noise number when it barely traded.
 6. **Did the machinery work every day?** `n_failed_solves` (above 2% of rebalances the `failed_solves` gate fails the run), `n_exante_vol_alerts` (above 0.5% the `risk_model_sanity` gate fails: the risk model forecast an absurd vol and the book was sized on it), `n_data_error_returns`, `n_delistings`, `n_out_of_model_name_days`, `n_no_signal_days` and `forced_exits` should all be small and explainable.
 7. **Is it consistent?** Fold Sharpes: one great block and three flat ones is a regime bet.
 8. **How many things did you try?** The DSR only knows about trials logged in the ledger. Running variants outside the pipeline and reporting the best is exactly the snooping the gates exist to catch.
@@ -471,7 +508,7 @@ transfer coeff    0.53   realized/ex-ante vol 1.04
 
 - **period**: first NAV date → last; 1,005 net daily returns (~4 years) after warm-up. A run at lag $L \ge 1$ appends `signal lag 1d`.
 - **Sharpe gross/net (NW t)**: net 0.96 is in the plan's success band, but $t = 2.06$ says four years cannot distinguish it from zero at the plan's t > 3 standard.
-- **CAGR / vol**: 6.40% net at **6.7%** vol, below the 10% target because gross leverage is at its 2.0 cap (→ see **Portfolio construction › Sizing**). The current report adds a `sizing` line right below `transfer coeff`: `mean gamma` (the mean risk aversion of the returned books) and `vol target capped on X% of solves` (`vol_target_caps_share`). A book at the gross cap below its vol target would show a high capped share.
+- **CAGR / vol**: 6.40% net at **6.7%** vol, below the 10% target because gross leverage is at its 2.0 cap (→ see **Portfolio construction › Sizing**). The current report adds a `sizing` line right below `transfer coeff`: `mean gamma` (the mean risk aversion of the returned books) and `vol target capped on X% of solves` (`vol_target_caps_share`). A book at the gross cap below its vol target would show a high capped share. Since 2026-11-12 (vol target as a cap) the line reads `vol cap binding on X% of solves, book under the cap on Y%`, and two more lines follow: `diversification` (effective names, specific share of ex-ante variance, ex-ante vol at gross 2; → **Diversification**) and `trading` (solve every k days, small trades dropped, largest constraint violation after the min-trade projection).
 - **max drawdown / calmar**: −5.3%, under one year's vol: benign for this path.
 - **turnover / effective holding**: 8.0%/day two-sided; 50 days, at the 50-day monitored target, so no "raise trade_aversion" note (the note fires below 60% of target).
 - **cost per side / exposures**: 10.5 bp per side (routed, all-in, excluding borrow); gross 2.00, net +0.04: a dollar-neutral 100/100 book.

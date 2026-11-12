@@ -99,6 +99,9 @@ def test_real_stack_lag1_weights_equal_lag0_weights_one_day_earlier(md):
             "portfolio.trade_aversion": 0.0,
             "portfolio.hold_aversion": 0.0,
             "portfolio.vol_target_projection_cost_weight": 0.0,
+            # mechanics: a solve every day, nothing filtered after it
+            "portfolio.rebalance_every_days": 1,
+            "portfolio.min_trade_weight": 0.0,
         }
     )
     tc = TransactionCostModel(cfg.cost, cfg.execution)
@@ -124,7 +127,7 @@ def test_real_stack_lag1_weights_equal_lag0_weights_one_day_earlier(md):
 
 
 def test_real_stack_lag1_inputs_are_dated_signal_date_and_book_is_current(md):
-    cfg = SystemConfig()
+    cfg = SystemConfig().with_overrides({"portfolio.rebalance_every_days": 1})
     tc = TransactionCostModel(cfg.cost, cfg.execution)
     dates = md.dates[-(N_DAYS_RUN + 1) :]
     a_fn, r_fn = _alpha_fn(md), _risk_fn(md)

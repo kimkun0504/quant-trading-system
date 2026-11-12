@@ -169,7 +169,7 @@ def test_simulator_records_failed_solves_and_gate_fails():
     from qts.backtest import DailyBarSimulator
     from qts.core.config import SystemConfig
 
-    cfg = SystemConfig().with_overrides({"execution.signal_lag_days": 0})
+    cfg = SystemConfig().with_overrides({"execution.signal_lag_days": 0, "portfolio.rebalance_every_days": 1})
     opt = FlakyOptimizer(TARGETS, fail_dates={DATES[1]})
     res = DailyBarSimulator(cfg, ConstantBpsCost()).run(make_md(), DATES, alpha_fn, risk_fn, opt, nav0=NAV0)
     d = res.diagnostics

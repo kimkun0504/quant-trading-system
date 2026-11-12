@@ -6,6 +6,7 @@ Portfolio construction turns three inputs into one decision. The inputs are the 
 
 <callout icon="🆕" color="green_bg">
 **What changed (Nov 2026)**
+- **(2026-11-12) The vol target is a cap, and $\gamma$ is only ever raised.** `vol_target_is_cap = True`: $\gamma$ starts at `risk_aversion` and goes up to keep the predicted vol under `target_vol_annual` and (`leverage_cap_raises_gamma = True`) to keep the book off the gross limit, so a strong signal is *scaled* to fit gross 2 instead of being cut down to its ~100 highest-alpha names. On the first real ML run the old two-sided search chased an unreachable 10% and produced a book with 7.5% vol at gross 2 where the diversified paper portfolio had 3.4%. **Trade slower:** the optimizer is solved every `rebalance_every_days` = 5 days and trades below `min_trade_weight` = 5 bp of NAV are cancelled after the solve. → see **Sizing**; `docs/notes/construction_fix_2026-11-12.md`.
 - **Sizing by risk aversion, not by projection.** New default `risk_aversion_mode="target_vol"`: $\gamma$ is chosen per solve (closed-form start $\gamma_0 = \text{IR}/(2\sigma_{\text{target}})$, then a Newton/secant search) so the alpha-aware optimum hits the vol target or the caps bind. The second-pass audit found the old fixed $\gamma = 10$ solved for a 2–3% vol book and then levered it 3–5× with an alpha-blind projection.
 - **Fixed-$\gamma$ default lowered from 10 to 2** (annual risk aversion; $\approx$ IR/(2 × 10%) on the measured alpha). The projection survives only in `"fixed"` mode, now measured as $\gamma H$-weighted tracking variance plus trade cost, so both terms are fractions of NAV.
 - **Names outside the risk model are never opened**; held ones are forced out. The out-of-model specific variance (90th percentile) is one shared rule (`qts/core/risk_fill.py`).
@@ -362,7 +363,7 @@ The optimiser enforces $\lvert w_i\rvert \le \max(\text{cap}_k,\ \lvert w_{0,i}\
 ## Sizing: risk aversion and the volatility target
 
 ### What it is
-Volatility targeting makes the book's predicted annual volatility equal a target, `target_vol_annual = 0.10` (10%). It is like cruise control for risk: the alpha, risk and cost terms decide *what* to hold, and the target sets *how much*. In this system the target is reached by choosing the risk aversion $\gamma$ of the objective itself, every day, so that the optimiser's own answer has 10% predicted vol. The book that is traded is therefore an optimum of the alpha / risk / cost trade-off at the size it is traded, not a rescaled copy of some other book.
+Sizing decides *how much* risk the book carries; the alpha, risk and cost terms decide *what* it holds. Size is set through the risk aversion $\gamma$ of the objective itself, on every solve, so the book that is traded is an optimum of the alpha / risk / cost trade-off at the size it is traded, not a rescaled copy of some other book. `target_vol_annual = 0.10` (10%) is the volatility figure the sizing works against. Since 2026-11-12 it is a **cap** by default (`vol_target_is_cap = True`): $\gamma$ starts at the base `risk_aversion` and is only ever *raised* — to bring the predicted vol down to 10% when the base book exceeds it, and to keep the book off the gross-leverage limit. The earlier behaviour, a two-sided search that makes the predicted vol *equal* the target, is kept under `vol_target_is_cap = False` and described after the cap form.
 
 ### Why we need it here
 Without a target, the optimiser's natural risk level is $\text{IR}_{\text{ann}}/(2\gamma)$. That swings with the alpha model's confidence, which is itself noisy. The book's risk would rise when the model is (over)confident and fall when it is not. A fixed risk budget makes PnL comparable across time, sets drawdown expectations, and gives risk control that does not depend on alpha calibration. For long equity, Harvey et al. found vol targeting cut vol-of-vol from 4.6% to 1.8% and raised Sharpe from 0.40 to about 0.48–0.51. For a dollar-neutral book the plan expects mostly the vol-of-vol reduction (BUILD_PLAN §5).
@@ -400,7 +401,49 @@ Now check that $\sqrt{252}\sqrt q/H$ is the annual IR. Annual alpha is $\alpha_{
 
 Real constraints and convex costs shrink the optimum below the closed form, so the $\gamma$ that hits the target is usually *below* $\gamma_0$. That is why $\gamma_0$ is only the starting point.
 
-### How it works: the $\gamma$ search (`risk_aversion_mode = "target_vol"`, default)
+### The vol target as a cap (`vol_target_is_cap = True`, default)
+
+**What went wrong with "reach the target".** A broad market-neutral book at gross 2 does not have 10% volatility. On the real 60-day ML run the paper portfolio built straight from the score — every eligible name held, rank-weighted, neutral to industries and risk-only styles — ran at **3.4%** annual vol at gross 2. The two-sided search below, asked for 10%, could not add leverage (gross is capped at 2.0), so it stopped at the closed-form start with the gross limit binding (mean $\gamma$ 4.55, and as low as 0.10 at the 5th percentile). At those $\gamma$ the alpha asks for several times more gross than the limit allows, and the limit decides who stays.
+
+<callout icon="💡" color="blue_bg">
+Why a binding gross limit concentrates the book. The gross constraint $\lVert w\rVert_1 \le 2$ enters the optimality conditions through a multiplier $\lambda \ge 0$ that works exactly like a per-dollar holding fee. With a diagonal risk model for intuition, each name's weight is $w_i = \text{sign}(\alpha_i)\,\max(\lvert\alpha_i\rvert - \lambda,\,0)\,/\,(2\gamma H\sigma_i^2)$: a name is held only if its alpha beats the fee, and the stronger the signal relative to the limit, the higher the fee. Grinold alphas are $\text{IC}\cdot\sigma_i\cdot z_i$, so the survivors are the high-score, **high-volatility** names, each at the 2% position cap. Lowering $\gamma$ makes this worse, not better: it cannot add gross, it only raises $\lambda$. Raising $\gamma$ instead divides every weight by the same factor — the whole diversified optimum is *scaled* down until it fits under the limit, and no name is cut.
+</callout>
+
+The outcome on that run: the optimizer's book had 7.5% vol at gross 2 against the paper portfolio's 3.4%, 82% of its variance was stock-specific, its realised vol was 1.46× the forecast with the whole gap in the specific piece (the risk model forecast the diversified paper portfolio at 0.95), its specific P&L was −1.34% a year, and its gross Sharpe was 0.20 against the paper portfolio's 1.04. The vol target was reported as "capped" on 100% of solves (`docs/notes/construction_fix_2026-11-12.md`).
+
+**The rule.** `qts/portfolio/optimizer/sizing.py::gamma_cap_search` returns the book of the *smallest* $\gamma \ge$ `risk_aversion` (the base, default 2) that is **admissible**:
+
+1. predicted annual vol $\le \sigma_{\text{target}}(1 + 2\%)$ — the vol cap; and
+2. with `leverage_cap_raises_gamma = True` (default; long/short books): the gross limit is **not binding** (zero dual on `gross`).
+
+$\gamma$ is never lowered below the base. The search:
+
+1. **Solve at the base.** Admissible → done, one solve (`vol_target_binding = "below_target"`; `"target"` if the vol happens to sit within 2% of the cap).
+2. **Step up** while no admissible book has been found: a Newton step on $\log\sigma$ versus $\log\gamma$ when the vol cap is the violated condition (measured elasticity, $-1$ before two points exist, factor clipped to [1.04, 10]); a factor `GAMMA_CAP_FIRST_STEP` = 4 while the gross limit still binds.
+3. **Close the bracket from above** once one admissible book exists: aim for the $\gamma$ at which the *distance to the tighter cap*, $\max(\sigma/\sigma_{\text{target}},\ \lVert w\rVert_1/\text{gross limit})$, would reach just under 1, by a log-log secant through the two lowest admissible points (prior elasticity `GAMMA_CAP_ELASTICITY` = −0.7 with one point: cost-free it is −1, and trade costs anchor the book to its current holdings); bisect if the step leaves the bracket.
+4. **Stop** when the admissible book is *tight*: vol within 2% of the cap (`"target"`), or gross within `GAMMA_CAP_GROSS_TOL` = 3% of the limit (`"leverage"`), or the bracket is narrower than 5%, or the budget of `GAMMA_MAX_SOLVES` = 8 solves is spent with an admissible book in hand. Typical cost when the gross limit decides: 5–6 solves.
+
+`vol_target_binding` therefore reads `"below_target"` (the base book fits: weak signal or small book), `"leverage"` ($\gamma$ raised until the book fits under the gross limit — the normal state of a healthy signal on a broad universe), or `"target"` ($\gamma$ raised until the vol came down to the cap). `OptimizationResult.risk_aversion` is the $\gamma$ of the returned book, and the note records the path (`gamma cap search (<outcome>): gamma <g> (base <b>), vol <v> vs cap <t>, gross <G> after <k> solves [gamma:vol/gross <path>]`).
+
+**What it does, measured** (synthetic market, 800 eligible names, 60 out-of-sample days, default config against the same config with `leverage_cap_raises_gamma = False`; one seed, a mechanism check, not a performance claim):
+
+| | Base $\gamma$ = 2, gross limit as a plain constraint | $\gamma$ raised until the limit is slack (default) | Rank-weighted neutral paper book |
+|---|---|---|---|
+| mean $\gamma$ | 2.0 | 9.0 | n/a |
+| average gross | 2.00 | 1.94 | 2 |
+| effective number of names | 156 | 306 | 587 |
+| ex-ante vol at gross 2 | 8.5% | 4.4% | 6.9% |
+| specific vol at gross 2 | 5.8% | 3.5% | 2.5% |
+
+The default halves the risk per unit of gross and doubles the effective number of names. Its *specific share* of variance is higher than the paper book's (62% against 14%) because the optimizer hedges the factor risk the paper book carries; the comparison that matters is specific **vol** at gross 2, and total vol at gross 2, which is *below* the paper book's. `tests/test_construction.py::test_default_config_does_not_concentrate_against_the_rank_weighted_neutral_book` asserts this on a 480-name market and asserts that the flag-off variant fails it.
+
+<callout icon="⚠️" color="yellow_bg">
+`risk_aversion = 2` alone is not enough. The first design of this fix kept the gross limit as a plain constraint and relied on the base $\gamma$ = 2 to give a diversified book. It does on a small or weak-signal problem (the 80-name golden market never reaches the limit), but not when the alpha asks for many times the allowed gross: the old run's mean $\gamma$ of 4.55 was already above 2 and the book was concentrated. The right base depends on signal strength and breadth, which change through time; raising $\gamma$ until the limit is slack adapts to both.
+</callout>
+
+**The realised vol will be well under 10%.** With gross capped at 2 and a diversified book the predicted vol lands near what the paper portfolio shows (3–4% on the real run). That is the honest risk of this strategy at this leverage; 10% is a ceiling that matters only if the book gets concentrated or the risk forecast jumps.
+
+### The two-sided $\gamma$ search (`vol_target_is_cap = False`)
 `qts/portfolio/optimizer/sizing.py::gamma_search` solves the full problem (every constraint, the real cost model) for a sequence of $\gamma$ values until the optimum's ex-ante vol is on target. It relies on one fact: **$\sigma(w^\star(\gamma))$ is non-increasing in $\gamma$**. Compare the optima $w_1, w_2$ at $\gamma_1 < \gamma_2$: each is optimal for its own $\gamma$, and adding the two optimality inequalities gives $(\gamma_2-\gamma_1)(R(w_1)-R(w_2)) \ge 0$ with $R$ the risk. So more risk aversion never buys more risk, and a one-dimensional root search on $\log\gamma$ is safe (test: `test_vol_is_monotone_in_gamma`).
 
 1. **Start** at $\gamma_0$ clipped to `GAMMA_BRACKET` = [0.05, 200]. Solve.
@@ -413,7 +456,7 @@ Real constraints and convex costs shrink the optimum below the closed form, so t
 The result records the chosen `risk_aversion`, `n_solves`, and `vol_target_binding` ∈ {`"target"`, `"caps"`, `"bracket"`, `"max_solves"`, `"no_alpha"`, `"solve_failed:<status>"`}, plus a note with the whole path (`gamma search (<outcome>): gamma <g>, vol <v> vs target <t> after <k> solves [gamma:vol <path>]`). With an all-zero alpha the search stops at once (`"no_alpha"`). `vol_target_mode` and `vol_scalar` are not used in this mode.
 
 <callout icon="💡" color="blue_bg">
-"Caps binding" is the normal state on the synthetic market. In the audit's 3-seed sweep the gross cap (2.0) bound on 99–100% of days at $\gamma \le 1$ on two of three seeds, and realised vol topped out at 8–9%: under gross 2, 2% names and the bands, a 10% target is not reachable with this alpha. The search then accepts the capped book rather than pushing $\gamma$ to the bracket floor. A low realised vol here is a feature of the constraints, not a bug. To reach 10% you would need more gross (not allowed under Reg T) or more concentrated bets (a larger `max_position_weight`, looser bands).
+"Caps binding" was the normal state of this search on the synthetic market, and on real data (previous subsection). In the audit's 3-seed sweep the gross cap (2.0) bound on 99–100% of days at $\gamma \le 1$ on two of three seeds, and realised vol topped out at 8–9%: under gross 2, 2% names and the bands, a 10% target is not reachable with this alpha. The search then accepts the capped book rather than pushing $\gamma$ to the bracket floor. A low realised vol here is a feature of the constraints, not a bug. To reach 10% you would need more gross (not allowed under Reg T) or more concentrated bets (a larger `max_position_weight`, looser bands).
 </callout>
 
 **Why this choice** (second-pass audit, finding 1, recommendation (c)). Searching $\gamma$ puts the book on the cost-aware efficient frontier: costs, the GP alpha shrink and the risk penalty all act at the size actually traded. The alternatives:
@@ -455,18 +498,30 @@ Why the projection was demoted. It was introduced to fix a real bug: the origina
 
 **`"constraint"`.** One solve: the SOC risk cap $\sqrt{w^\top\Sigma_{\text{aug}}w} \le \sigma_{\text{target}}$ is added to the alpha problem, so alpha, risk penalty, costs and the cap are traded off jointly. The target is a ceiling; there is no scale-up, so $\gamma$ alone decides whether the book reaches it (at $\gamma = 10$ it ran at 2.2%). Test: `test_vol_target_constraint_mode_one_solve`.
 
+### Minimum trade size (`min_trade_weight`)
+
+**What.** After the sizing step, trades smaller than `min_trade_weight` = 0.0005 (5 bp of NAV) are cancelled: the name keeps its current weight. Two exceptions always trade, however small: a trade that **closes** the position (target weight 0), and any trade of a name in a **forced exit** (it left the eligible universe and is being unwound, → **Eligibility forced exits**). `SinglePeriodOptimizer._drop_small_trades`.
+
+**Why.** A continuous optimizer re-trims every name on every solve. On the real run 67% of all trades were below 5 bp of NAV. Each one is an order: it pays the per-order minimum commission and half a spread, and changes the book by an amount far inside the noise of the forecast.
+
+**It is a projection, not a constraint.** A hard minimum trade size ("trade at least 5 bp or not at all") makes the problem mixed-integer; cancelling small trades after a convex solve is the standard practical substitute. The price is that the returned book is no longer the exact optimum of the problem that was solved and can end **marginally outside a band** the solve honoured — by at most the summed exposures of the cancelled trades. Nothing is repaired; it is measured: `OptimizationResult.n_small_trades_dropped`, `.max_constraint_violation` (largest violation of the returned book over the gross / net / position limits, the beta, industry and style bands and the forced-exit caps, each in its own units; `constraints.py::max_constraint_violation`) and `.violated_constraint`; the simulator sums them into `diagnostics["n_small_trades_dropped"]`, `["n_min_trade_violations"]` and `["max_min_trade_violation"]`, and the report card prints them on the `trading` line. On the 80-name golden market (default config) the largest violations were 0.0019 on the ±0.05 net band, 0.0013 SD on a ±0.10 style band and 0.0006 on a ±0.03 industry band.
+
+Set `min_trade_weight = 0` to switch it off (the mechanics tests of the optimizer do, since they check bands exactly).
+
 ### In the code
-- `SinglePeriodOptimizer.solve` → `sizing.closed_form_gamma` → `sizing.gamma_search` (default) or `SinglePeriodOptimizer._vol_target_projection` (fixed + projection).
-- Module constants in `qts/portfolio/optimizer/constants.py`: `GAMMA_BRACKET`, `GAMMA_MAX_SOLVES`, `GAMMA_SEARCH_VOL_TOL`, `GAMMA_NUDGE`, `CAPS_ELASTICITY`, `POSITION_CAPS_SHARE`, `MAX_SCALE_UP`.
+- `SinglePeriodOptimizer.solve` → `sizing.gamma_cap_search` (default: cap form) or `sizing.closed_form_gamma` → `sizing.gamma_search` (`vol_target_is_cap = False`) or `SinglePeriodOptimizer._vol_target_projection` (fixed + projection); then `_drop_small_trades`.
+- Module constants in `qts/portfolio/optimizer/constants.py`: `GAMMA_BRACKET`, `GAMMA_MAX_SOLVES`, `GAMMA_SEARCH_VOL_TOL`, `GAMMA_NUDGE`, `GAMMA_CAP_FIRST_STEP`, `GAMMA_CAP_GROSS_TOL`, `GAMMA_CAP_MIN_RATIO`, `GAMMA_CAP_ELASTICITY`, `CAPS_ELASTICITY`, `POSITION_CAPS_SHARE`, `MAX_SCALE_UP`.
 - `OptimizationResult.risk_aversion`, `.vol_target_binding`, `.n_solves`, `.vol_scalar` (projection anchor $s$; 1 otherwise), `.expected_risk` (annualised ex-ante vol of the returned book).
 - `qts/portfolio/vol_target.py::realized_vol_scalar` (trailing realised vol) is for overlays and reporting; `portfolio_vol_scalar` is the plain $\text{target}/\hat\sigma$ clip, reporting only. The optimiser uses the ex-ante risk model because it reacts the same day.
 
 ### Pitfalls & checks
-- **The target is a ceiling when the caps bind** (see the callout above). Read `vol_target_binding`: mostly `"caps"` means the constraints, not $\gamma$, set the size.
+- **Read `vol_target_binding` and the diversification line.** In the cap form: mostly `"leverage"` means the gross limit sets the size and the book is the scaled optimum; mostly `"below_target"` with a low gross means the signal is weak relative to costs; `"target"` means the book would otherwise exceed the vol cap. The report card's `diversification` line (effective names, specific share, ex-ante vol at gross 2; → see **Backtesting › Diversification**) shows whether the book is spread out. In the two-sided search, mostly `"caps"` means the constraints, not $\gamma$, set the size — and the book is concentrated.
+- **$\gamma$ moves from solve to solve.** The search starts from the base on every solve (the optimizer keeps no state), and the admissible $\gamma$ depends on the day's alpha scale; a change in $\gamma$ rescales the whole book. `scripts/attribute_run.py` table 4(b) reports the size of those changes and the turnover on the solves where $\gamma$ moved by more than 10%.
 - **Ex-ante vs realised.** The target is only as good as the risk forecast. Check `realized_vs_exante_vol_ratio` in the backtest summary. Persistently above 1.2 means the model under-forecasts and the book is riskier than targeted. The ν recalibration found the risk model slightly *over*-forecasts the optimised book on synthetic data (bias ≈ 0.85–0.90), i.e. the book is a little *less* risky than targeted (→ see **Risk model › The alpha alignment problem**).
 - **Search cost.** Up to 8 solves per date. Watch `n_solves`; a run of `"max_solves"` or `"bracket"` outcomes means the vol is very flat in $\gamma$ (cost-dominated) and the search is wasting time.
 - `binding_constraints` comes from the duals of the solve whose book is returned (in fixed + projection mode: the alpha solve, read before the projection overwrites them).
-- Tests: `tests/test_gamma_search.py` (`test_target_vol_hits_reachable_target_within_bands`, `test_target_vol_accepts_capped_book`, `test_risk_aversion_mode_fallbacks`, `test_gp_shrink_survives_gamma_search`), `tests/test_portfolio.py::test_vol_target_scale_up_is_a_projection`, `test_vol_target_scale_down_respects_no_trade_and_participation`.
+- Tests of the cap form and the min-trade projection: `tests/test_construction.py` (`test_vol_cap_never_lowers_gamma_below_the_base`, `test_unreachable_target_is_not_chased`, `test_leverage_cap_is_resolved_by_raising_gamma`, `test_min_trade_projection_rules`, `test_min_trade_never_blocks_exits_in_a_solve`).
+- Tests of the two-sided search: `tests/test_gamma_search.py` (`test_target_vol_hits_reachable_target_within_bands`, `test_target_vol_accepts_capped_book`, `test_risk_aversion_mode_fallbacks`, `test_gp_shrink_survives_gamma_search`), `tests/test_portfolio.py::test_vol_target_scale_up_is_a_projection`, `test_vol_target_scale_down_respects_no_trade_and_participation`.
 
 ### References
 - [Harvey et al. (2018), The Impact of Volatility Targeting](https://people.duke.edu/~charvey/Research/Published_Papers/P135_The_impact_of.pdf)
@@ -654,8 +709,12 @@ Defaults from `qts/core/config.py::PortfolioConfig`.
 | `beta_neutral` | True | bind the beta *style* | resolved via `factor_groups["style"]` |
 | `industry_band` | 0.03 | ± net weight per industry | via `factor_groups["industry"]`; 0 disables |
 | `style_band_sd` | 0.10 | ± sd exposure per style in `neutral_styles` | pipeline passes risk-only styles |
-| `risk_aversion_mode` | `"target_vol"` | `"target_vol"`: $\gamma$ searched per solve so the optimum hits `target_vol_annual` (or the caps bind); `"fixed"`: $\gamma$ = `risk_aversion` | `target_vol` with `target_vol_annual=None` falls back to the fixed $\gamma$ |
-| `risk_aversion` | 2.0 | annual $\gamma_{\text{risk}}$ in fixed mode (and fallback) | multiplies $H\times$ daily variance; ≈ IR/(2 × 10%) on the measured alpha; was 10 |
+| `risk_aversion_mode` | `"target_vol"` | `"target_vol"`: $\gamma$ searched per solve against `target_vol_annual`; `"fixed"`: $\gamma$ = `risk_aversion` | `target_vol` with `target_vol_annual=None` falls back to the fixed $\gamma$ |
+| `vol_target_is_cap` | True | `target_vol` mode: the target is a cap; $\gamma$ starts at `risk_aversion` and is only raised | False = the two-sided search that makes the vol equal the target |
+| `leverage_cap_raises_gamma` | True | with the cap form, long/short: raise $\gamma$ until `gross_leverage_max` stops binding (scale the book instead of thresholding it) | False = the gross limit is a plain constraint at the base $\gamma$ |
+| `risk_aversion` | 2.0 | annual $\gamma_{\text{risk}}$: the base (smallest) $\gamma$ of the cap form; the fixed $\gamma$ in fixed mode | multiplies $H\times$ daily variance; ≈ IR/(2 × 10%) on the measured alpha; was 10 |
+| `rebalance_every_days` | 5 | solve every $k$-th backtest date, drift in between | forced exits and delistings still run daily; → see **Backtesting › Rebalance schedule** |
+| `min_trade_weight` | 0.0005 | cancel trades below this fraction of NAV after the solve | exits and forced exits always trade; a projection (see above); 0 = off |
 | `trade_aversion` | 1.0 | $\gamma_{\text{trade}}$ | main turnover knob |
 | `hold_aversion` | 1.0 | $\gamma_{\text{hold}}$ | multiplies $H\times$ daily borrow |
 | `turnover_penalty` | 0.0 | extra linear penalty $\kappa\lVert x\rVert_1$ | off by default |
@@ -676,15 +735,16 @@ Defaults from `qts/core/config.py::PortfolioConfig`.
 ### Tuning guide
 - **Start from turnover, not from Sharpe.** The goal is an effective holding period comparable to the alpha's half-life. If the signal half-life is ~60 days and EHD is 15, raise `trade_aversion` (try 2, 5). If EHD is far longer than the half-life, alpha decays before you trade into it, so lower `trade_aversion`. The plan's target is a penalty that produces 20–40% of the frictionless trade per day. Lopez-Lira & Tang found 25% partial rebalancing cut turnover 4× with no Sharpe loss (BUILD_PLAN §5).
 - **Turnover vs alpha decay.** A trade costs $c$ once and earns roughly the alpha over the signal's remaining life. With half-life hl, a forecast's expected remaining alpha is about $\alpha\cdot\text{hl}/\ln 2$ in daily-alpha units. Fast signals (short hl) justify less trading per unit of alpha. That is GP shrinkage expressed as a tuning rule.
-- **Do not tune `risk_aversion` in the default mode.** In `target_vol` mode $\gamma$ is an output, set every day by the target; tune `target_vol_annual` for the risk level. In `fixed` mode, set $\gamma \approx \text{IR}/(2\sigma_{\text{target}})$ from the closed form, not by backtest: the audit's sweep showed no significant net-Sharpe difference across $\gamma \in [0.5, 10]$ on synthetic data, only a less diversified book at low $\gamma$ and a lower transfer coefficient at high $\gamma$. Do not raise `MAX_SCALE_UP` as a substitute for a sensible $\gamma$.
-- **Read `vol_target_binding`.** Mostly `"caps"`: the size is set by gross / per-name / ADV caps, so loosening the target changes nothing; loosen a cap (and accept the extra concentration) or accept the lower vol.
+- **`risk_aversion` is a floor in the default mode.** With the cap form $\gamma$ is an output at or above `risk_aversion`; on a broad universe with a healthy signal the gross limit, not the base, decides it. Lower the base only if `vol_target_binding` is mostly `"below_target"` *and* the book is small because of risk aversion rather than costs; do not tune it on backtest Sharpe. In `fixed` mode, set $\gamma \approx \text{IR}/(2\sigma_{\text{target}})$ from the closed form, not by backtest: the audit's sweep showed no significant net-Sharpe difference across $\gamma \in [0.5, 10]$ on synthetic data, only a less diversified book at low $\gamma$ and a lower transfer coefficient at high $\gamma$. Do not raise `MAX_SCALE_UP` as a substitute for a sensible $\gamma$.
+- **Read `vol_target_binding`.** Mostly `"leverage"` (cap form) or `"caps"` (two-sided search): the size is set by the gross limit, so loosening the vol target changes nothing; more risk needs more gross, not a lower $\gamma$.
+- **Trading pace has three knobs, in this order:** the score's smoothing half-life (→ see **Alpha model › Smoothing the score**), `rebalance_every_days`, `min_trade_weight`; then `trade_aversion`. The first three remove trading that carries no information (score noise, daily re-trimming, crumbs); `trade_aversion` trades alpha against cost.
 - **`hold_aversion`** scales borrow. Raise it if the short book drifts into expensive names. Check `borrow` costs in the backtest.
 - **Bands.** Loosen one band at a time and watch TC and the factor exposure report. A band that never binds (no entry in `binding_constraints`) is free insurance. One that binds daily is costing alpha.
 - **Tune out of sample only.** Every change is a trial for the deflated Sharpe (→ see **Validation & statistics › The trial ledger**). Parameter grids for PBO go in `SystemConfig.pipeline_pbo_configs`, e.g. `[{"portfolio.trade_aversion": 2}, {"portfolio.trade_aversion": 5}]`.
 
 ### Solver failure semantics
 - Solvers are tried in order: `cfg.solver`, `CLARABEL`, `SCS`, `OSQP` (deduplicated, installed only; `qts/portfolio/optimizer/solvers.py::solve_with_chain`). Only a solver failure moves on to the next one: `cvxpy.error.SolverError` or a numerical error (`ArithmeticError`, `numpy.linalg.LinAlgError`). Each is recorded as `"<SOLVER>: <ExcType>: <message>"` in `OptimizationResult.solver_errors`. Any other exception is a programming error and propagates (before the November refactor every exception was caught, so a bug became a silent "hold the book"). A status of `infeasible` or `unbounded` is returned immediately, since genuine infeasibility will not be fixed by another solver. OSQP accepts only QPs, so it can solve the alpha problem only when no 3/2-power cost term is present.
-- In the $\gamma$ search each step first tries the primary solver only; on a numerical failure it nudges $\gamma$ by 2% and retries with the full chain. If a search step still fails, the search stops (`vol_target_binding = "solve_failed:<status>"`) and returns the best book found so far.
+- In the $\gamma$ search (both forms) each step first tries the primary solver only; on a numerical failure it nudges $\gamma$ by 2% and retries with the full chain. If a search step still fails, the search stops (`vol_target_binding = "solve_failed:<status>"`) and returns the best book found so far.
 - `optimal` and `optimal_inaccurate` count as success (`OptimizationResult.ok`).
 - **On failure:** `w_target = w_current` (hold the book), `x = 0`, `expected_cost = NaN`, `transfer_coefficient = NaN`, `status` = the solver's status, and a warning is logged. The simulator counts it in `n_failed_solves`, which `summary()` reports, lists it in `diagnostics["failed_solves"]` (date, status, solver errors) and keeps going. The `failed_solves` hurdle gate FAILs a run whose failed share of rebalance solves exceeds `ValidationConfig.max_failed_solve_frac` (default 2%).
 - If `relax_participation_on_infeasible=True`, a second attempt without ADV caps runs first and a note records it.

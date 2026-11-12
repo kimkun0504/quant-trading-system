@@ -96,7 +96,7 @@ cd ui && npm ci && cd ..
 | `--ml` | off | add the walk-forward ML sleeve (phase 2; slower) |
 | `--signal-lag N` | config (1) | execution delay in days (`ExecutionConfig.signal_lag_days`) |
 | `--compare-lag` | off | run lag 0 and lag 1 and print both |
-| `--rebalance-every N` | 1 | rebalance every N days |
+| `--rebalance-every N` | config (`portfolio.rebalance_every_days`, 5) | solve the optimizer every N days; the book drifts in between |
 | `--nav USD` | 5,000,000 | starting NAV (large enough that per-order fee minimums do not dominate) |
 | `--ledger PATH` | `runs/trial_ledger.jsonl` | trial ledger; `''` disables logging |
 | `--runs-root DIR` | `runs` | where run directories go |
@@ -452,7 +452,8 @@ Pass the **same data and config flags as the run** (`--set` uses the `qts run` p
 - (a) high and (c) low: the raw score's IC was a style or industry bet that the neutralisation removes; the label is residualised on the same factors, so this should not happen, and if it does the residualisation and the neutral set have drifted apart.
 - (c) low although the IC is high: IC is an equal-weighted rank statistic over ~1,000 names and 60-day returns; a daily-rebalanced portfolio earns it only if the names with the weight carry it. Rows (e) and (f) say where it lives: cap-weighted decile far below equal-weighted, or the small tercile far above the large one, means the signal is in small names.
 - (c) well above the realised book's gross Sharpe: the signal is there and the construction loses it (tables 2 and 3).
-- The last three rows are the slow-trading test. If the 20-day EWMA score or the 5- / 21-day sampled score keeps most of (c)'s Sharpe at a fraction of the turnover, the daily changes of the score are noise and the book should trade on a smoothed signal.
+- Row (g) is the rank-weighted book of the alpha model's own *traded* score (`AlphaModel.traded_score_`: the combined score neutralised and smoothed inside the model, → see **Alpha model › Neutralising the score**). It is what the optimizer is actually given. With `alpha.neutralize_score` on, (g) should sit close to (c) and to the EWMA row — the line under the table prints `corr((g), (c))` and `corr(realised gross, traded-score book (g))` next to the correlation with (c). Rows (a)–(f) are always built from the raw combined score, so they stay comparable between a run made before and after the score processing existed.
+- The three rows before it are the slow-trading test. If the 20-day EWMA score or the 5- / 21-day sampled score keeps most of (c)'s Sharpe at a fraction of the turnover, the daily changes of the score are noise and the book should trade on a smoothed signal.
 - `to/day %NAV@10%` is the two-sided turnover each book needs at 10 % vol; `hold d` is the report card's effective holding period. The realised book is printed in the same units at the bottom.
 
 **Table 2: realised book attribution.** Accounting splits of the book the run held.
@@ -482,12 +483,13 @@ What each outcome points to:
 |---|---|
 | Table 1 (c) is itself weak; equal-weighted decile and small tercile carry it | the signal is a small-cap effect: evaluate IC cap-weighted / by tercile, train with liquidity-aware sample weights, or accept a smaller book |
 | Short side loses its excess (table 2) | check borrow cost and short-side IC; consider asymmetric sizing |
-| (c) is good, book correlation with (c) is low, risk-only styles sit at their bands | construction loses it: residualise the *score* (not only the label) on the neutral set, then re-measure the transfer coefficient with `scripts/diagnose_constraints.py` |
+| (c) is good, book correlation with (c) is low, risk-only styles sit at their bands | construction loses it: the score must be residualised on the neutral set, not only the label — `alpha.neutralize_score` (default on since 2026-11-12); then re-measure the transfer coefficient with `scripts/diagnose_constraints.py` |
+| Book's vol at gross 2 far above (c)'s; specific share of variance high; realised/ex-ante gap in the specific piece | the book is concentrated: the gross limit is thresholding it — `portfolio.vol_target_is_cap` and `portfolio.leverage_cap_raises_gamma` (default on); read the report card's `diversification` line |
 | (c) is good, gross sits in the large tercile where (f) is weak | position / ADV caps move the book away from the signal: relaxation solves in `scripts/diagnose_constraints.py` |
 | Risk model under-forecasts ideal (c); `specific` loads on (c) | alpha-factor risk is unmodelled: recalibrate ν on real data (`scripts/calibrate_alignment_nu.py`) |
-| Low ρ₁ of the ML sleeve or on refit days; EWMA / 5-day rows keep the Sharpe | score noise: smooth the score or blend refits, lengthen the trade horizon |
+| Low ρ₁ of the ML sleeve or on refit days; EWMA / 5-day rows keep the Sharpe | score noise: `alpha.score_smoothing_halflife_days` (default 10) smooths the score and blends refits; `portfolio.rebalance_every_days` (default 5) lengthens the trade interval |
 | Turnover concentrated on gamma-jump days; re-scaling share high | gamma jitter: damp the vol-target search (smooth γ, or a no-trade band around the previous scale) |
-| `vs daily` near 1/√k, many sub-5 bp trades | churn: raise trade aversion / add a minimum trade size |
+| `vs daily` near 1/√k, many sub-5 bp trades | churn: `portfolio.rebalance_every_days`, `portfolio.min_trade_weight` (default 5 bp), then trade aversion |
 
 ## The QTS Workbench: API and UI
 

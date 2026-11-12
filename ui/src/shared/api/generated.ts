@@ -544,6 +544,21 @@ export interface components {
        * @description share of decision days with gross exposure > 1e-4 of NAV
        */
       invested_day_frac: number;
+      /**
+       * Effective N Names
+       * @description mean over invested days of 1 / sum p_i^2, p_i = |w_i| / gross (null for runs recorded before it)
+       */
+      effective_n_names: number;
+      /**
+       * Specific Var Share
+       * @description mean specific share of the risk model's ex-ante variance of the book (null when not recorded)
+       */
+      specific_var_share: number;
+      /**
+       * Exante Vol At Gross2
+       * @description mean ex-ante annual vol scaled to gross exposure 2: vol x 2 / gross (null when not recorded)
+       */
+      exante_vol_at_gross2: number;
       /** Breakeven Cost Bps */
       breakeven_cost_bps: number;
       /** N Delistings */

@@ -1,5 +1,6 @@
 """AlphaModel orchestrator: features -> targets -> composite (Baseline A) ->
-walk-forward ML sleeve -> combined score -> Grinold expected returns.
+walk-forward ML sleeve -> combined score -> neutralised, smoothed (traded) score
+-> Grinold expected returns.
 
 ``fit(md)`` does all heavy lifting once over the history; ``as_of(date)`` is a
 cheap point-in-time lookup that assembles an :class:`AlphaOutput`.
@@ -18,6 +19,21 @@ Point-in-time guarantees in ``as_of(date)``:
 * only names eligible at ``date`` (``md.eligibility()``: in the universe and
   with a price) receive a score; ineligible / dead names are absent from the
   output, never zero-filled.
+
+The traded score (``traded_score_``; docs/notes/construction_fix_2026-11-12.md)
+------------------------------------------------------------------------------
+``combined_score_`` is the raw blend of the composite and the ML sleeve.  What
+``as_of`` scales and the book trades is ``traded_score_``: the combined score
+(1) residualised per date on an intercept + industry dummies + beta + the
+risk-only styles as of that date (``AlphaConfig.neutralize_score``; equal-weighted
+OLS over the eligible names, the exposure source of the labels) and re-standardised,
+then (2) smoothed per name by a causal EWMA with half-life
+``AlphaConfig.score_smoothing_halflife_days`` trading days, projected on that
+date's exposures again and re-standardised (:mod:`qts.alpha.score_processing`).
+``oos_ic_`` -- and therefore the trailing IC, ``IC_hat`` and ``IC_used`` -- and the
+signal half-life are computed on the traded score, so the IC that sizes the book
+is the IC of the score the book holds.  Row ``t`` of the traded score depends on
+data ``<= t`` only.  With both knobs off ``traded_score_ is combined_score_``.
 
 Grinold scaling and the IC-shrink convention (design decisions D5, D6)
 ----------------------------------------------------------------------
@@ -65,6 +81,7 @@ from .composite import THEMES, ThemeComposite, theme_portfolio_returns
 from .evaluation import newey_west_lags, rank_ic_series, signal_half_life
 from .features import FeatureBuilder
 from .models import EnsembleModel, LGBMModel, MLPModel, RidgeModel
+from .score_processing import process_scores
 from .targets import DEFAULT_BAD_PRICE_CAPS, ExposuresFn, label_realisation, residualize_forward_returns
 from .trainer import FoldInfo, WalkForwardTrainer
 
@@ -274,13 +291,39 @@ class AlphaModel:
         self.combined_score_ = self._combine_history().where(
             self.eligible_.reindex_like(self.composite_score_)
         )
+        # the score that is traded: combined -> neutralised -> smoothed (module docstring)
+        self._process_scores(risk_exposures_fn)
         self._half_life_cache = {}
-        # per-date OOS rank IC of the combined score (label realised at date + h)
-        self.oos_ic_ = rank_ic_series(self.combined_score_, self.target_)
+        # per-date OOS rank IC of the *traded* score (label realised at date + h), so
+        # the IC that sizes the book is the IC of what the book holds
+        self.oos_ic_ = rank_ic_series(self.traded_score_, self.target_)
         # daily residual vol -> horizon residual vol
         self.resid_vol_h_ = self.raw_features_["idio_vol_252"] * np.sqrt(h)
         self.fitted_ = True
         return self
+
+    def _process_scores(self, risk_exposures_fn: ExposuresFn | None) -> None:
+        """Set ``traded_score_`` (and ``neutralization_r2_``) from ``combined_score_``:
+        :func:`qts.alpha.score_processing.process_scores` with the label residualiser's
+        exposure source.  With ``neutralize_score`` off and no smoothing the traded
+        score *is* the combined score (the pre-2026-11-12 behaviour, bit for bit)."""
+        hl = float(self.cfg.score_smoothing_halflife_days)
+        if not self.cfg.neutralize_score and hl <= 0:
+            self.traded_score_: Wide = self.combined_score_
+            self.neutralization_r2_ = pd.Series(np.nan, index=self.combined_score_.index)
+            return
+        sp = process_scores(
+            self.md_,
+            self.combined_score_,
+            neutralize=bool(self.cfg.neutralize_score),
+            halflife_days=hl,
+            exposures_fn=risk_exposures_fn,
+            features=self.raw_features_,
+        )
+        self.traded_score_ = sp.score
+        #: per date: share of the combined score's cross-sectional variance that sat
+        #: in the hedged directions (industries, beta, risk-only styles)
+        self.neutralization_r2_ = sp.r2
 
     def _combine_history(self) -> Wide:
         comp = self.composite_score_
@@ -337,7 +380,7 @@ class AlphaModel:
         return max(keep * self.ic_hat(date), floor)
 
     def _sleeve_scores(self) -> dict[str, Wide]:
-        out: dict[str, Wide] = {"combined": self.combined_score_, "composite": self.composite_score_}
+        out: dict[str, Wide] = {"combined": self.traded_score_, "composite": self.composite_score_}
         if self.ml_score_ is not None:
             out["ml"] = self.ml_score_
         for th, sc in self.theme_scores_.items():
@@ -349,7 +392,7 @@ class AlphaModel:
         """Daily OOS rank IC of every sleeve (``combined``, ``composite``, ``ml`` when
         fitted, ``theme_<name>``) against the training label (``target_``): date x
         sleeve.  Diagnostic only (``alpha_ic_by_sleeve.parquet``); the ``combined``
-        column equals ``oos_ic_``."""
+        column is the traded score (``traded_score_``) and equals ``oos_ic_``."""
         if not self.fitted_:
             raise RuntimeError("call fit() first")
         cols = {name: rank_ic_series(panel, self.target_) for name, panel in self._sleeve_scores().items()}
@@ -403,12 +446,12 @@ class AlphaModel:
         return float(hl)
 
     def half_life_as_of(self, date: pd.Timestamp) -> float:
-        """Signal half-life (days) of the combined score, estimated once per
+        """Signal half-life (days) of the traded score, estimated once per
         ``refit_frequency_days`` block from the trailing
         ``half_life_lookback_days`` (504) dates of scores up to the block's
         first date (PIT for every date in the block) and cached.  Not finite
         (no decay / too little history) -> ``3 * horizon_days``."""
-        return self._half_life("combined", self.combined_score_, date)
+        return self._half_life("combined", self.traded_score_, date)
 
     def component_half_lives_as_of(self, date: pd.Timestamp) -> dict[str, float]:
         """Per-sleeve half-lives (same estimator / caching as :meth:`half_life_as_of`):
@@ -427,8 +470,8 @@ class AlphaModel:
         # eligible at `date` (in universe and alive): never score dead / out-of-universe names
         ok = self.eligible_.loc[date]
         score = (
-            self.combined_score_.loc[date]
-            .where(ok.reindex(self.combined_score_.columns).fillna(False).astype(bool))
+            self.traded_score_.loc[date]
+            .where(ok.reindex(self.traded_score_.columns).fillna(False).astype(bool))
             .dropna()
         )
         score = (score - score.mean()) / score.std(ddof=0)

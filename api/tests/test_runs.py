@@ -139,7 +139,10 @@ def test_holdings(client, run_id, run_dir):
     h = S.RunHoldings.model_validate(client.get(f"/api/runs/{run_id}/holdings").json())
     assert h.date == h.available_dates[-1] and len(h.available_dates) >= 5
     assert h.positions == sorted(h.positions, key=lambda p: -p.weight)
-    assert all(p.alpha is not None and p.specific_vol and p.industry for p in h.positions)
+    assert all(p.alpha is not None and p.industry for p in h.positions)
+    # a name that left the risk model since the last solve (being unwound on hold days,
+    # portfolio.rebalance_every_days) has no specific vol as of the holdings date
+    assert sum(1 for p in h.positions if p.specific_vol) >= 0.9 * len(h.positions)
     w = pd.read_parquet(run_dir / "weights.parquet").loc[pd.Timestamp(h.date)]
     assert sum(abs(p.weight) for p in h.positions) == pytest.approx(w.abs().sum(), abs=1e-6)
     first = h.available_dates[0]
