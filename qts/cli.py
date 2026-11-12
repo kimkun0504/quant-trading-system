@@ -15,6 +15,8 @@ Commands
                      unknown keys are an error (exit 2)
 ``data sharadar sync``      fill a ParquetStore from the Sharadar bundle (``--store``,
                      ``--raw``, ``--tables``, ``--since``, ``--from-files DIR``, ``--dry-run``)
+``data sharadar derive``    rebuild ``delisting_reasons`` from the stored ACTIONS / TICKERS
+                            tables (no download) and print the counts by reason and year
 ``data sharadar validate``  sanity checks of a Sharadar-filled store (PASS/WARN per check)
 ``config dump``      print the default (or ``--config``) SystemConfig as YAML;
                      ``configs/default.yaml`` is ``python -m qts.cli config dump``
@@ -298,6 +300,18 @@ def cmd_data(a: argparse.Namespace) -> int:
             return 1
         print(rep.format())
         return 0
+    if a.sharadar_cmd == "derive":
+        try:
+            drep = sharadar.derive_from_store(a.store, window_days=a.window)
+        except sharadar.SharadarError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        print(drep.format(top=a.top))
+        print(f"written: {a.store}/delisting_reasons ({drep.n_delisted} rows)")
+        if a.json:
+            Path(a.json).write_text(json.dumps(drep.to_dict(), indent=1, default=str))
+            print(f"written {a.json}")
+        return 0
     if a.sharadar_cmd == "validate":
         rep = sharadar.validate(a.store, sample_size=a.sample)
         print(rep.format())
@@ -490,6 +504,19 @@ def build_parser() -> argparse.ArgumentParser:
     ss.add_argument("--dry-run", action="store_true", help="show what would be downloaded / written")
     ss.add_argument("--force", action="store_true", help="ignore the per-table resume state")
     ss.add_argument("-v", "--verbose", action="store_true", help="log progress per chunk / year")
+    sd = shsub.add_parser(
+        "derive",
+        help="rebuild derived reference tables (delisting_reasons) from the stored tables; no download",
+    )
+    sd.add_argument("--store", default="data/store", help="ParquetStore root")
+    sd.add_argument(
+        "--window",
+        type=int,
+        default=5,
+        help="business days around the delisting date in which an ACTIONS row counts (default 5)",
+    )
+    sd.add_argument("--top", type=int, default=15, help="action codes listed per table")
+    sd.add_argument("--json", default=None, help="also write the count report as JSON to this path")
     sv = shsub.add_parser("validate", help="sanity checks of a Sharadar-filled store")
     sv.add_argument("--store", default="data/store")
     sv.add_argument("--sample", type=int, default=50, help="ids sampled for the per-name checks")

@@ -563,6 +563,11 @@ export interface components {
       breakeven_cost_bps: number;
       /** N Delistings */
       n_delistings: number;
+      /**
+       * Delisting Pnl Ann
+       * @description annualised sum over delistings of held names of weight x booked delisting return (return on the stock by delisting reason; null for runs recorded before it)
+       */
+      delisting_pnl_ann: number;
       /** N Failed Solves */
       n_failed_solves: number;
     };

@@ -112,6 +112,8 @@ export interface BacktestSummary {
   exante_vol_at_gross2: number;
   breakeven_cost_bps: number;
   n_delistings: number;
+  /** Annualised Σ weight × booked delisting return over delistings of held names (null for older runs). */
+  delisting_pnl_ann: number;
   n_failed_solves: number;
 }
 

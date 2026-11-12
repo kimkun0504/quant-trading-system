@@ -32,6 +32,10 @@ Dataset names understood by :meth:`ParquetStore.as_market_data`:
 ``asset_growth``            PIT YoY asset growth
 ``delisting_dates``         long table ``ticker, delisting_date`` (last
                             trading date; NaT = alive) -> ``delisting_dates``
+``delisting_reasons``       long table ``id, delisting_date, reason,
+                            source_action`` (one row per delisted id; reason in
+                            acquisition / performance / voluntary / unknown)
+                            -> ``delisting_reasons`` (absent -> all unknown)
 ==========================  ===========================================
 
 Dated industries: dates before a ticker's first dated classification read
@@ -424,6 +428,7 @@ class ParquetStore:
             close_raw=panel("prices_close_raw"), shares_outstanding=panel("shares_outstanding"),
             industry_history=self._industry_history(end, cols, idx[0] if len(idx) else None),
             delisting_dates=self._delisting_dates(cols),
+            delisting_reasons=self._delisting_reasons(cols),
         )
         md.validate()
         return md
@@ -463,6 +468,22 @@ class ParquetStore:
         s.name = "delisting_date"
         return s
 
+    def _delisting_reasons(self, cols: pd.Index) -> Optional[pd.Series]:
+        """``delisting_reasons`` long table -> Series id -> reason for the loaded
+        ids (``None`` when the dataset is absent: every delisting is "unknown").
+        Written by ``qts data sharadar derive`` / ``sync``."""
+        if not self.exists("delisting_reasons"):
+            return None
+        df = self.read_long("delisting_reasons")
+        if df.empty:
+            return None
+        s = pd.Series(df["reason"].astype(str).to_numpy(), index=df["id"].astype(str), dtype=object)
+        s = s[~s.index.duplicated(keep="last")]
+        s = s[s.index.isin(cols)].sort_index()
+        s.index.name = "ticker"
+        s.name = "reason"
+        return s
+
     def write_market_data(self, md: MarketData, include_extra: bool = False) -> None:
         """Persist every panel of a MarketData under the documented dataset names."""
         self.write_wide("prices_close", md.close)
@@ -483,6 +504,15 @@ class ParquetStore:
             dd = pd.DataFrame({"ticker": md.delisting_dates.index.astype(str),
                                "delisting_date": pd.to_datetime(md.delisting_dates).to_numpy()})
             self.write_long("delisting_dates", dd, mode="replace")
+        if md.delisting_reasons is not None:
+            dd_src = md.delisting_dates
+            ids = md.delisting_reasons.index.astype(str)
+            when = (pd.to_datetime(dd_src.reindex(ids)).to_numpy() if dd_src is not None
+                    else np.full(len(ids), np.datetime64("NaT"), dtype="datetime64[ns]"))
+            dr = pd.DataFrame({"id": ids, "delisting_date": when,
+                               "reason": md.delisting_reasons.astype(str).to_numpy(),
+                               "source_action": ""})
+            self.write_long("delisting_reasons", dr, mode="replace")
         if include_extra:
             for k, v in md.extra.items():
                 self.write_wide(k, v)

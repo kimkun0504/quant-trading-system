@@ -11,7 +11,7 @@ integration problems surface before any one layer is deepened:
 | Transaction cost | `qts.tcost` | 2026 IBKR Pro / SEC §31 / FINRA TAF / CAT fee schedule, square-root impact in the cvxportfolio convex form `a·|x| + b·σ·|x|^1.5/√V`, auction-vs-continuous venue costing, borrow holding cost, TCA ledger with implementation-shortfall decomposition and monthly recalibration of `b` |
 | Portfolio | `qts.portfolio` | Boyd single-period convex optimizer (cvxpy + Clarabel) in factor form, full constraint menu (book type, position/ADV caps, beta & style neutrality, industry bands, no-trade, turnover penalty), Gârleanu–Pedersen half-life shrinkage in alpha space, vol targeting within hard caps, transfer coefficient, holding-period and factor attribution diagnostics |
 | Execution | `qts.execution` | Order generation, routing table (LOC/MOC in the closing auction, IBKR ClosePx / VWAP / ArrivalPx / Adaptive algos by size and signal urgency, passive limits for reversal legs), ib_async-style payload builders, VWAP / POV / Almgren–Chriss schedules, fill simulator feeding the TCA ledger |
-| Backtest | `qts.backtest` | Daily-bar simulator (signals at the close of *s*, trades at the close of *t* = *s* + signal lag, default 1 day, returns *t→t+1*, costs and borrow booked explicitly, halts frozen and delistings haircut with the same causal rule as the labels), performance metrics incl. Newey–West t, Lo-adjusted Sharpe, breakeven cost, cost sensitivity |
+| Backtest | `qts.backtest` | Daily-bar simulator (signals at the close of *s*, trades at the close of *t* = *s* + signal lag, default 1 day, returns *t→t+1*, costs and borrow booked explicitly, halts frozen and delistings booked at the return of their reason, with the same causal rule as the labels), performance metrics incl. Newey–West t, Lo-adjusted Sharpe, breakeven cost, cost sensitivity |
 | Validation | `qts.validation` | Purged walk-forward / k-fold / combinatorial purged CV with label-horizon purging and embargo, deflated Sharpe ratio, PBO (CSCV), append-only trial ledger, plan hurdle gates, leakage tripwires (PIT shift test, planted-oracle test, AST `shift(-k)` registry), Nagel "collapse to momentum" audit |
 | Data | `qts.data` | Seeded synthetic market with known factor structure and a planted alpha of known IC; Parquet/DuckDB PIT store; PIT universe builder with hysteresis; parsers for Ken French, FINRA short interest (with publication lag), Sharadar SF1 (keyed on filing date), Fama-French-48 from SIC; Norgate price / delisting-date loader (`norgate_to_store`, needs the `norgatedata` package; fetch layer not yet run against a licensed install); yfinance prototyping loader |
 
@@ -82,8 +82,9 @@ w  = SinglePeriodOptimizer(SystemConfig().portfolio, tc).solve(ao.expected_retur
   and for the pipeline; the pipeline's exposures hook raises on any failure other than the risk
   model's warm-up, so the label definition cannot change silently mid-sample.
 * Labels of names that delist inside the forward window use the return to the last close times
-  `1 + CostConfig.delisting_haircut` (default −30 %, conservative CRSP-style) instead of NaN; a
-  temporary halt gets no haircut. Halt vs delisting is decided causally (vendor `delisting_dates`,
+  `1 +` the return of the name's delisting reason (`CostConfig.delisting_return_<reason>`:
+  acquisition 0, performance −30 %, voluntary −10 %, unknown −30 %) instead of NaN; a
+  temporary halt gets no adjustment. Halt vs delisting is decided causally (vendor `delisting_dates`,
   else a 63-day gap rule), and the backtest simulator uses the same rule.
 * Walk-forward training purges any label whose forward window overlaps the prediction
   date and applies an embargo ≥ horizon; the trailing validation block is purged the same way.

@@ -406,7 +406,7 @@ $$
 \text{NAV}_{t+1} = \text{NAV}_t \left(1 + \sum_i w^{\text{post}}_{i,t}\, r_{i,t+1}\right) - C_t
 $$
 
-where $C_t$ is the dollar total of spread, impact, fees and borrow booked on execution date $t$. If a held name has no close on $t+1$ (a delisting, or a halt, which the simulator cannot tell apart on that day), it earns `CostConfig.delisting_haircut = -0.30` against the position's sign, is liquidated at spread plus fees, and the event is logged in `BacktestResult.diagnostics["delistings"]`. The weights drift with prices to become $w^{\text{pre}}$ for $t+1$, and the loop repeats.
+where $C_t$ is the dollar total of spread, impact, fees and borrow booked on execution date $t$. If a held name has no close on $t+1$ (a delisting, or a halt, which the simulator cannot tell apart on that day), it earns the return of its delisting reason on the stock (`CostConfig.delisting_return_<reason>`: acquisition 0, performance −30%, voluntary −10%, unknown −30%; a short gains on a negative one), is liquidated at spread plus fees, and the event is logged in `BacktestResult.diagnostics["delistings"]`. The weights drift with prices to become $w^{\text{pre}}$ for $t+1$, and the loop repeats.
 
 Recorded outputs are indexed carefully: weights, trades and costs by the **execution (decision) date** $t$; returns and NAV by the **realisation date** $t+1$. Mixing the two is a classic off-by-one bug; the audit found one in an earlier version of the pipeline's turnover join.
 

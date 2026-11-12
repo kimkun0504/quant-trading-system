@@ -104,6 +104,14 @@ class MarketData:
     #: series are treated as unknown (causal rule).  Not date-indexed:
     #: :meth:`slice_until` keeps it but blanks (``NaT``) events after the cut.
     delisting_dates: pd.Series | None = None
+    #: Optional delisting reason per ticker: ``"acquisition"`` / ``"performance"``
+    #: / ``"voluntary"`` / ``"unknown"`` (:mod:`qts.core.delisting`; ParquetStore
+    #: dataset ``delisting_reasons``, derived from Sharadar ACTIONS).  Sets the
+    #: final return a delisted name earns in the labels and the backtest
+    #: (``CostConfig.delisting_return_<reason>``).  ``None`` or a ticker absent
+    #: from the series -> ``"unknown"``.  Only read for names already decided
+    #: delisted; :meth:`slice_until` blanks reasons of later delistings.
+    delisting_reasons: pd.Series | None = None
 
     #: Panels that share ``close``'s index/columns (checked by ``validate``).
     ALIGNED_PANELS: ClassVar[tuple[str, ...]] = ("volume", "market_cap", "close_raw", "shares_outstanding")
@@ -204,6 +212,10 @@ class MarketData:
                 raise ValueError("industry_history needs an ascending DatetimeIndex")
         if self.delisting_dates is not None and not isinstance(cast(object, self.delisting_dates), pd.Series):
             raise ValueError("delisting_dates must be a Series ticker -> last trading date")
+        if self.delisting_reasons is not None and not isinstance(
+            cast(object, self.delisting_reasons), pd.Series
+        ):
+            raise ValueError("delisting_reasons must be a Series ticker -> reason")
 
     def slice_until(self, date: pd.Timestamp) -> MarketData:
         """Point-in-time view: every date-indexed panel cut at ``<= date``."""
@@ -221,6 +233,13 @@ class MarketData:
                 if v is not None:
                     dd = cast(pd.Series, pd.to_datetime(cast(pd.Series, v)))
                     changes[fl.name] = dd.where(dd <= pd.Timestamp(date))
+                continue
+            if fl.name == "delisting_reasons":
+                # ticker-indexed: the reason of a delisting after the cut is not known yet
+                if v is not None and self.delisting_dates is not None:
+                    rs = cast(pd.Series, v)
+                    dd = cast(pd.Series, pd.to_datetime(self.delisting_dates)).reindex(rs.index)
+                    changes[fl.name] = rs.where((dd <= pd.Timestamp(date)).to_numpy(), "unknown")
                 continue
             if fl.name == "extra":
                 changes["extra"] = {k: cut(x) for k, x in v.items()}

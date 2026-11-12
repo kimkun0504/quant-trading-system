@@ -58,7 +58,7 @@ TRACKED_LIBRARIES = (
 #: Optional fields added after the hash format was fixed: when ``None`` they
 #: contribute nothing, so data hashes of existing ``MarketData`` (and the trial
 #: ledger keys built on them) do not change; when present they are hashed.
-_SKIP_IF_NONE = frozenset({"delisting_dates"})
+_SKIP_IF_NONE = frozenset({"delisting_dates", "delisting_reasons"})
 
 
 def _hash_frame(h: Any, name: str, obj: Any) -> None:
@@ -75,8 +75,12 @@ def _hash_frame(h: Any, name: str, obj: Any) -> None:
         h.update("|".join(map(str, vals.ravel().tolist())).encode())
 
 
-def hash_market_data(md: MarketData, n_chars: int = 16) -> str:
+def hash_market_data(md: MarketData, n_chars: int = 16, exclude: frozenset[str] = frozenset()) -> str:
     """Short SHA-256 over **every** panel of ``md``.
+
+    ``exclude``: dataclass field names left out entirely (the stage cache hashes
+    reference tables a stage does not read separately, see
+    :data:`qts.runs.cache.STAGE_EXCLUDED_DATA`); the default covers everything.
 
     Covers each dataclass field that is a DataFrame / Series (``close``,
     ``volume``, ``market_cap``, ``industry`` and all optional panels, including
@@ -86,10 +90,46 @@ def hash_market_data(md: MarketData, n_chars: int = 16) -> str:
     Index and column labels are hashed too, so a re-labelled panel changes the
     hash.  Deterministic across processes for equal data.
     """
+    base = _hash_panels(md, exclude | CHAINED_REFERENCE_FIELDS)
+    return chain_reference_hash(base, md, exclude)[:n_chars]
+
+
+#: Reference tables hashed *after* the panels, chained on the panel hash (when
+#: present), so the panel hash can be computed once and shared: the stage cache
+#: keys the risk fit on the panel hash alone and the manifest's ``data_hash`` is
+#: ``chain_reference_hash(panel_hash, md)`` without hashing the panels twice.
+#: Absent (``None``) fields leave the hash equal to the panel hash.
+CHAINED_REFERENCE_FIELDS: frozenset[str] = frozenset({"delisting_reasons"})
+
+
+def chain_reference_hash(panel_hash: str, md: MarketData, exclude: frozenset[str] = frozenset()) -> str:
+    """Full 64-char data hash from the 64-char panel hash (``hash_market_data(md,
+    64, exclude=CHAINED_REFERENCE_FIELDS)``) and the chained reference tables
+    of ``md`` that are present and not in ``exclude``."""
+    present = [n for n in sorted(CHAINED_REFERENCE_FIELDS - exclude) if getattr(md, n, None) is not None]
+    if not present:
+        return panel_hash
+    h = hashlib.sha256(panel_hash.encode())
+    for n in present:
+        _hash_frame(h, n, getattr(md, n))
+    return h.hexdigest()
+
+
+def reference_hash(md: MarketData, name: str) -> str | None:
+    """SHA-256 of one reference table of ``md`` (``None`` when absent)."""
+    v = getattr(md, name, None)
+    if v is None:
+        return None
+    h = hashlib.sha256()
+    _hash_frame(h, name, v)
+    return h.hexdigest()
+
+
+def _hash_panels(md: MarketData, exclude: frozenset[str]) -> str:
     h = hashlib.sha256()
     for f in fields(md):
         v = getattr(md, f.name)
-        if f.name == "extra":
+        if f.name == "extra" or f.name in exclude:
             continue
         if v is None:
             if f.name in _SKIP_IF_NONE:
@@ -106,7 +146,7 @@ def hash_market_data(md: MarketData, n_chars: int = 16) -> str:
         else:
             h.update(f"<extra.{k}:{v!r}>".encode())
     _hash_frame(h, "eligibility()", md.eligibility())
-    return h.hexdigest()[:n_chars]
+    return h.hexdigest()
 
 
 # ----------------------------------------------------------------------------- environment

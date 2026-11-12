@@ -142,6 +142,10 @@ class BacktestSummary(_Model):
     )
     breakeven_cost_bps: float
     n_delistings: int
+    delisting_pnl_ann: float = Field(
+        description="annualised sum over delistings of held names of weight x booked delisting return "
+        "(return on the stock by delisting reason; null for runs recorded before it)"
+    )
     n_failed_solves: int
 
 

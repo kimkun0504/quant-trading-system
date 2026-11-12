@@ -10,6 +10,7 @@ import copy
 import hashlib
 import json
 import math
+import warnings
 from collections.abc import Mapping
 from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
@@ -291,10 +292,10 @@ class AlphaConfig(_ConfigBase):
     # the window makes it a temporary halt (qts.alpha.targets.forward_returns).
     delisting_gap_days: int = 63
     # Label treatment of names that delist inside the forward window (t, t+h]
-    # uses ``CostConfig.delisting_haircut`` -- the single source of the
-    # delisting assumption for labels and backtest accounting (the former
-    # ``AlphaConfig.delisting_return`` was removed; ResearchPipeline passes
-    # cfg.cost.delisting_haircut to AlphaModel).
+    # uses ``CostConfig.delisting_returns()`` (by delisting reason) -- the single
+    # source of the delisting assumption for labels and backtest accounting (the
+    # former ``AlphaConfig.delisting_return`` was removed; ResearchPipeline passes
+    # cfg.cost.delisting_returns() to AlphaModel).
 
     def __post_init__(self) -> None:
         hl: Any = self.score_smoothing_halflife_days
@@ -569,11 +570,35 @@ class CostConfig(_ConfigBase):
     borrow_proxy_si_htb: float = 0.20
     small_cap_borrow_multiplier: float = 2.0  # applied when market cap < small_cap_threshold_usd
     small_cap_threshold_usd: float = 2e9
-    # --- backtest accounting
-    # Return applied on the final day to a held name whose next close is NaN
-    # (delisting / permanent halt), against the position's sign.  Conservative:
-    # true recoveries range from 0 (bankruptcy) to a premium (cash takeover).
-    delisting_haircut: float = -0.30
+    # --- backtest accounting: delistings by reason (qts.core.delisting)
+    # Return ON THE STOCK booked on the day a held name is decided delisted
+    # (relative to its last close), by the vendor's delisting reason
+    # (``MarketData.delisting_reasons``; a name without one is "unknown").  A long
+    # earns w*r; a short earns w*r too, i.e. it GAINS when r < 0.  The same map is
+    # applied to the labels (qts.alpha.targets), so the model is trained on the
+    # outcome the backtest books.
+    #   acquisition: cash / stock deals complete at about the last traded price -> 0
+    #   performance: bankruptcy, liquidation, exchange-initiated -> -30 % (Shumway 1997)
+    #   voluntary:   going dark / moving to OTC: trading continues, illiquid -> -10 %
+    #   unknown:     no reason on file -> treated as performance (conservative for longs)
+    delisting_return_acquisition: float = 0.0
+    delisting_return_performance: float = -0.30
+    delisting_return_voluntary: float = -0.10
+    delisting_return_unknown: float = -0.30
+    # Fraction of a short's GAIN on a negative delisting return that is booked
+    # (1 = symmetric, the textbook return; 0 = the conservative "shorts get
+    # nothing" choice: buy-ins, recalls and locates failing ahead of a bankruptcy
+    # mean the short is often closed before the final drop).  Losses are never scaled.
+    delisting_short_gain_haircut: float = 1.0
+    # Escape hatch reproducing the pre-2026-11-12 accounting exactly: the reason's
+    # return is applied AGAINST the position's sign (a loss for longs and shorts
+    # alike).  With all four returns at -0.30 this is the old ``delisting_haircut``.
+    delisting_against_position: bool = False
+    # DEPRECATED (read for old configs only): the former single both-sides haircut.
+    # A non-None value is copied into ``delisting_return_performance`` and
+    # ``delisting_return_unknown`` on construction (DeprecationWarning) and the
+    # field is reset to None; it does NOT switch ``delisting_against_position`` on.
+    delisting_haircut: float | None = None
     # Multi-day impact persistence: day k of a same-direction streak is charged
     # the incremental impact of extending a k-day metaorder (see
     # TransactionCostModel.estimate).  The optimizer still sees the one-day marginal.
@@ -583,7 +608,31 @@ class CostConfig(_ConfigBase):
     tca_reversion_reference: str = "next_close"
 
     def __post_init__(self) -> None:
+        if self.delisting_haircut is not None:
+            warnings.warn(
+                "CostConfig.delisting_haircut is deprecated: use delisting_return_performance / "
+                "delisting_return_unknown (it is mapped to both; set delisting_against_position=True "
+                "for the old both-sides accounting)",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            errs = check_bounds(self, {"delisting_haircut": COST_CONFIG_BOUNDS["delisting_haircut"]})
+            if errs:
+                raise ValueError("CostConfig: " + "; ".join(errs))
+            h = float(self.delisting_haircut)
+            object.__setattr__(self, "delisting_return_performance", h)
+            object.__setattr__(self, "delisting_return_unknown", h)
+            object.__setattr__(self, "delisting_haircut", None)
         self.validate()
+
+    def delisting_returns(self) -> dict[str, float]:
+        """Reason -> return on the stock (keys = ``qts.core.delisting.DELISTING_REASONS``)."""
+        return {
+            "acquisition": float(self.delisting_return_acquisition),
+            "performance": float(self.delisting_return_performance),
+            "voluntary": float(self.delisting_return_voluntary),
+            "unknown": float(self.delisting_return_unknown),
+        }
 
     def validate(self) -> CostConfig:
         """Semantic bounds (:data:`COST_CONFIG_BOUNDS`) plus ``gc < htb`` and the
@@ -593,6 +642,8 @@ class CostConfig(_ConfigBase):
         errs = check_bounds(self, COST_CONFIG_BOUNDS)
         if not errs and self.borrow_proxy_si_gc >= self.borrow_proxy_si_htb:
             errs.append("borrow_proxy_si_gc must be < borrow_proxy_si_htb")
+        if not isinstance(cast(object, self.delisting_against_position), bool):
+            errs.append("delisting_against_position must be a bool")
         if self.tca_reversion_reference not in TCA_REVERSION_REFERENCES:
             errs.append(f"tca_reversion_reference must be one of {list(TCA_REVERSION_REFERENCES)}")
         if errs:
@@ -629,6 +680,11 @@ COST_CONFIG_BOUNDS: dict[str, FieldBound] = {
     "small_cap_borrow_multiplier": (0.0, 100.0, True, True),
     "small_cap_threshold_usd": (0.0, None, True, True),
     "delisting_haircut": (-1.0, 1.0, True, True),
+    "delisting_return_acquisition": (-1.0, 1.0, True, True),
+    "delisting_return_performance": (-1.0, 1.0, True, True),
+    "delisting_return_voluntary": (-1.0, 1.0, True, True),
+    "delisting_return_unknown": (-1.0, 1.0, True, True),
+    "delisting_short_gain_haircut": (0.0, 1.0, True, True),
 }
 
 

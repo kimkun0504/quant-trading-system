@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
+from qts.core.delisting import format_delisting_line
 from qts.validation import HurdleReport
 
 if TYPE_CHECKING:
@@ -57,6 +58,18 @@ def _vol_ratio_text(s: Mapping[str, object], rv: Mapping[str, float] | None = No
     return "n/a (too few invested days)" if math.isfinite(fx) else "n/a"
 
 
+def _delisting_text(bt: object, diag: Mapping[str, object]) -> str:
+    """``acquisition N (P&L x%/yr; aL/bS)  performance N (...)  ...``: delistings of
+    held names by reason with their annualised P&L contribution."""
+    fn = getattr(bt, "delisting_summary", None)
+    summ = fn() if callable(fn) else diag.get("delisting_summary")
+    if not isinstance(summ, Mapping):
+        return "n/a"
+    line = format_delisting_line(cast("Mapping[str, Any]", summ))
+    tot = summ.get("pnl_ann")
+    return line if tot is None or not summ.get("n") else f"{line}  total {100 * float(tot):+.2f}%/yr"
+
+
 def format_result(res: PipelineResult) -> str:
     s = res.summary
     icr = res.ic_report
@@ -84,6 +97,7 @@ def format_result(res: PipelineResult) -> str:
         f"data guards       data-error closes blanked {int(diag.get('n_data_error_returns', 0))}   "
         f"ex-ante vol alerts {int(diag.get('n_exante_vol_alerts', 0))} of "
         f"{int(diag.get('n_rebalance_solves', 0))} solves   failed solves {int(diag.get('n_failed_solves', 0))}",
+        f"delistings        {_delisting_text(bt, diag)}",
         "",
         "=== Alpha IC (score vs residualised target, sampled every horizon) ===",
         f"mean rank IC {icr.mean_ic:.4f}  ICIR {icr.icir:.2f} "

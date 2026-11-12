@@ -32,6 +32,7 @@ Every model in the system reads one object, `qts/core/types.py::MarketData`: a s
 | `industry` (required) | Fama–French 48 label | Static fallback label | not dated (see pitfalls) |
 | `industry_history` | dated labels | Industry demeaning, factors, bands via `industry_as_of(t)` | the reclassification date |
 | `delisting_dates` | ticker → last trading date | Telling delistings from halts in labels | the delisting date |
+| `delisting_reasons` | ticker → `acquisition` / `performance` / `voluntary` / `unknown` | The final return of a delisted name in labels and backtest | the delisting date (see **Sharadar › Delisting reasons** for the caveat) |
 | `spread_bps` | half-spread, bp | Spread cost; liquidity feature | the close of $t$ |
 | `short_interest_ratio` | short interest ÷ shares | Short-interest theme and style; borrow proxy | settlement + 8 NYSE sessions |
 | `borrow_fee` | annual fraction | Cost of shorts; loan-fee signal | the day the rate is logged |
@@ -112,10 +113,10 @@ A **bias** is a systematic difference between what a backtest saw and what a tra
 
 **The numbers.** Shumway (1997) showed that CRSP's missing performance-related delisting returns bias returns upward and proposed substituting −30% for NYSE/AMEX stocks; Shumway & Warther (1999) found the corresponding figure for Nasdaq stocks to be about −55%. In this code base, the 2026-11-04 audit found that the label builder dropped every delisting outcome: **0 of 630** pre-delisting labels survived on a constructed test, so ML training, IC and decile statistics never saw a single delisting.
 
-**Guards in the code.** One knob, `CostConfig.delisting_haircut = -0.30`, is the single source of the delisting assumption for both labels and the backtest (the former `AlphaConfig.delisting_return` was removed; the pipeline passes the cost setting to the alpha model):
+**Guards in the code.** The delisting assumption is one map, reason → return on the stock, in `CostConfig` (`delisting_return_acquisition = 0.0`, `delisting_return_performance = -0.30`, `delisting_return_voluntary = -0.10`, `delisting_return_unknown = -0.30`), used by both the labels and the backtest (→ see **Backtesting › Delistings by reason**). The reason of each name is `MarketData.delisting_reasons`, derived from the vendor's corporate actions (→ see **Sharadar › Delisting reasons**); a name without one is `unknown`:
 
-- In the labels (`qts/alpha/targets.py::forward_returns`): if a name has no close at the label window's end, the label is the return to its last close before the end, compounded with the −30% haircut **if that is a delisting**, and without it if it is a temporary halt.
-- In the simulator: a held name with no close on $t+1$ is classified with the same rule below. If it is a delisting it earns −30% against the position's sign (a loss for longs and shorts alike, conservatively) and is liquidated at spread plus fees; if it is a halt the position is frozen at its last price until prices return.
+- In the labels (`qts/alpha/targets.py::forward_returns`): if a name has no close at the label window's end, the label is the return to its last close before the end, compounded with its reason's return **if that is a delisting** (so an acquisition's label is simply the return to the last price), and without it if it is a temporary halt.
+- In the simulator: a held name with no close on $t+1$ is classified with the same rule below. If it is a delisting it earns its reason's return on the stock (a long loses on a negative return, a short gains) and is liquidated at spread plus fees; if it is a halt the position is frozen at its last price until prices return.
 
 **Halts versus delistings, without looking ahead.** A trading halt (pending news, a regulatory halt, a long suspension) also produces missing closes, then prices resume. Deciding "halt or delisting" by peeking at whether prices come back later is a look-ahead: the second audit found that the earlier rule (a backward fill over the whole panel) made labels "realised" at $t$ depend on prices after $t$, verified on 4,228 label cells (HIGH finding 1). The rule is now causal:
 
@@ -125,11 +126,11 @@ A **bias** is a systematic difference between what a backtest saw and what a tra
 `qts/alpha/targets.py::label_realisation` gives, per decision date, the first date at which every label of that row is decided, so training and the trailing IC use a row only from then on. Without a delisting table, a delisting delays its rows by up to 63 days; supply `delisting_dates` for real data.
 
 <callout icon="⚠️" color="yellow_bg">
-The simulator applies the same rule on the day it has to act. A held name with no close is frozen at its last price (no return, no trading) while it is a halt; the haircut and liquidation are booked when the vendor delisting date has passed or, without a vendor table, when the gap reaches 63 trading days. Without `delisting_dates` a real delisting therefore sits frozen in the book for up to 63 days before its loss is booked (→ see **Backtesting › Halts and delistings**).
+The simulator applies the same rule on the day it has to act. A held name with no close is frozen at its last price (no return, no trading) while it is a halt; the delisting return and liquidation are booked when the vendor delisting date has passed or, without a vendor table, when the gap reaches 63 trading days. Without `delisting_dates` a real delisting therefore sits frozen in the book for up to 63 days before its loss is booked (→ see **Backtesting › Halts and delistings**).
 </callout>
 
-<callout icon="💡" color="blue_bg">
-Why charge −30% to shorts too? A short in a company delisted for cause would profit, but one in a company acquired at a premium would lose, and price data cannot tell them apart, so the haircut goes against the position in both cases. Replace it with real delisting returns when the source has them.
+<callout icon="🤔" color="purple_bg">
+Why not one −30% haircut against every position, as before 2026-11-12? Because the reason is in the data, and it changes the answer. In a large-cap universe most delistings are acquisitions that complete at about the last traded price; charging those 30% on both sides cost the first real-data run 3.53% a year, more than its gross alpha. Shumway's −30% is a return on the stock for performance delistings: a long loses it and a short gains it. `CostConfig.delisting_against_position = True` restores the old rule; `delisting_short_gain_haircut` scales how much of a short's gain is booked.
 </callout>
 
 ### Look-ahead from restatements
@@ -187,6 +188,7 @@ root/
   industry/_meta.json
   industry/all.parquet                 long table without a date: ticker, industry
   delisting_dates/all.parquet          long table: ticker, delisting_date
+  delisting_reasons/all.parquet        long table: id, delisting_date, reason, source_action
 ```
 
 ### Why we need it here
@@ -217,7 +219,7 @@ The build plan recommends Polars and DuckDB over local Parquet as the PIT store.
 
 ### In the code
 
-Dataset names understood by `as_market_data`: `prices_close`, `prices_volume`, `market_cap`, `industry` (required); `prices_close_raw`, `shares_outstanding`, `industry_history` (wide, string labels), `delisting_dates` (long: `ticker, delisting_date`), `spread_bps`, `short_interest_ratio`, `borrow_fee`, `book_to_price`, `earnings_yield`, `gross_profitability`, `asset_growth` (optional); any further wide dataset can be loaded into `MarketData.extra` via `extra_names`. The full ingest recipe is in **Operating guide › Loading real data into the ParquetStore**.
+Dataset names understood by `as_market_data`: `prices_close`, `prices_volume`, `market_cap`, `industry` (required); `prices_close_raw`, `shares_outstanding`, `industry_history` (wide, string labels), `delisting_dates` (long: `ticker, delisting_date`), `delisting_reasons` (long: `id, delisting_date, reason, source_action` → `MarketData.delisting_reasons`; absent means every delisting is `unknown`), `spread_bps`, `short_interest_ratio`, `borrow_fee`, `book_to_price`, `earnings_yield`, `gross_profitability`, `asset_growth` (optional); any further wide dataset can be loaded into `MarketData.extra` via `extra_names`. The full ingest recipe is in **Operating guide › Loading real data into the ParquetStore**.
 
 ### Pitfalls & checks
 
@@ -657,7 +659,7 @@ The **Sharadar Core US Equities Bundle** (sold through Nasdaq Data Link) is the 
 | `SEP` | ~20M | adjusted and as-traded closes, actual shares traded | `prices_close`, `prices_close_raw`, `prices_volume` |
 | `DAILY` | ~15M | market cap and valuation ratios (USD millions) | `sharadar_marketcap`, `sharadar_ev`, `sharadar_pb`, `sharadar_pe`, `sharadar_ps`; derived `market_cap`, `shares_outstanding` |
 | `SF1` | ~3M | as-reported fundamentals (`ART` and `ARQ` kept) | `sharadar_sf1`; derived `book_to_price`, `earnings_yield`, `gross_profitability`, `asset_growth` |
-| `ACTIONS` | ~300k | splits, dividends, listings, delistings, mergers (reference) | `corporate_actions` |
+| `ACTIONS` | ~300k | splits, dividends, listings, delistings, mergers (reference); the reason of each delisting | `corporate_actions`; derived `delisting_reasons` |
 | `SP500` | ~2k | index additions and removals since 1957 | `sp500_membership` (+ `sp500_membership_panel`) |
 | `METRICS`, `EVENTS`, `SFP`, `INDICATORS` | optional | stored verbatim (`--tables`) | `sharadar_<table>` |
 
@@ -717,7 +719,45 @@ TICKERS carries only the **current** classification, so no `industry_history` is
 
 - `delisting_dates`: `lastpricedate` for `isdelisted = "Y"`, `NaT` for alive names, so **every** kept id is covered and the label builder and simulator use the vendor rule rather than the 63-day gap rule. `validate` cross-checks the dates against `ACTIONS` rows of type `delisted` (within 5 days) without overriding TICKERS.
 - `corporate_actions` keeps every `ACTIONS` row (date, action, ticker, id, value, contra ticker) for reference; `validate` confirms that raw-close jumps of more than 40% with a continuous adjusted close line up with `split` actions.
+- `delisting_reasons`: one row per delisted id with its reason, derived from `corporate_actions` (next subsection).
 - `sp500_membership` stores the `SP500` events (`added`, `removed`, plus the vendor's `current` and `historical` listings). `sp500_membership_panel(store)` turns the add/remove events into a date × id boolean panel (member on `[added, removed)`, events before the panel start carried in). It is stored and exposed only: **it is not a universe rule** and nothing in the pipeline reads it yet.
+
+### Delisting reasons
+**What it is.** A derived reference table, `delisting_reasons`: one row per delisted id with `id`, `delisting_date` (TICKERS `lastpricedate`), `reason` (`acquisition`, `performance`, `voluntary` or `unknown`) and `source_action` (the `ACTIONS` code that decided it). `ParquetStore.as_market_data` loads it into `MarketData.delisting_reasons` (ticker → reason).
+
+**Why we need it here.** The final return of a delisted name depends on why it left (→ see **Backtesting › Delistings by reason**). TICKERS says *that* and *when* a name delisted; only `ACTIONS` says why.
+
+**How it works** (`qts/data/sharadar.py::derive_delisting_reasons`). For every delisted id, take the `ACTIONS` rows of its ticker dated within `DELISTING_REASON_WINDOW_DAYS = 5` business days (weekdays; holidays are not excluded) of its delisting date, on either side, and map their action codes through the module constant `DELISTING_REASON_ACTIONS`:
+
+| `ACTIONS` code | Reason | Reading of the row |
+|---|---|---|
+| `acquisitionby` | `acquisition` | the company in `ticker` was acquired by `contraticker` |
+| `mergerto` | `acquisition` | the company in `ticker` merged into `contraticker` |
+| `bankruptcyliquidation` | `performance` | bankruptcy or liquidation |
+| `regulatorydelisting` | `performance` | removed by the exchange or regulator |
+| `voluntarydelisting` | `voluntary` | the issuer chose to delist |
+| `delisted` alone, or no row | `unknown` | the vendor recorded the delisting without a cause |
+
+If several mapped codes sit on one delisting the strongest wins: `performance` > `acquisition` > `voluntary` > `unknown`. The mirror codes `acquisitionof` and `mergerfrom` describe the surviving company and are not mapped. A row whose id was resolved to a *different* holder of a reused ticker is ignored; a row dated just after the last price date (its id unresolved, because it is outside the holder's price range) is matched by ticker.
+
+<callout icon="⚠️" color="yellow_bg">
+The reading of `acquisitionby` / `mergerto` follows the action names; it was not checked against the vendor's field documentation when this was written. The derive report therefore prints every action code found next to a delisting. An acquirer does not delist in the week it buys something, so the code that dominates there is the "was acquired" one: if that is `acquisitionof` rather than `acquisitionby`, the mapping is inverted and `DELISTING_REASON_ACTIONS` must be corrected (it is one constant; `derive_delisting_reasons(..., mapping=...)` takes an override).
+</callout>
+
+**In the code.** The table needs no download: it is rebuilt from the stored `corporate_actions` and `security_master`.
+
+```bash
+qts data sharadar derive --store data/store            # rebuild delisting_reasons, print the counts
+qts data sharadar derive --store data/store --window 10 --json reasons.json
+```
+
+`sync` writes it too, after the raw tables. The command prints counts by reason, a year × reason table, the action codes seen near all delistings, and for the ids left `unknown` the codes seen in the window plus any mapped code found within ±63 business days (a large count there means the 5-day window is too tight).
+
+**Pitfalls & checks.**
+- `unknown` is booked at −30% like `performance`. A large unknown share distorts the delisting P&L; read the report before a run.
+- The action can be dated a few days after the last price date, while the simulator books the delisting the day after it. The reason therefore sets the size of an accounting entry with information up to 5 business days ahead; it never reaches a signal or a trade.
+- The stage cache keys the alpha fit (the labels read the reasons) on this table and the risk fit not at all, so deriving or re-deriving it refits the alpha model only.
+- Tests: `tests/test_sharadar.py::test_derive_delisting_reasons_mapping_precedence_and_window`, `::test_sync_writes_delisting_reasons_and_market_data_loads_them`, `::test_derive_from_an_existing_store_without_download`.
 
 ### Incremental refresh and memory
 
@@ -727,7 +767,7 @@ Nothing is pivoted whole. CSVs are streamed in chunks of 500,000 rows, rows are 
 
 ### What the bundle does not cover
 
-Half-spreads (`spread_bps`), borrow fees, short interest and dated industry history are not in the bundle: the cost model's spread falls back to its proxy, the borrow signal waits for the IBKR logger, and FINRA short interest is loaded separately (→ see **Short interest: FINRA data and the publication lag**). Delisting *returns* are not provided either; the −30% haircut stays.
+Half-spreads (`spread_bps`), borrow fees, short interest and dated industry history are not in the bundle: the cost model's spread falls back to its proxy, the borrow signal waits for the IBKR logger, and FINRA short interest is loaded separately (→ see **Short interest: FINRA data and the publication lag**). Delisting *returns* are not provided either: the delisting *reason* is (previous subsection), and the return per reason is an assumption in `CostConfig`.
 
 ### References
 
@@ -736,4 +776,4 @@ Half-spreads (`spread_bps`), borrow fees, short interest and dated industry hist
 
 ## Roadmap
 
-Not yet in the code (from `README.md`, `docs/REVIEW_NOTES.md`, `docs/WORK_PLAN.md`): the Norgate price path as a second source (`qts/data/loaders.py::norgate_to_store` is a stub); the daily IBKR borrow-rate logger, spliced into `borrow_fee` after 12 months; real delisting returns from the vendor in place of the −30% haircut; dated industry history (`build_industry_history` hook); reproducing five `openassetpricing` factor series from own data as a PIT audit. Phase 0 (Sharadar prices, caps and fundamentals into a `ParquetStore` keyed on permanent identifiers) is in the code: → see **Real data: Sharadar** above.
+Not yet in the code (from `README.md`, `docs/REVIEW_NOTES.md`, `docs/WORK_PLAN.md`): the Norgate price path as a second source (`qts/data/loaders.py::norgate_to_store` is a stub); the daily IBKR borrow-rate logger, spliced into `borrow_fee` after 12 months; real delisting returns from a vendor in place of the per-reason assumptions; dated industry history (`build_industry_history` hook); reproducing five `openassetpricing` factor series from own data as a PIT audit. Phase 0 (Sharadar prices, caps and fundamentals into a `ParquetStore` keyed on permanent identifiers) is in the code: → see **Real data: Sharadar** above.

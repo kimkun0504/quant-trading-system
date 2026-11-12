@@ -142,6 +142,55 @@ def test_causal_delisting_rule_and_vendor_dates():
     assert mv.slice_until(md.dates[100]).delisting_dates.isna().all()
 
 
+def test_labels_apply_the_delisting_return_of_the_reason():
+    """The label of a name that delists inside the window is the return to its last
+    close times ``1 + r(reason)`` -- the same map the simulator books
+    (``CostConfig.delisting_returns()``): acquisition = the last-price return."""
+    from qts.core.config import CostConfig
+
+    md = generate(SyntheticSpec(n_stocks=40, n_days=400, seed=3))
+    gone = md.tickers[:5]
+    d = 250
+    blank = pd.DataFrame(False, index=md.dates, columns=md.tickers)
+    blank.loc[md.dates[d:], gone] = True
+    dd = pd.Series(pd.NaT, index=md.tickers, dtype="datetime64[ns]")
+    dd[gone] = md.dates[d - 1]
+    md = replace(md, close=md.close.mask(blank), market_cap=md.market_cap.mask(blank), delisting_dates=dd)
+    s = md.dates[d - 5]
+    plain = (md.close.loc[md.dates[d - 1], gone] / md.close.loc[s, gone] - 1.0).to_numpy()
+    returns = CostConfig().delisting_returns()
+    assert returns == {"acquisition": 0.0, "performance": -0.30, "voluntary": -0.10, "unknown": -0.30}
+    # no reasons table: every delisting is "unknown" -> -30 %, identical to the single float
+    np.testing.assert_allclose(forward_returns(md, H, returns).loc[s, gone], (1 + plain) * 0.7 - 1)
+    pd.testing.assert_frame_equal(forward_returns(md, H, returns), forward_returns(md, H, -0.30))
+    # with reasons (the 5th name is not listed -> unknown)
+    reasons = pd.Series(["acquisition", "performance", "voluntary", "unknown"], index=gone[:4], dtype=object)
+    mr = replace(md, delisting_reasons=reasons)
+    mult = np.array([1.0, 0.7, 0.9, 0.7, 0.7])
+    fr = forward_returns(mr, H, returns)
+    np.testing.assert_allclose(fr.loc[s, gone], (1 + plain) * mult - 1)
+    assert fr.loc[s, gone[0]] == pytest.approx(plain[0])  # acquisition: last price return
+    # names that do not delist are untouched by the reasons table
+    alive = md.tickers[5:]
+    pd.testing.assert_frame_equal(fr[alive], forward_returns(md, H, returns)[alive])
+    # the label timing does not depend on the reason
+    assert label_realisation(mr, H).equals(label_realisation(md, H))
+    # a single float still means "one return for every delisting"; None / 0 disables
+    np.testing.assert_allclose(forward_returns(mr, H, -0.5).loc[s, gone], (1 + plain) * 0.5 - 1)
+    np.testing.assert_allclose(forward_returns(mr, H, None).loc[s, gone], plain)
+    np.testing.assert_allclose(forward_returns(mr, H, 0.0).loc[s, gone], plain)
+    # the residualised training label follows the raw label
+    a = residualize_forward_returns(mr, H, delisting_return=returns)
+    b = residualize_forward_returns(md, H, delisting_return=returns)
+    assert not np.allclose(a.loc[s].to_numpy(), b.loc[s].to_numpy(), equal_nan=True)
+    # AlphaModel: default = the config's per-reason map; a mapping is stored as given
+    assert AlphaModel(_cfg(), use_ml=False).delisting_return == returns
+    assert AlphaModel(_cfg(), use_ml=False, delisting_return=-0.2).delisting_return == -0.2
+    # point in time: a slice ending before the delisting sees no reason
+    assert (mr.slice_until(md.dates[d - 2]).delisting_reasons == "unknown").all()
+    assert mr.slice_until(md.dates[d - 1]).delisting_reasons.equals(reasons)
+
+
 def test_label_lag_shifts_window_by_L():
     md = generate(SyntheticSpec(n_stocks=30, n_days=200, seed=4))
     c = md.close

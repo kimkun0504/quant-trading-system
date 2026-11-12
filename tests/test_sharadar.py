@@ -287,6 +287,7 @@ def test_sync_builds_a_consumable_store(synced):
         "shares_outstanding",
         "industry",
         "delisting_dates",
+        "delisting_reasons",
         "security_master",
         "sharadar_sf1",
         "sharadar_ev",
@@ -351,7 +352,15 @@ def test_sync_fundamentals_are_pit_and_split_consistent(synced):
 def test_sync_reference_tables_and_sp500_panel(synced):
     store = ParquetStore(str(synced))
     ca = store.read_long("corporate_actions")
-    assert set(ca["action"]) == {"split", "dividend", "delisted", "listed"}
+    assert set(ca["action"]) == {
+        "split",
+        "dividend",
+        "delisted",
+        "listed",
+        "acquisitionby",
+        "acquisitionof",
+        "bankruptcyliquidation",
+    }
     assert ca.loc[ca["action"] == "split", "id"].tolist() == ["AAA"]
     assert ca.loc[(ca["action"] == "delisted") & (ca["ticker"] == "DDD"), "id"].tolist() == ["DDD.100004"]
     assert ca.loc[ca["ticker"] == "SPY", "id"].isna().all()  # outside the kept master, kept for reference
@@ -587,7 +596,8 @@ def test_default_session_is_requests_with_key_from_env(tmp_path, monkeypatch):
     monkeypatch.setenv(sh.API_KEY_ENV, KEY)
     rep = sh.sync(str(tmp_path / "store"), raw_dir=str(tmp_path / "raw"), tables=["TICKERS", "ACTIONS"])
     assert created and created[0].polls == {"TICKERS": 2, "ACTIONS": 2}
-    assert rep.tables["ACTIONS"].rows_kept == 6
+    assert rep.tables["ACTIONS"].rows_kept == 9
+    assert rep.delisting_reasons == {"acquisition": 1, "performance": 1, "voluntary": 0, "unknown": 0}
 
 
 def test_dry_run_writes_nothing(tmp_path):
@@ -604,6 +614,154 @@ def test_dry_run_writes_nothing(tmp_path):
         client=sh.NasdaqDataLinkClient("x", session=FakeSession()),
     )
     assert "(to download)" in rep2.format()
+
+
+# ----------------------------------------------------------------------------- delisting reasons
+def _dr_actions(rows):
+    return pd.DataFrame(rows, columns=["date", "action", "ticker", "id"])
+
+
+def _dr_master(rows):
+    return pd.DataFrame(rows, columns=["id", "ticker", "lastpricedate", "isdelisted"])
+
+
+def test_derive_delisting_reasons_mapping_precedence_and_window():
+    master = _dr_master(
+        [
+            ("ACQ", "ACQ", "2020-03-10", True),  # acquisitionby on the day
+            ("BKR", "BKR", "2020-03-10", True),  # bankruptcy + acquisition: performance wins
+            ("VOL", "VOL", "2020-03-10", True),  # voluntary, dated 5 business days later
+            ("PLN", "PLN", "2020-03-10", True),  # plain delisted row only
+            ("NON", "NON", "2020-03-10", True),  # no action row at all
+            ("FAR", "FAR", "2020-03-10", True),  # mapped action 6 business days away: outside
+            ("MRG", "MRG", "2020-03-10", True),  # mergerto, 3 business days before
+            ("BUY", "BUY", "2020-03-10", True),  # acquisitionof (it bought something): not mapped
+            ("LIV", "LIV", "2020-03-10", False),  # alive: no row
+            ("RE.1", "RE", "2020-03-10", True),  # reused ticker, old holder
+            ("RE.2", "RE", "2021-06-01", True),  # reused ticker, later holder
+        ]
+    )
+    actions = _dr_actions(
+        [
+            ("2020-03-10", "acquisitionby", "ACQ", "ACQ"),
+            ("2020-03-10", "delisted", "ACQ", "ACQ"),
+            ("2020-03-11", "acquisitionby", "BKR", "BKR"),
+            ("2020-03-12", "bankruptcyliquidation", "BKR", "BKR"),
+            ("2020-03-17", "voluntarydelisting", "VOL", None),  # +5 business days, id unresolved
+            ("2020-03-10", "delisted", "PLN", "PLN"),
+            ("2020-03-18", "regulatorydelisting", "FAR", "FAR"),  # +6 business days
+            ("2020-03-05", "mergerto", "MRG", "MRG"),
+            ("2020-03-10", "acquisitionof", "BUY", "BUY"),
+            ("2020-03-10", "delisted", "BUY", "BUY"),
+            ("2020-03-10", "bankruptcyliquidation", "LIV", "LIV"),
+            ("2020-03-10", "regulatorydelisting", "RE", "RE.1"),
+            ("2021-06-01", "acquisitionby", "RE", "RE.2"),
+            ("2021-06-02", "bankruptcyliquidation", "RE", "RE.1"),  # resolved to the other holder: ignored
+            ("2020-03-10", "acquisitionby", "ZZZ", None),  # ticker outside the master
+        ]
+    )
+    out, rep = sh.derive_delisting_reasons(actions, master)
+    assert list(out.columns) == list(sh.DELISTING_REASON_COLUMNS)
+    got = out.set_index("id")
+    assert got["reason"].to_dict() == {
+        "ACQ": "acquisition",
+        "BKR": "performance",
+        "VOL": "voluntary",
+        "PLN": "unknown",
+        "NON": "unknown",
+        "FAR": "unknown",
+        "MRG": "acquisition",
+        "BUY": "unknown",
+        "RE.1": "performance",
+        "RE.2": "acquisition",
+    }
+    assert got["source_action"].to_dict() == {
+        "ACQ": "acquisitionby",
+        "BKR": "bankruptcyliquidation",
+        "VOL": "voluntarydelisting",
+        "PLN": "delisted",
+        "NON": "",
+        "FAR": "",
+        "MRG": "mergerto",
+        "BUY": "delisted",
+        "RE.1": "regulatorydelisting",
+        "RE.2": "acquisitionby",
+    }
+    assert got.loc["RE.2", "delisting_date"] == pd.Timestamp("2021-06-01")
+    assert rep.n_delisted == 10
+    assert rep.by_reason == {"acquisition": 3, "performance": 2, "voluntary": 1, "unknown": 4}
+    assert rep.by_year == {
+        2020: {"acquisition": 2, "performance": 2, "voluntary": 1, "unknown": 4},
+        2021: {"acquisition": 1, "performance": 0, "voluntary": 0, "unknown": 0},
+    }
+    # unknowns: what was seen next to them, and the mapped action just outside the window
+    assert rep.unknown_actions == {"delisted": 2, "(no action row)": 2, "acquisitionof": 1}
+    assert rep.unknown_mapped_in_hint_window == {"regulatorydelisting": 1}
+    assert (
+        rep.actions_near_delistings["acquisitionby"] == 3
+        and rep.actions_near_delistings["acquisitionof"] == 1
+    )
+    txt = rep.format()
+    assert (
+        "by reason" in txt
+        and "by year" in txt
+        and "(no action row)" in txt
+        and "acquisitionby->acquisition" in txt
+    )
+    # a corrected mapping (e.g. after reading the real counts) is one argument away
+    out2, _ = sh.derive_delisting_reasons(actions, master, mapping={"acquisitionof": "acquisition"})
+    assert out2.set_index("id")["reason"]["BUY"] == "acquisition"
+    with pytest.raises(ValueError, match="not delisting reasons"):
+        sh.derive_delisting_reasons(actions, master, mapping={"delisted": "bankrupt"})
+    # a wider window picks up the far action
+    out3, _ = sh.derive_delisting_reasons(actions, master, window_days=6)
+    assert out3.set_index("id")["reason"]["FAR"] == "performance"
+
+
+def test_sync_writes_delisting_reasons_and_market_data_loads_them(synced):
+    store = ParquetStore(str(synced))
+    dr = store.read_long("delisting_reasons").set_index("id")
+    # CCC: acquisitionby the day after its last price; DDD (old holder): the bankruptcy row is
+    # dated after its price range, so its id is unresolved and it is matched by ticker
+    assert dr["reason"].to_dict() == {"CCC": "acquisition", "DDD.100004": "performance"}
+    assert dr["source_action"].to_dict() == {"CCC": "acquisitionby", "DDD.100004": "bankruptcyliquidation"}
+    assert dr.loc["CCC", "delisting_date"] == pd.Timestamp("2020-01-21")
+    md = store.as_market_data()
+    assert md.delisting_reasons is not None
+    assert md.delisting_reasons.to_dict() == {"CCC": "acquisition", "DDD.100004": "performance"}
+    from qts.core.config import CostConfig
+    from qts.core.delisting import reasons_by_name, returns_by_name
+
+    by = dict(zip(md.tickers, reasons_by_name(md), strict=True))
+    assert by["CCC"] == "acquisition" and by["DDD.100004"] == "performance" and by["AAA"] == "unknown"
+    r = dict(zip(md.tickers, returns_by_name(md, CostConfig().delisting_returns()), strict=True))
+    assert r["CCC"] == 0.0 and r["DDD.100004"] == -0.30 and r["AAA"] == -0.30
+    # point in time: before CCC's delisting date its reason is not known
+    cut = md.slice_until(pd.Timestamp("2020-01-15"))
+    assert cut.delisting_reasons.to_dict() == {"CCC": "unknown", "DDD.100004": "performance"}
+
+
+def test_derive_from_an_existing_store_without_download(synced, tmp_path, capsys):
+    from qts.cli import main
+
+    dst = tmp_path / "store"
+    shutil.copytree(synced, dst)
+    store = ParquetStore(str(dst))
+    before = store.read_long("delisting_reasons")
+    store.drop("delisting_reasons")  # a store synced before the table existed
+    assert ParquetStore(str(dst)).as_market_data().delisting_reasons is None
+    rc = main(["data", "sharadar", "derive", "--store", str(dst), "--json", str(tmp_path / "d.json")])
+    out = capsys.readouterr().out
+    assert rc == 0 and "by reason" in out and "acquisition" in out and "by year" in out
+    assert "2020" in out and "delisting_reasons (2 rows)" in out
+    pd.testing.assert_frame_equal(ParquetStore(str(dst)).read_long("delisting_reasons"), before)
+    assert json.loads((tmp_path / "d.json").read_text())["by_reason"]["performance"] == 1
+    h = ParquetStore(str(dst)).snapshot_hash("delisting_reasons")
+    assert main(["data", "sharadar", "derive", "--store", str(dst)]) == 0  # idempotent
+    assert ParquetStore(str(dst)).snapshot_hash("delisting_reasons") == h
+    capsys.readouterr()
+    rc = main(["data", "sharadar", "derive", "--store", str(tmp_path / "empty")])
+    assert rc == 1 and "sync" in capsys.readouterr().err
 
 
 # ----------------------------------------------------------------------------- validate / CLI

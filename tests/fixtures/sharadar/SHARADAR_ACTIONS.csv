@@ -5,3 +5,6 @@ date,action,ticker,name,value,contraticker,contraname
 2020-01-10,delisted,DDD,Delta Pharma (old),,,
 2020-01-27,listed,DDD,Delta Holdings (new),,,
 2020-01-31,dividend,SPY,SPDR S&P 500,1.2,,
+2020-01-22,acquisitionby,CCC,Gamma Diners,,BBB,Beta Software
+2020-01-22,acquisitionof,BBB,Beta Software,,CCC,Gamma Diners
+2020-01-13,bankruptcyliquidation,DDD,Delta Pharma (old),,,

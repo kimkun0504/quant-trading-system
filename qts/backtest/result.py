@@ -10,12 +10,13 @@ indexed by the date the return is realised (``t+1``).  See
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TypedDict, cast
+from typing import Any, TypedDict, cast
 
 import numpy as np
 import pandas as pd
 
 from qts.backtest import metrics as M
+from qts.core.delisting import summarize_delistings
 from qts.core.types import Wide
 from qts.portfolio.diagnostics import effective_holding_days, realized_vs_exante_risk
 
@@ -75,6 +76,7 @@ class BacktestSummary(SizingSummary):
     exante_vol_at_gross2: float
     breakeven_cost_bps: float
     n_delistings: int
+    delisting_pnl_ann: float
     n_failed_solves: int
 
 
@@ -188,10 +190,23 @@ class BacktestResult:
             # per-side breakeven net of borrow (borrow is not a per-side cost; audit 2 #1)
             "breakeven_cost_bps": M.breakeven_cost_bps(gb, self.turnover_on_return_dates().reindex(gb.index)),
             "n_delistings": len(cast(list[object], self.diagnostics.get("delistings", []))),
+            # sum over delisting events of weight x booked return, annualised (arithmetic)
+            "delisting_pnl_ann": float(self.delisting_summary()["pnl_ann"] or 0.0),
             "n_failed_solves": int(cast(int, self.diagnostics.get("n_failed_solves", 0))),
             **self.sizing_summary(),
         }
         return out
+
+    def delisting_summary(self) -> dict[str, Any]:
+        """Counts and P&L of the run's delistings by reason and side
+        (:func:`qts.core.delisting.summarize_delistings`, annualised over the
+        run's return days).  Recomputed from ``diagnostics["delistings"]`` so
+        results recorded before the summary existed are covered."""
+        events = self.diagnostics.get("delistings") or []
+        evs = [e for e in cast(list[Any], events) if isinstance(e, dict)] if isinstance(events, list) else []
+        return summarize_delistings(
+            cast(list[dict[str, Any]], evs), n_days=len(self.returns), periods_per_year=self.periods_per_year
+        )
 
     def diversification(self) -> dict[str, float]:
         """Is the book spread out or sitting in a handful of names?  Means over the

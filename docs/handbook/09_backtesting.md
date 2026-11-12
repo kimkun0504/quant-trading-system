@@ -194,13 +194,71 @@ A held name whose next close is missing is either **halted** (prices will come b
 
 A **halted** position is frozen at its last price: it earns 0 on each missing day, cannot be traded (it is on the optimiser's no-trade list), keeps its weight, and a frozen short still pays borrow. When a close reappears the return is measured from the last close before the halt, so the whole halt-period move lands on the resumption day. Frozen name-days are counted in `diagnostics["n_halted_name_days"]`; each episode is recorded in `diagnostics["halts"]` as `{ticker, start, end, days, weight, outcome}` with `outcome` = `resumed`, `delisted` or `open` (still halted at the end of the backtest).
 
-A **delisted** name would otherwise earn 0 and vanish for free. The simulator instead:
-1. applies `CostConfig.delisting_haircut = -0.30` **against the position's sign**, relative to its last (frozen) price: a long earns −30% and a short earns −30% too (the price is treated as +30%). This is conservative for both. The haircut follows the CRSP-style convention for performance delistings with missing returns (Shumway 1997). The same field is the label haircut (single source);
-2. force-liquidates the remaining value, $x_{\text{liq}} = -w(1+r)$, at continuous-venue **spread + fees** (no impact, no persistence);
-3. books the liquidation as a trade on decision row $t$, so it appears in `trades`, turnover and costs;
-4. records `{date, ticker, weight, haircut_return, liquidation_usd, cost_usd}` in `diagnostics["delistings"]`; the weight is 0 afterwards.
+A **delisted** name would otherwise earn 0 and vanish for free. The simulator instead books a final return that depends on *why* the name left (next subsection), force-liquidates what is left, and records the event.
 
-Without a vendor delisting table a real delisting is therefore held frozen for 63 trading days before the haircut, which delays (but does not remove) the loss; supply `delisting_dates` for real data.
+### Delistings by reason
+**What it is.** The final return a delisted position earns, relative to its last close. It is a return **on the stock**, chosen by the vendor's delisting reason:
+
+| Reason | What happened | Return on the stock | Config field (`CostConfig`) |
+|---|---|---|---|
+| `acquisition` | acquired or merged into another company: holders receive cash or stock worth about the last traded price | 0 | `delisting_return_acquisition = 0.0` |
+| `performance` | bankruptcy, liquidation, or removal by the exchange for failing listing rules | −30% | `delisting_return_performance = -0.30` |
+| `voluntary` | the issuer left the exchange (going dark, moving to OTC): trading continues, illiquid | −10% | `delisting_return_voluntary = -0.10` |
+| `unknown` | no reason on file, or no `MarketData.delisting_reasons` at all | −30% | `delisting_return_unknown = -0.30` |
+
+**Why we need it here.** Until 2026-11-12 one number, `delisting_haircut = -0.30`, was charged **against the position's sign**: a long lost 30% and a short lost 30% too, whatever the reason. That was meant to be conservative. On real data (Sharadar, top-1000 US universe, run `20261112T031754882789Z_425a06bb`) it removed more than the strategy's whole gross alpha:
+
+| Measurement (`scripts/attribute_run.py`) | Value |
+|---|---|
+| $\sum_i w_i r_i$ of the book, annualised (delisted names earn 0 here) | +5.02% |
+| recorded gross return, annualised | +1.49% |
+| difference = delisting haircuts | **−3.53% a year** |
+
+At gross exposure 2.0, −3.53% a year at 30% per event means about 5.9% of gross exposure a year sat in names that delisted while held (2.0 × 5.9% × 30% = 3.5%). In a large-cap universe most of those are acquisitions, which complete at about the last traded price: there is nothing to lose. And Shumway's −30% is a return on the stock for performance delistings: a short *gains* it.
+
+**How it works.** Let $r_i$ be the return of the name's reason and $w_i$ its post-trade weight. The booked return is
+
+$$
+r^{\text{booked}}_i = \begin{cases} h_s\, r_i & w_i < 0 \text{ and } r_i < 0 \\ r_i & \text{otherwise} \end{cases}
+\qquad \text{P\&L}_i = w_i\, r^{\text{booked}}_i
+$$
+
+where:
+- $r_i$ = `delisting_return_<reason>` of the name's reason (table above), a fraction of the last close;
+- $h_s$ = `delisting_short_gain_haircut` in $[0, 1]$, default 1: the share of a short's gain that is booked. 1 is the symmetric textbook return. 0 is the conservative choice "shorts get nothing": in practice a short in a failing company is often bought in, recalled or impossible to borrow before the final drop. A short's *loss* (a positive $r_i$) and every long are never scaled;
+- P&L is a fraction of NAV at $t$.
+
+Then, as before:
+1. the remaining value is force-liquidated, $x_{\text{liq}} = -w(1+r^{\text{booked}})$, at continuous-venue **spread + fees** (no impact, no persistence);
+2. the liquidation is booked as a trade on decision row $t$, so it appears in `trades`, turnover and costs;
+3. the event is recorded in `diagnostics["delistings"]` as `{date, ticker, weight, reason, side, stock_return, haircut_return, pnl, pnl_usd, liquidation_usd, cost_usd}` (`haircut_return` is the booked return; `pnl` = weight × booked return); the weight is 0 afterwards.
+
+`diagnostics["delisting_summary"]` (`qts/core/delisting.py::summarize_delistings`) holds the counts and P&L by reason and side; the summary field `delisting_pnl_ann` is their annualised sum, and the report card prints one line. Its format, from a 100-name synthetic market with 12 planted delistings (no reasons table, so all `unknown`; one long and three shorts were held when they delisted):
+
+```
+delistings        unknown 4 (P&L +1.37%/yr; 1L/3S)  total +1.37%/yr
+```
+
+Each reason with at least one event is listed as `<reason> N (P&L x%/yr; aL/bS)`: N events, their annualised P&L, and how many were longs and shorts.
+
+**The labels use the same map.** `qts/alpha/targets.py::forward_returns` multiplies the label of a name that delists inside the window by $1 + r_i$ with the same per-reason returns (`CostConfig.delisting_returns()`), so the model is trained on the outcome the backtest books: an acquisition's label is the return to its last price, a bankruptcy's carries −30%. The labels already applied the haircut on the stock (never against a position), but used −30% for every reason; that part changed. The short-gain haircut and the escape hatch below affect the simulator's booking only.
+
+**Where the reason comes from.** `MarketData.delisting_reasons` (ticker → reason), loaded from the store's `delisting_reasons` table, which is derived from Sharadar's `ACTIONS` rows around each delisting date (→ see **Data & universe › Delisting reasons**). A market without the table (the synthetic market, any other source) books every delisting as `unknown`.
+
+<callout icon="⚠️" color="yellow_bg">
+**Timing.** The reason is read on the day the delisting is decided (the day after the vendor's last trading date). The vendor action it comes from may be dated up to 5 business days later, so the *size* of the booked return can rest on a record published a few days after the booking. No signal, weight or trade depends on it, and a merger is announced months before it closes. `MarketData.slice_until` blanks the reason of any delisting after the cut.
+</callout>
+
+**The escape hatch.** `CostConfig.delisting_against_position = True` applies the reason's return against the position's sign, $r^{\text{booked}} = r \cdot \text{sign}(w)$: the old rule. With all four returns at −0.30 it reproduces the pre-2026-11-12 accounting exactly (`tests/test_simulator_handcomputed.py::test_delisting_escape_hatch_reproduces_the_old_both_sides_haircut`). `delisting_haircut` is deprecated: an old config that still sets it loads with a `DeprecationWarning`, and its value is copied into `delisting_return_performance` and `delisting_return_unknown`. It does **not** switch the escape hatch on.
+
+**Worked example.** A book holds +2% in A (acquired), +1% in B (bankrupt) and −2% in C (bankrupt), each at its last close. New rule: A earns 0; B earns 0.01 × (−0.30) = −0.30% of NAV; C earns (−0.02) × (−0.30) = +0.60%. Total +0.30%. Old rule: −0.60% − 0.30% − 0.60% = −1.50%. With `delisting_short_gain_haircut = 0`: 0 − 0.30% + 0 = −0.30%.
+
+**Pitfalls & checks.**
+- `unknown` defaults to −30%, the same as `performance`. If `qts data sharadar derive` reports many unknowns, read the action codes it prints for them before trusting the P&L line: a large `unknown` bucket that is really acquisitions overstates the long-side loss and the short-side gain.
+- The symmetric default lets shorts in bankruptcies earn 30% of the position. Check the `performance … S` count and P&L on the report card; rerun with `--set cost.delisting_short_gain_haircut=0` to see how much of the result rests on it. Both knobs act after the fits, so the stage cache serves the rerun.
+- Tests: `tests/test_simulator_handcomputed.py::test_delisting_return_by_reason_and_side` (long and short × each reason, the gain haircut, the escape hatch, by hand), `tests/test_label_halts.py::test_labels_apply_the_delisting_return_of_the_reason`.
+
+Without a vendor delisting table a real delisting is held frozen for 63 trading days before the return is booked, which delays (but does not remove) the loss; supply `delisting_dates` for real data.
 
 Names with no price at $t$ go on the optimiser's no-trade list, and their weights are carried unchanged.
 
@@ -267,7 +325,7 @@ The day loop in `run_spec` is a fixed pipeline of small steps, one method each: 
 
 `dates` must be a subset of `md.dates` with at least two entries; consecutive trading days are assumed (see the borrow note below).
 
-**Diagnostics.** `BacktestResult.diagnostics` holds `solve_log`, `delistings`, `halts`, `n_halted_name_days`, `forced_exits`, `n_failed_solves`, `failed_solves` (one entry per failed solve: `date`, `status`, `solver_errors`), `n_rebalance_solves` (the denominator of `BacktestResult.failed_solve_fraction()` and of the `failed_solves` hurdle gate), `n_no_signal_days`, `n_ineligible_name_days`, `n_out_of_model_name_days` (names outside the risk model still held after a solve, i.e. forced exits in progress), `n_data_error_returns` / `data_error_returns` (blanked closes, see *Data-error prices*), `n_exante_vol_alerts` / `exante_vol_alerts` (see *Risk-model sanity*), `signal_lag_days`, `venue`, `rebalance_every` and `run_time_sec`. One `solve_log` entry per solve:
+**Diagnostics.** `BacktestResult.diagnostics` holds `solve_log`, `delistings`, `delisting_summary` (counts and P&L by reason and side), `halts`, `n_halted_name_days`, `forced_exits`, `n_failed_solves`, `failed_solves` (one entry per failed solve: `date`, `status`, `solver_errors`), `n_rebalance_solves` (the denominator of `BacktestResult.failed_solve_fraction()` and of the `failed_solves` hurdle gate), `n_no_signal_days`, `n_ineligible_name_days`, `n_out_of_model_name_days` (names outside the risk model still held after a solve, i.e. forced exits in progress), `n_data_error_returns` / `data_error_returns` (blanked closes, see *Data-error prices*), `n_exante_vol_alerts` / `exante_vol_alerts` (see *Risk-model sanity*), `signal_lag_days`, `venue`, `rebalance_every` and `run_time_sec`. One `solve_log` entry per solve:
 
 | Field | Meaning |
 |---|---|
@@ -403,6 +461,7 @@ This tests "is the mean daily return different from zero?" while allowing for au
 | `invested_day_frac` | share of decision days whose post-trade gross exposure exceeds 1e-4 of NAV (`BacktestResult.invested_days()`); the report card prints it next to the vol ratio and the pipeline adds a note below 0.5 |
 | `breakeven_cost_bps` | per-side breakeven from `gross_after_borrow` (above) |
 | `n_delistings`, `n_failed_solves` | counts from `diagnostics` |
+| `delisting_pnl_ann` | annualised sum over the delistings of held names of weight × booked delisting return (`BacktestResult.delisting_summary()`; → see **Accounting › Delistings by reason**) |
 | `mean_risk_aversion` | mean annual $\gamma$ over the solve log (`sizing_summary`); NaN if no solve reported one |
 | `vol_target_caps_share` | share of target-vol solves whose book was capped below the vol target (`vol_target_binding == "caps"`); NaN in `fixed` mode; always 0 with `vol_target_is_cap` (the default), where `BacktestResult.vol_target_outcomes()` gives the share of each outcome (`below_target` / `leverage` / `target`) and the report card prints them |
 
@@ -438,7 +497,7 @@ The report card prints the three on the `diversification` line, and the solve sc
 | Bias | What goes wrong | Guard in this system | Residual risk |
 |---|---|---|---|
 | Look-ahead | a feature, label or parameter uses data after the decision | every model exposes `as_of(t)`; `MarketData.slice_until`; refit-on-truncated-data audits of alpha, risk, exposures and cost snapshots; trainer purge/embargo; **signal lag 1 by default**, so nothing from the execution day's close reaches the decision | lag 1 is a proxy for a 15:45 snapshot; at lag 0 the same-close bias (Timeline) returns |
-| Survivorship | universe built from today's survivors, so dead losers vanish | universe mask built per date from point-in-time market cap/price/ADV; delisting haircut −30% plus liquidation costs; labels for names delisting inside the horizon use last price × (1 − 30%), with vendor delisting dates when available | needs a data source that includes delisted names (Norgate/Sharadar per plan §7); synthetic data has none of this problem by construction |
+| Survivorship | universe built from today's survivors, so dead losers vanish | universe mask built per date from point-in-time market cap/price/ADV; delisting return by reason (acquisition 0, performance −30%, voluntary −10%, unknown −30%, on the stock) plus liquidation costs; labels for names delisting inside the horizon use last price × (1 + the same return), with vendor delisting dates when available | needs a data source that includes delisted names (Norgate/Sharadar per plan §7); synthetic data has none of this problem by construction |
 | Universe membership | cross-sectional statistics computed over names that join the universe *later* | `MarketData.eligible` panel; features, labels and scores on eligible names only (CRITICAL first-audit fix); **risk-model style exposures** now use the eligible-only market proxy and standardisation (November lag-investigation fix: beta and residual vol had depended on future entrants) | — |
 | Restatement / filing timing | fundamentals joined at their *restated* values or before they were public | `merge_asof` on filing date (HIGH audit fix for asset growth); `sharadar_sf1_to_pit_fundamentals(lag_days=...)` | check the loader's `lag_days` on real data: filings published after 16:00 must not be visible at that day's close |
 | Overfitting / data snooping | trying many configurations and reporting the best | trial ledger keyed by config hash, data hash, clean code version and run spec (including the signal lag); deflated Sharpe with effective trial count; PBO over a config grid; t > 3 hurdle; fold consistency (→ see **Validation & statistics**) | ledger only knows trials run through the pipeline; dirty-tree runs are never de-duplicated |
@@ -593,6 +652,7 @@ With `runs_root` set (the CLI default is `runs/`), every run writes `<runs_root>
 | `nav.parquet`, `returns.parquet` | NAV; `gross`, `net`, `gross_after_borrow` by realisation date | `save_run` |
 | `weights.parquet`, `trades.parquet`, `costs.parquet` | post-trade weights, weight changes, USD costs (`spread, impact, fees, borrow, total`) by execution date | `save_run` |
 | `ic.parquet`, `hurdles.json` | sampled rank IC series; the hurdle result | `save_run` |
+| `delistings.parquet` | one row per delisting of a held name: `date, ticker, weight, reason, side, stock_return, haircut_return, pnl, pnl_usd, liquidation_usd, cost_usd` (empty table when there were none; absent in runs written before 2026-11-12). `scripts/attribute_run.py` reads it to split the reconciliation gap | `save_run` |
 | `extras.json` | run facts (data kind, universe size, seed, venue description, label), DSR moments, IC by calendar year, factor roles | `qts/runs/artifacts.py::write_extra_artifacts` |
 | `exante_vol.parquet`, `exposures.parquet` | annualised ex-ante vol of the post-trade book; net book exposure to the market and every style factor, by decision date | same |
 | `holdings.parquet` | month-end books (latest 60): date, **signal_date**, ticker, weight, alpha as the optimiser saw it (`alpha.as_of(signal_date)`, second-pass finding 15), specific vol, industry | same |

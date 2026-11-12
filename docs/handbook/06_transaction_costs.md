@@ -728,18 +728,18 @@ A **delisting** happens when a stock stops trading on its exchange: acquisition,
 The earlier simulator gave a delisted name a 0 return at its last price and removed it for free, with no trade, cost or turnover (audit #7). Last-price exits are optimistic for longs in failures, because performance-related delistings with a missing delisting return lose about 30% on average (Shumway 1997, the convention cited in `qts/core/config.py`).
 
 ### How it works
-On the day a held name's next close is NaN, the backtester:
-1. applies `CostConfig.delisting_haircut` (**−30%**) **against the position's sign**: $r = h \cdot \text{sign}(w)$. A long loses 30%. A short also loses: the stock is treated as rising 30%. This is conservative for both sides, since a takeover premium hurts shorts;
+On the day a held name is decided delisted (vendor delisting date, else the causal gap rule), the backtester:
+1. books the return of the name's **delisting reason**, a return on the stock: `CostConfig.delisting_return_acquisition` = 0, `_performance` = −30%, `_voluntary` = −10%, `_unknown` = −30%. A long earns $w r$; a short earns $w r$ too, so it gains on a negative return, scaled by `delisting_short_gain_haircut` (default 1; 0 = shorts get nothing);
 2. force-liquidates the remaining value $-w(1+r)$ at **spread + explicit fees** on the continuous venue, with no impact, and books it as a trade on that decision row so it counts in turnover and cost;
-3. records the event in `BacktestResult.diagnostics["delistings"]`.
+3. records the event (reason, side, booked return, P&L) in `BacktestResult.diagnostics["delistings"]`.
 
-Labels get the matching treatment: a forward return that runs into a delisting is measured to the last close and multiplied by $(1 + h)$ with the same `CostConfig.delisting_haircut`. That field is now the **single source** of the delisting assumption; the former `AlphaConfig.delisting_return` was removed. Labels identify a delisting from `MarketData.delisting_dates` when the vendor supplies them, otherwise from a causal price-gap rule (`AlphaConfig.delisting_gap_days` = 63) (→ see **Alpha model › Targets**).
+Labels get the matching treatment: a forward return that runs into a delisting is measured to the last close and multiplied by $(1 + r)$ with the same per-reason returns (`CostConfig.delisting_returns()`, the **single source** of the delisting assumption; the former `AlphaConfig.delisting_return` was removed). Labels identify a delisting from `MarketData.delisting_dates` when the vendor supplies them, otherwise from a causal price-gap rule (`AlphaConfig.delisting_gap_days` = 63) (→ see **Alpha model › Targets**).
 
 ### Why this choice
-Charging −30% to both sides has no theoretical justification beyond conservatism. It removes a bias that otherwise always favours the strategy. When the price source carries real delisting returns (Sharadar and Norgate do), they should replace the haircut. That is on the roadmap.
+Until 2026-11-12 a single −30% was charged against the position's sign: a loss for longs and shorts alike, whatever the reason. It was meant as conservatism. On the first real-data run it cost 3.53% a year, more than the gross alpha, because most large-cap delistings are acquisitions that complete at about the last price, and because −30% (Shumway 1997) is a return on the stock for performance delistings, which a short gains. The reasons come from Sharadar's `ACTIONS` table. `delisting_against_position = True` restores the old rule; the full account is in **Backtesting › Delistings by reason**. Real delisting *returns* (CRSP has them; Sharadar does not) would replace the per-reason assumptions.
 
 ### In the code
-`qts/backtest/simulator.py` (delisting block). Config: `CostConfig.delisting_haircut` = −0.30. Test: `tests/test_backtest.py::test_delisting_is_liquidated_and_flagged`.
+`qts/backtest/simulator.py::_liquidate_delisted`, `qts/core/delisting.py`. Config: `CostConfig.delisting_return_acquisition` / `_performance` / `_voluntary` / `_unknown`, `delisting_short_gain_haircut`, `delisting_against_position`; `delisting_haircut` is deprecated (read for old configs, mapped to performance and unknown). Tests: `tests/test_simulator_handcomputed.py::test_delisting_return_by_reason_and_side`, `tests/test_backtest.py::test_delisting_is_liquidated_and_flagged`.
 
 ### References
 - *Shumway (1997), The delisting bias in CRSP data, Journal of Finance* (cited in `qts/core/config.py`).
@@ -940,7 +940,13 @@ Defaults match `qts/core/config.py` and `configs/default.yaml`. **Bounds** are t
 | `borrow_proxy_si_htb` | 0.20 | SI ratio | (0, 1] | proxy HTB threshold |
 | `small_cap_borrow_multiplier` | 2.0 | × | [0, 100] | applied to proxy and default fees below the size threshold (§8) |
 | `small_cap_threshold_usd` | 2e9 | \$ | [0, ∞) | market cap threshold |
-| `delisting_haircut` | −0.30 | return | [−1, 1] | against position sign on delisting; also the label haircut (single source) |
+| `delisting_return_acquisition` | 0.0 | return | [−1, 1] | return on the stock of a name delisted by acquisition / merger; labels and backtest |
+| `delisting_return_performance` | −0.30 | return | [−1, 1] | bankruptcy, liquidation, regulatory delisting |
+| `delisting_return_voluntary` | −0.10 | return | [−1, 1] | voluntary delisting |
+| `delisting_return_unknown` | −0.30 | return | [−1, 1] | no reason on file |
+| `delisting_short_gain_haircut` | 1.0 | fraction | [0, 1] | share of a short's gain on a negative delisting return that is booked (0 = shorts get nothing); simulator only |
+| `delisting_against_position` | False | bool | — | True = the pre-2026-11-12 rule: the return against the position's sign, a loss on both sides |
+| `delisting_haircut` | None | return | [−1, 1] | deprecated; a value is copied into the performance and unknown returns with a warning |
 | `impact_persistence` | True | bool | — | exact streak increment (or $m_k$ fallback) in `estimate` |
 | `tca_reversion_reference` | `"next_close"` | enum | `next_close` \| `next_open` | TCA reversion diagnostic reference price |
 
@@ -972,7 +978,7 @@ Other cross-cutting checks:
 - **Auction volume forecast** per name (imbalance history, special-day calendar) to replace the flat 9/20/34% shares; automate the yearly Russell December date.
 - **Impact decay kernel** (propagator with ~70% permanent and power-law transient decay) to replace full persistence within a streak.
 - **Log IBKR SLB indicative rates daily** and splice them in after ~12 months. Model short rebate and cash interest.
-- **Real delisting returns** from Sharadar/Norgate in place of the −30% haircut.
+- **Real delisting returns** from a vendor that has them (CRSP; Sharadar does not) in place of the per-reason assumptions.
 - **Automate the monthly TCA job** once live fills exist. Revisit `impact_b_auction` once 200+ auction fills exist, check it against the surrogate condition (§6), and revisit the router's 2% auction cap with it.
 - Make `FillSimulator` price a split's continuous child as the increment $C(q) - C(q_a)$, as the routed cost model does.
 - Verify the pre-2024 FINRA TAF rows (code TODO).

@@ -549,6 +549,8 @@ export function generateRun(spec: RunSpec): GeneratedRun {
     exante_vol_at_gross2: (mean(exanteVol) * 2) / Math.max(grossExposure, 1e-9),
     breakeven_cost_bps: breakeven,
     n_delistings: Math.floor(rng() * 9),
+    // fixed (no rng draw: the random stream of the fields below must not shift)
+    delisting_pnl_ann: spec.signal_lag_days === 0 ? -0.0031 : -0.0018,
     n_failed_solves: spec.signal_lag_days === 0 ? 2 : 0,
   };
 

@@ -363,7 +363,7 @@ The mean of $LS_t$ is the spread return per period; its Sharpe is annualised wit
 
 ### Pitfalls & checks
 - With 300 names a decile is 30 stocks; value-weighting concentrates it further, so the spread is noisy. That is why the demo's decile t (1.67) is well below its IC t (2.89): same signal, noisier statistic.
-- Delisting returns must be in the labels or the short leg looks better than it is (first audit finding 5). The haircut is `CostConfig.delisting_haircut = -0.30`, the single source for labels and backtest accounting; `AlphaConfig.delisting_return` was removed. A *temporary halt* must not get the haircut, and deciding which is which may not use future prices (second audit finding 1; see §12).
+- Delisting returns must be in the labels or the short leg looks better than it is (first audit finding 5). The delisting return is set by the name's delisting reason (`CostConfig.delisting_returns()`: acquisition 0, performance −30%, voluntary −10%, unknown −30%), the single source for labels and backtest accounting; `AlphaConfig.delisting_return` was removed. A *temporary halt* must not get it, and deciding which is which may not use future prices (second audit finding 1; see §12).
 
 ### Worked example
 Post-refactor demo: "decile L/S (VW) mean 1.25%/period Sharpe 0.92 NW t 1.67 (L=3)". That demo predates the shared-frequency fix and annualised with 13 periods a year: Sharpe 0.92 means a period standard deviation of $1.25\%\times\sqrt{13}/0.92 \approx 4.9\%$. With $n = 50$ periods the plain t would be $(0.92/\sqrt{13})\sqrt{50} = 1.80$; the Newey–West t with 3 lags is 1.67. Under the current code the same series would report Sharpe $0.92\times\sqrt{12.6/13} = 0.906$ and the same t-statistic (the t does not depend on annualisation).

@@ -120,6 +120,9 @@ With ``runs_root`` set, :meth:`ResearchPipeline.run` writes
                       gross_after_borrow = gross - borrow / NAV, the base of the
                       per-side cost gates)
     ic.parquet        column "rank_ic": sampled per-date rank IC
+    delistings.parquet one row per delisting of a held name: date, ticker, weight,
+                      reason, side, stock_return, haircut_return (booked), pnl
+                      (weight x booked return), pnl_usd, liquidation_usd, cost_usd
     hurdles.json      HurdleResult.to_dict()
 
 Written next to them by :func:`qts.runs.artifacts.write_extra_artifacts` (best
@@ -142,6 +145,8 @@ run directories newest first.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import inspect
 import logging
 import time
 from collections.abc import Callable, Mapping
@@ -165,7 +170,7 @@ from qts.backtest import BacktestResult, BacktestSpec, BacktestSummary, DailyBar
 from qts.backtest import metrics as M
 from qts.backtest.result import INVESTED_GROSS_EPS, MIN_INVESTED_DAYS_FOR_VOL_RATIO
 from qts.core.config import SystemConfig
-from qts.core.manifest import RunManifest, hash_market_data
+from qts.core.manifest import RunManifest, chain_reference_hash, hash_market_data, reference_hash
 from qts.core.roles import ALPHA_THEME_STYLES, RISK_ONLY_STYLES
 from qts.core.types import AlphaOutput, MarketData, RiskModelOutput
 from qts.data.universe import apply_mask, build_universe_mask, masked_levels
@@ -174,7 +179,7 @@ from qts.risk import BarraStyleRiskModel, HybridRiskModel, build_risk_model
 
 # The run registry and the report card live in qts.runs; re-exported here because
 # ``from qts.pipeline import save_run, load_run, format_result, ...`` is public API.
-from qts.runs.cache import DEFAULT_CACHE_DIRNAME, StageCache
+from qts.runs.cache import DEFAULT_CACHE_DIRNAME, STAGE_EXCLUDED_DATA, StageCache
 from qts.runs.registry import (
     RunRecord,
     _from_json_scalar,
@@ -413,8 +418,11 @@ class ResearchPipeline:
             self.data_hash_ = data_hash_of(md)
             full_hash = ""
         else:
-            full_hash = hash_market_data(md, n_chars=64)
-            self.data_hash_ = full_hash[:16]  # == data_hash_of(md)
+            # panel hash shared by both stages (reference tables one stage reads are
+            # keyed on that stage, see _cache_parts); the manifest's data hash chains
+            # them on top without hashing the panels again
+            full_hash = hash_market_data(md, n_chars=64, exclude=STAGE_EXCLUDED_DATA)
+            self.data_hash_ = chain_reference_hash(full_hash, md)[:16]  # == data_hash_of(md)
         t["data_hash"] = time.perf_counter() - t0
 
         t0 = time.perf_counter()
@@ -449,7 +457,7 @@ class ResearchPipeline:
                 composite_weight=self.composite_weight,
                 ml_factory=self.ml_factory,
                 use_ml=self.use_ml,
-                delisting_return=cfg.cost.delisting_haircut,
+                delisting_return=cfg.cost.delisting_returns(),
                 # labels / purge / trailing IC aligned to what is traded (execution lag L)
                 signal_lag_days=self.signal_lag_days(),
                 bad_price_caps=(
@@ -492,6 +500,7 @@ class ResearchPipeline:
             "universe": cfg.universe.hash(),
             "risk": cfg.risk.hash(),
             "warmup_days": self.warmup_days,
+            "fit_glue": self._fit_glue_hash(),
         }
         if stage == "alpha_fit":
             parts.update(
@@ -499,10 +508,28 @@ class ResearchPipeline:
                 composite_weight=self.composite_weight,
                 use_ml=bool(self.use_ml),
                 ml_factory=callable_identity(self.ml_factory),
-                delisting_haircut=cfg.cost.delisting_haircut,
+                # labels: return on the stock by delisting reason + the reasons themselves
+                # (delisting_short_gain_haircut / delisting_against_position only
+                # change the simulator's booking, so they are not part of the key)
+                delisting_returns=cfg.cost.delisting_returns(),
+                delisting_reasons=reference_hash(md, "delisting_reasons"),
                 signal_lag_days=self.signal_lag_days(),
             )
         return parts
+
+    @classmethod
+    def _fit_glue_hash(cls) -> str:
+        """SHA-256 of the source of the pipeline methods that build the two fits
+        (``qts/pipeline.py`` as a whole is not part of the stage code hash, see
+        :mod:`qts.runs.cache`); ``""`` when the source is unavailable."""
+        h = hashlib.sha256()
+        for name in ("fit", "_exposures_fn", "_exposures_first_date", "_alpha_theme_styles"):
+            fn = getattr(cls, name, None)
+            try:
+                h.update(inspect.getsource(fn).encode() if fn is not None else b"")
+            except (OSError, TypeError):
+                return ""
+        return h.hexdigest()
 
     @staticmethod
     def _data_span(md: MarketData) -> list[Any]:
@@ -889,7 +916,7 @@ class ResearchPipeline:
                 exposures_fn=self._exposures_fn,
                 features=self.alpha.raw_features_,
                 winsor_pct=acfg.winsor_pct,
-                delisting_return=self.cfg.cost.delisting_haircut,
+                delisting_return=self.cfg.cost.delisting_returns(),
                 only_dates=sample_dates,
                 label_lag_days=self.alpha.signal_lag_days,
                 delisting_gap_days=acfg.delisting_gap_days,
@@ -1006,7 +1033,7 @@ class ResearchPipeline:
             forward_returns(
                 md_u,
                 H,
-                cfg.cost.delisting_haircut,
+                cfg.cost.delisting_returns(),
                 label_lag_days=L,
                 delisting_gap_days=cfg.alpha.delisting_gap_days,
             ).where(elig)

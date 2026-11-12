@@ -14,7 +14,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pandas as pd
@@ -127,8 +127,47 @@ def save_run(res: PipelineResult, cfg: SystemConfig, runs_root: str | Path) -> P
     _write_parquet(bt.costs, run_dir / "costs.parquet")
     _write_parquet(bt.returns, run_dir / "returns.parquet")
     _write_parquet(res.ic_report.ic_series.rename("rank_ic"), run_dir / "ic.parquet")
+    delistings_frame(bt.diagnostics.get("delistings")).to_parquet(run_dir / DELISTINGS_FILE, index=False)
     (run_dir / "hurdles.json").write_text(json.dumps(res.hurdles.to_dict(), indent=2))
     return run_dir
+
+
+DELISTINGS_FILE = "delistings.parquet"
+#: columns of ``delistings.parquet`` (one row per delisting of a held name)
+DELISTING_COLUMNS: tuple[str, ...] = (
+    "date",
+    "ticker",
+    "weight",
+    "reason",
+    "side",
+    "stock_return",
+    "haircut_return",
+    "pnl",
+    "pnl_usd",
+    "liquidation_usd",
+    "cost_usd",
+)
+
+
+def delistings_frame(events: object) -> pd.DataFrame:
+    """``BacktestResult.diagnostics["delistings"]`` as a frame with
+    :data:`DELISTING_COLUMNS` (empty frame, same columns, when there are none)."""
+    rows = [e for e in cast(list[Any], events) if isinstance(e, dict)] if isinstance(events, list) else []
+    df = pd.DataFrame(rows)
+    for c in DELISTING_COLUMNS:
+        if c not in df.columns:
+            df[c] = pd.Series(dtype=object if c in ("ticker", "reason", "side") else float)
+    df = df[list(DELISTING_COLUMNS)]
+    df["date"] = pd.to_datetime(df["date"])
+    df["ticker"] = df["ticker"].astype(str)
+    return df.reset_index(drop=True)
+
+
+def read_delistings(run_dir: str | Path) -> pd.DataFrame | None:
+    """``delistings.parquet`` of a run directory; ``None`` for runs written before
+    2026-11-12 (the file did not exist)."""
+    f = Path(run_dir) / DELISTINGS_FILE
+    return pd.read_parquet(f) if f.exists() else None
 
 
 @dataclass

@@ -46,8 +46,13 @@ Delistings vs halts (causal rule; audit 2 finding 1)
 ----------------------------------------------------
 When the name has no close at the window end ``e = s + L + h`` the label is the
 return to its last close ``lp`` before ``e``, and it is a *delisting* (times
-``1 + delisting_return``, default -30 %, ``CostConfig.delisting_haircut``) or a
-*temporary halt* (no haircut).  That decision never uses prices after the date
+``1 + delisting_return``) or a *temporary halt* (no adjustment).
+``delisting_return`` is a return on the stock, by the name's delisting reason
+(``md.delisting_reasons``; :mod:`qts.core.delisting`): the pipeline passes
+``CostConfig.delisting_returns()`` -- acquisition 0 (the label is the return to
+the last price), performance -30 %, voluntary -10 %, unknown -30 % -- the same
+map the backtest books, so the model is trained on the outcome the simulator
+realises.  A single float applies one return to every delisting.  That decision never uses prices after the date
 at which it is made:
 
 * ``md.delisting_dates`` covers the name -> delisted iff its last trading date
@@ -82,7 +87,7 @@ raw closes.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -90,6 +95,7 @@ import pandas as pd
 from qts.core import stats
 from qts.core.config import AlphaConfig, CostConfig, RiskConfig
 from qts.core.crosssection import neutralize, zscore
+from qts.core.delisting import returns_by_name
 from qts.core.returns import flag_bad_prices
 from qts.core.roles import ALPHA_THEME_FEATURES, RISK_ONLY_FEATURES, RISK_ONLY_STYLES
 from qts.core.types import MarketData, Wide
@@ -115,8 +121,12 @@ __all__ = [
 #: both sets are defined once in ``qts.core.roles``.
 DEFAULT_STYLE_EXPOSURES = RISK_ONLY_FEATURES
 
-#: default label delisting haircut = ``CostConfig.delisting_haircut`` (single source)
-DEFAULT_DELISTING_RETURN = CostConfig().delisting_haircut
+#: default label delisting return (callers without a config; every reason at the
+#: "unknown" default) = ``CostConfig.delisting_return_unknown`` (single source).
+#: The pipeline passes the per-reason map ``CostConfig.delisting_returns()``.
+DEFAULT_DELISTING_RETURN = CostConfig().delisting_return_unknown
+#: one return for every delisting, a reason -> return map, or ``None`` (no adjustment)
+DelistingReturn = float | Mapping[str, float] | None
 #: default causal gap rule = ``AlphaConfig.delisting_gap_days`` (single source)
 DEFAULT_DELISTING_GAP_DAYS = AlphaConfig().delisting_gap_days
 #: ``(cap_up, cap_down)`` of the data-error rule = ``RiskConfig.return_abs_cap_up /
@@ -142,10 +152,23 @@ def _delist_pos(md: MarketData) -> np.ndarray:
     return md.delisting_positions()
 
 
+def _delisting_return_by_name(md: MarketData, delisting_return: DelistingReturn) -> np.ndarray | None:
+    """``(N,)`` return on the stock applied to a delisted name's label, or ``None``
+    when nothing is applied.  A mapping is resolved through
+    ``md.delisting_reasons`` (:func:`qts.core.delisting.returns_by_name`)."""
+    if delisting_return is None:
+        return None
+    if isinstance(delisting_return, Mapping):
+        dr = returns_by_name(md, delisting_return)
+    else:
+        dr = np.full(len(md.tickers), float(delisting_return))
+    return dr if np.any(dr != 0.0) else None
+
+
 def _forward_returns_resolved(
     md: MarketData,
     horizon: int,
-    delisting_return: float | None,
+    delisting_return: DelistingReturn,
     label_lag_days: int,
     delisting_gap_days: int,
     bad_price_caps: BadPriceCaps = DEFAULT_BAD_PRICE_CAPS,
@@ -198,8 +221,9 @@ def _forward_returns_resolved(
         ready = np.where(unresolved, np.inf, ready)
         dead = known_dead | rule_dead
         fwd = np.where(unresolved, np.nan, fwd)
-    if delisting_return:
-        fwd = np.where(dead, (1.0 + fwd) * (1.0 + float(delisting_return)) - 1.0, fwd)
+    dr = _delisting_return_by_name(md, delisting_return)
+    if dr is not None:
+        fwd = np.where(dead, (1.0 + fwd) * (1.0 + dr[None, :]) - 1.0, fwd)
     ready = np.where(np.isnan(fwd), np.inf, ready)
     out = pd.DataFrame(fwd, index=c.index, columns=c.columns)
     return out, ready
@@ -208,7 +232,7 @@ def _forward_returns_resolved(
 def forward_returns(
     md: MarketData,
     horizon: int,
-    delisting_return: float | None = DEFAULT_DELISTING_RETURN,
+    delisting_return: DelistingReturn = DEFAULT_DELISTING_RETURN,
     label_lag_days: int = 0,
     delisting_gap_days: int = DEFAULT_DELISTING_GAP_DAYS,
     bad_price_caps: BadPriceCaps = DEFAULT_BAD_PRICE_CAPS,
@@ -219,9 +243,10 @@ def forward_returns(
     If the name has no close at the window end the return runs to its last close
     before it; a *delisting* (see the module docstring: vendor
     ``md.delisting_dates`` or the causal ``delisting_gap_days`` rule, never a
-    look at later prices) is multiplied by ``(1 + delisting_return)``
-    (conservative CRSP-style haircut, default -30 %; ``None``/0 disables), a
-    halt is not.  NaN where ``close_t`` or ``close_{t+L}`` is NaN, the window
+    look at later prices) is multiplied by ``(1 + delisting_return)`` -- one
+    float for every delisting (default -30 %) or a reason -> return map resolved
+    through ``md.delisting_reasons`` (``CostConfig.delisting_returns()``;
+    ``None``/0 disables) --, a halt is not.  NaN where ``close_t`` or ``close_{t+L}`` is NaN, the window
     extends past the panel, or the halt/delisting question is not yet decided
     within the panel.  ``close.ffill()`` is a *label-only* helper here -- never
     reuse it for features.  ``bad_price_caps``: module docstring "Data-error prices".
@@ -333,7 +358,7 @@ def residualize_forward_returns(
     features: dict[str, Wide] | None = None,
     winsor_pct: float = 0.01,
     weights: Wide | None = None,
-    delisting_return: float | None = DEFAULT_DELISTING_RETURN,
+    delisting_return: DelistingReturn = DEFAULT_DELISTING_RETURN,
     only_dates: pd.DatetimeIndex | None = None,
     label_lag_days: int = 0,
     delisting_gap_days: int = DEFAULT_DELISTING_GAP_DAYS,

@@ -251,13 +251,16 @@ cache:
 
 | Part | `risk_fit` | `alpha_fit` |
 |---|---|---|
-| full data hash of the input `MarketData` (every panel, labels, eligibility) | yes | yes |
+| full hash of the input `MarketData` panels (every panel, labels, eligibility; not the `delisting_reasons` reference table) | yes | yes |
+| hash of `MarketData.delisting_reasons` | — | yes (the labels read it) |
 | data span: first date, last date, number of dates and tickers | yes | yes |
-| config sections | `universe`, `risk`, `warmup_days` | the same + `alpha`, `cost.delisting_haircut`, `execution.signal_lag_days`, `use_ml`, `composite_weight`, ML factory identity |
+| config sections | `universe`, `risk`, `warmup_days` | the same + `alpha`, `cost.delisting_return_*` (the four per-reason returns), `execution.signal_lag_days`, `use_ml`, `composite_weight`, ML factory identity |
 | upstream key | — | the `risk_fit` key (labels are residualised on the risk model) |
-| code | SHA-256 of every `qts/**/*.py` file + numerical library versions | same |
+| code | SHA-256 of the `*.py` files under `qts/core`, `qts/data`, `qts/risk` (+ `qts/__init__.py`), the source of the pipeline's fit methods, and the numerical library versions | the same + `qts/alpha` |
 
-So changing `portfolio.*`, `cost.*` (except the delisting haircut), `validation.*` or `--max-days` reuses both fits; changing `alpha.*` or the signal lag refits the alpha model only; changing `risk.*` or `universe.*` refits both. Any code edit, committed or not, invalidates everything.
+So changing `portfolio.*`, `cost.*` (except the four per-reason delisting returns), `validation.*` or `--max-days` reuses both fits; changing `alpha.*`, the signal lag, a per-reason delisting return or the store's `delisting_reasons` table refits the alpha model only; changing `risk.*` or `universe.*` refits both.
+
+**Code edits.** Each stage's key covers only the packages the stage can import (`qts/runs/cache.py::STAGE_CODE_PACKAGES`, checked against the import graph by `tests/test_stage_cache.py::test_stage_packages_cover_the_import_graph`). An edit under `qts/backtest`, `qts/portfolio`, `qts/tcost`, `qts/execution`, `qts/validation`, `qts/runs` or to the CLI, committed or not, reuses both fits; an edit under `qts/alpha` refits the alpha model; an edit under `qts/core`, `qts/data` or `qts/risk` refits both. Until 2026-11-12 the key hashed every file of the package, so a simulator-only change cost a full refit (25 minutes on the real universe). `qts/pipeline.py` as a whole is not hashed; the source of the methods that build the fits (`fit`, `_exposures_fn`, `_exposures_first_date`, `_alpha_theme_styles`) is. If you ever make a fit depend on a package outside its list, add the package to `STAGE_CODE_PACKAGES` (the import-graph test fails until you do) or delete `<runs-root>/_cache`.
 
 <callout icon="⚠️" color="yellow_bg">
 <b>Point in time.</b> An entry is only served for the identical data snapshot. Data through an earlier or later date, a revised price, or a different universe give a different key; the entry's sidecar repeats the data hash and span and is checked again on load. An entry fitted on data through June 28 can never serve a run on data through July 1, even though the two agree on every earlier day. Within a run nothing changes: the loaded model answers `as_of(t)` from data up to `t` exactly as a freshly fitted one does.
@@ -447,7 +450,7 @@ python scripts/attribute_run.py --synthetic      # builds a 250-day run in a tem
 
 Pass the **same data and config flags as the run** (`--set` uses the `qts run` parser, so the stage cache is hit and the scores and risk model are the ones the run traded; a config-hash mismatch with the run's manifest is printed as a warning). Options: `--risk-dates` (solves sampled for the ex-ante variance split, default 60), `--cost-every` (trades re-priced on every k-th day, default 5), `--autocorr-every` (default 2). A few minutes after a cached fit. Three self-checks are printed and should read 1.000 or close to it: the reconciliation of `sum w r` with the recorded gross return (the gap is delisting haircuts), the recomputed against the recorded ex-ante vol, and the re-priced against the recorded trading cost.
 
-**Table 1: signal → ideal portfolios.** Paper books built every day from the combined score alone, traded with the run's signal lag, gross of costs, no optimizer, no caps, drift ignored, delisting haircuts not applied. Read down the rows: (a) rank long/short → (b) industry-neutral → (c) also neutral to beta and the risk-only styles → (d) the same with `w ∝ z/σ`. Row (c) is the book the optimizer is *trying* to hold, so its Sharpe is the ceiling for the realised book before costs.
+**Table 1: signal → ideal portfolios.** Paper books built every day from the combined score alone, traded with the run's signal lag, gross of costs, no optimizer, no caps, drift ignored, delisting returns not applied. Read down the rows: (a) rank long/short → (b) industry-neutral → (c) also neutral to beta and the risk-only styles → (d) the same with `w ∝ z/σ`. Row (c) is the book the optimizer is *trying* to hold, so its Sharpe is the ceiling for the realised book before costs.
 
 - (a) high and (c) low: the raw score's IC was a style or industry bet that the neutralisation removes; the label is residualised on the same factors, so this should not happen, and if it does the residualisation and the neutral set have drifted apart.
 - (c) low although the IC is high: IC is an equal-weighted rank statistic over ~1,000 names and 60-day returns; a daily-rebalanced portfolio earns it only if the names with the weight carry it. Rows (e) and (f) say where it lives: cap-weighted decile far below equal-weighted, or the small tercile far above the large one, means the signal is in small names.
@@ -458,10 +461,12 @@ Pass the **same data and config flags as the run** (`--set` uses the `qts run` p
 
 **Table 2: realised book attribution.** Accounting splits of the book the run held.
 
+- *Reconciliation and the delisting split*: the first line compares $\sum_i w_i r_i$ with the recorded gross return. A delisted name has no return on its last day, so it contributes 0 to the sum and its booked delisting return is the whole gap. The table below it splits that gap by delisting reason and side: events, mean |weight|, the P&L the run booked, and the same events re-priced under the *current* config's rule. The line after it reads `gap = delistings + remainder`; the remainder should be about 0. Runs written from 2026-11-12 carry `delistings.parquet` and the split is the simulator's own record. For an older run it is reconstructed from the book (held at $t$, no close at $t+1$, weight 0 on the next row) and priced at that run's both-sides haircut, with the reasons of the store as it is now; the header says `RECONSTRUCTED`. On the first real run the gap was −3.53% a year.
+
 - *Long vs short*: side P&L minus side exposure × the equal-weight universe return. A short side that loses its excess is a borrow / crowding / small-cap-short problem, not a signal problem.
 - *By year*, with the ideal book (c) next to it: years where (c) made money and the book did not point at construction; years where both lost point at the signal.
 - *By size tercile*: compare `P&L / gross` with rows (f) of table 1. A signal that works in small names and a book whose gross sits in large ones (position and ADV caps push it there) cannot earn the IC.
-- *Factor attribution*: `w_t' B_t f_{t+1}` per factor with the fundamental model's factor returns; `specific` is the remainder (it also carries the hybrid model's statistical factors and delisting haircuts). Alpha should arrive as `specific` and as the alpha-theme styles (momentum, value, quality, investment, short interest); P&L or variance in market, industry or the risk-only styles is unintended.
+- *Factor attribution*: `w_t' B_t f_{t+1}` per factor with the fundamental model's factor returns; `specific` is the remainder (it also carries the hybrid model's statistical factors and delisting returns). Alpha should arrive as `specific` and as the alpha-theme styles (momentum, value, quality, investment, short interest); P&L or variance in market, industry or the risk-only styles is unintended.
 - *Exposures vs bands*: mean exposure, and the share of days within 2 % of the band. A risk-only style pinned at its band on most days means the score still loads on it and the optimizer leans against the constraint every day.
 - *Correlations*: the book against ideal (c) (below ~0.5 means the optimizer holds a different portfolio from the one the score describes), the market and every factor return; the last block is ideal (c) against the same factor returns.
 
@@ -623,6 +628,14 @@ qts data sharadar validate --store data/store            # add --json report.jso
 ```
 
 Eleven checks, each `PASS`, `WARN` or `SKIP`, with the numbers behind them: required datasets present; names alive and delisted per year (survivorship coverage); the share of ids with a delisting date (expect well above 20% over the full history); the market-cap identity `market_cap = close_raw × shares_outstanding` and the DAILY unit (largest cap in the 10¹¹–2 × 10¹³ USD range, implied shares against SF1 `sharesbas`); raw-close jumps above 40% with a continuous adjusted close, matched to `split` actions; the median daily dollar volume; a point-in-time re-derivation of `gross_profitability` for 50 names (nothing visible before `datekey + 1`); the fraction of price rows without an as-traded close; duplicate `(id, date)` rows; delisting dates against `ACTIONS`; and the S&P 500 panel's last row against the vendor's `current` list. A `WARN` is a prompt to look, not necessarily an error (a short test store warns on the unit check because its caps are tiny).
+
+### 4b. Delisting reasons
+
+```bash
+qts data sharadar derive --store data/store              # rebuild delisting_reasons, print the counts
+```
+
+`sync` already writes the `delisting_reasons` table; `derive` rebuilds it from the stored `corporate_actions` and `security_master` without downloading anything (use it on a store synced before 2026-11-12, or after changing the mapping). It prints the counts by reason and by year, the `ACTIONS` codes found next to delistings, and what was seen next to the ids left `unknown`. Read it before a run: the backtest books a delisted name at the return of its reason, and `unknown` is charged −30% like a bankruptcy (→ see **Data & universe › Delisting reasons**, **Backtesting › Delistings by reason**). The table is part of the alpha fit's cache key (the labels read it), not of the risk fit's.
 
 ### 5. Incremental refresh
 
@@ -820,7 +833,7 @@ CI covers the `qts` package only. The API tests (`make api-test`) and the UI che
 
 **`qts: command not found`.** The virtual environment is not active or the package is not installed: `source .venv/bin/activate && pip install -e ".[dev,data]"`, or use `python -m qts.cli`.
 
-**`KeyError: SystemConfig.portfolio: unknown config key(s) [...]`.** A typo or an outdated field in your YAML; the message lists the known keys. Fields are renamed rarely (`CONFIG_SCHEMA_VERSION` is bumped when they are). `AlphaConfig.delisting_return` no longer exists: the delisting assumption is `cost.delisting_haircut`.
+**`KeyError: SystemConfig.portfolio: unknown config key(s) [...]`.** A typo or an outdated field in your YAML; the message lists the known keys. Fields are renamed rarely (`CONFIG_SCHEMA_VERSION` is bumped when they are). `AlphaConfig.delisting_return` no longer exists: the delisting assumption is `cost.delisting_return_<reason>` (`cost.delisting_haircut` is deprecated: it still loads, with a warning, and sets the performance and unknown returns).
 
 **`ValueError: CostConfig: ...` or `ExecutionConfig: ...`.** A value outside its bounds, such as a negative fee, an impact exponent outside $(1, 2]$, or a non-integer signal lag. The message names every offending field.
 
@@ -842,7 +855,7 @@ CI covers the `qts` package only. The API tests (`make api-test`) and the UI che
 
 **The backtest is slow.** It is solver-bound (one convex solve per day, up to 8 during the γ search; → see **The stage cache › How long a run takes** for measured times). Use `--max-days`, a smaller `universe.top_n_by_mcap`, or `--rebalance-every 5`; add `--cache` when you re-run the same data, so the risk and alpha fits are loaded instead of refitted. Leave `portfolio.reuse_problem` off: it changes results slightly and its compile needs memory growing with the square of the number of names (about 3 GB at 600).
 
-**The stage cache did not hit.** Something in the key changed: the data (any panel, any date, the span), a config section the stage reads, the code (any edit under `qts/`, committed or not) or a library version. Run with `-v`: the log says `stage cache hit` or `store` per stage, and a sidecar that does not match the run is logged as `does not match this run`.
+**The stage cache did not hit.** Something in the key changed: the data (any panel, any date, the span), a config section the stage reads, the code of a package the stage imports (`qts/core`, `qts/data`, `qts/risk`, and `qts/alpha` for the alpha fit; committed or not) or a library version. Run with `-v`: the log says `stage cache hit` or `store` per stage, and a sidecar that does not match the run is logged as `does not match this run`.
 
 **Many "failed solves" in the summary.** Constraints conflict: usually the ADV participation cap against forced exits of illiquid names, or bands that the universe cannot satisfy. The book is held on a failed day. `portfolio.relax_participation_on_infeasible: true` re-solves without the ADV caps (opt-in).
 

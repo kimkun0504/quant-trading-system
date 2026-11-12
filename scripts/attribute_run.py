@@ -28,7 +28,11 @@ book the run actually held.
    by sector, and the risk model's factor attribution (``w_t' B_t f_{t+1}`` per
    market / industry / style, specific = total - factors), the book's style
    exposures against their bands, and its correlation with the ideal book (c),
-   the market and every style factor return.
+   the market and every style factor return.  The reconciliation line (sum of
+   weight x return against the recorded gross return) is followed by the split of
+   its gap into the delisting P&L by reason and side (from the run's
+   ``delistings.parquet``; reconstructed from the book for older runs) and the
+   remainder, with the same events re-priced under the current delisting rule.
 3. **Risk-forecast gap.**  Realised vs ex-ante vol by year; the ex-ante variance
    split (factor groups / specific / alignment, on ``--risk-dates`` sampled solves)
    against the realised split; the risk model's forecast for the *ideal* book (c)
@@ -69,8 +73,10 @@ from scipy.stats import rankdata
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from diagnose_signal import add_data_args, clamp_universe, load_config, load_market
 from qts.backtest.simulator import DailyBarSimulator
+from qts.core.delisting import DELISTING_REASONS, cost_position_returns, reasons_by_name, returns_by_name
 from qts.pipeline import ResearchPipeline, purged_fold_blocks
 from qts.risk.factor_returns import industry_parent
+from qts.runs.registry import read_delistings
 
 TDY = 252
 TARGET_VOL = 0.10  # common ex-post vol of the paper books
@@ -189,6 +195,8 @@ class RunPanels:
     gamma: np.ndarray  # risk aversion of the solve at t (NaN when not recorded)
     summary: dict[str, Any]
     config_hash: str
+    delistings: pd.DataFrame | None = None  # delistings.parquet (None: run predates it)
+    old_haircut: float | None = None  # config.yaml cost.delisting_haircut of a pre-2026-11-12 run
 
 
 def load_run_panels(run_dir: Path, tickers: pd.Index) -> RunPanels:
@@ -226,7 +234,16 @@ def load_run_panels(run_dir: Path, tickers: pd.Index) -> RunPanels:
         json.loads((run_dir / "manifest.json").read_text()) if (run_dir / "manifest.json").exists() else {}
     )
     gab = ret["gross_after_borrow"] if "gross_after_borrow" in ret else ret["gross"]
+    old_haircut = None
+    if (run_dir / "config.yaml").exists():
+        import yaml
+
+        raw = yaml.safe_load((run_dir / "config.yaml").read_text()) or {}
+        hc = (raw.get("cost") or {}).get("delisting_haircut")
+        old_haircut = None if hc is None else float(hc)
     return RunPanels(
+        delistings=read_delistings(run_dir),
+        old_haircut=old_haircut,
         run_dir=run_dir,
         dec=dec,
         ret_dates=pd.DatetimeIndex(ret.index[:n]),
@@ -260,6 +277,7 @@ class Market:
         close, _ = self.sim._clean_close(md, md.dates)
         R = close / close.ffill().shift(1) - 1.0
         self.R = np.nan_to_num(R.where(close.notna()).to_numpy(dtype=float))
+        self.has_close = close.notna().to_numpy()
         self.elig = md.eligibility().reindex(index=md.dates, columns=md.tickers).to_numpy(dtype=bool)
         self.mcap = md.market_cap.reindex(index=md.dates, columns=md.tickers).to_numpy(dtype=float)
         # (a)-(f): the raw combined score (comparable across runs); (g): what the model trades
@@ -560,16 +578,113 @@ def _piece_row(r: np.ndarray, total: np.ndarray) -> dict[str, float]:
     }
 
 
+def _zero(x: float, eps: float = 5e-3) -> float:
+    """``x`` with values that print as ``-0.00`` set to ``0.0``."""
+    return 0.0 if abs(x) < eps else x
+
+
+def delisting_events(mk: Market, run: RunPanels) -> tuple[pd.DataFrame, str]:
+    """The run's delistings of held names as ``date, ticker, weight, reason, side,
+    booked, pnl, pnl_default`` and a note on where they come from.
+
+    * Run with ``delistings.parquet``: the simulator's own records (``pnl`` =
+      weight x booked return).
+    * Older run: reconstructed from the book -- a name held at ``t`` with no close
+      at ``t+1`` whose weight is 0 on the next decision row was liquidated as a
+      delisting (a halted name keeps its weight).  The booked return is the run's
+      ``cost.delisting_haircut`` against the position's sign (the rule those runs
+      used); the reason is the loaded market's (``md.delisting_reasons``).
+    ``pnl_default`` re-prices every event with the *current* config's rule
+    (return on the stock by reason, short-gain haircut): what the same book would
+    have booked.  Nothing is re-optimised, so it is an accounting what-if only."""
+    cost = mk.cfg.cost
+    reason_by = dict(zip(mk.tickers, reasons_by_name(mk.md), strict=True))
+    ret_by = dict(zip(mk.tickers, returns_by_name(mk.md, cost.delisting_returns()), strict=True))
+    if run.delistings is not None:
+        ev = run.delistings.copy()
+        ev["booked"] = ev["haircut_return"].astype(float)
+        ev["pnl"] = ev["pnl"].astype(float)
+        note = "from the run's delistings.parquet"
+    else:
+        n = len(run.dec)
+        p1 = mk.pos + 1
+        gone = (run.W != 0) & ~mk.has_close[p1]
+        nxt = np.vstack([run.W[1:], np.zeros((1, run.W.shape[1]))])
+        gone &= nxt == 0
+        gone[n - 1] = False  # the last row has no next book to confirm the liquidation
+        k, j = np.nonzero(gone)
+        h = -0.30 if run.old_haircut is None else run.old_haircut
+        w = run.W[k, j]
+        ev = pd.DataFrame(
+            {
+                "date": run.ret_dates[k],
+                "ticker": mk.tickers[j].astype(str),
+                "weight": w,
+                "reason": [reason_by[t] for t in mk.tickers[j]],
+                "side": np.where(w > 0, "long", "short"),
+                "booked": h * np.sign(w),
+            }
+        )
+        ev["pnl"] = ev["weight"] * ev["booked"]
+        note = (
+            f"RECONSTRUCTED (run has no delistings.parquet): held at t, no close at t+1, weight 0 on the "
+            f"next row; booked at the run's both-sides haircut {h:+.2f}; reasons from the loaded market"
+        )
+    if len(ev):
+        w = ev["weight"].to_numpy(dtype=float)
+        stock = np.array([ret_by.get(t, cost.delisting_return_unknown) for t in ev["ticker"]], dtype=float)
+        ev["pnl_default"] = w * cost_position_returns(cost, stock, w)
+    else:
+        ev["pnl_default"] = pd.Series(dtype=float)
+    return ev, note
+
+
+def delisting_split(ev: pd.DataFrame, n_days: int) -> pd.DataFrame:
+    """Rows ``<reason> long / short`` and ``total``: events, mean |weight| and the
+    annualised P&L as booked and under the current config's rule (% of NAV per year)."""
+    rows: dict[str, dict[str, float]] = {}
+    k = 100 * TDY / max(n_days, 1)
+
+    def row(d: pd.DataFrame) -> dict[str, float]:
+        return {
+            "n": float(len(d)),
+            "mean |w| %": 100 * float(d["weight"].abs().mean()) if len(d) else float("nan"),
+            "booked %/yr": k * float(d["pnl"].sum()),
+            "current rule %/yr": k * float(d["pnl_default"].sum()),
+        }
+
+    for reason in DELISTING_REASONS:
+        for side in ("long", "short"):
+            d = ev[(ev["reason"] == reason) & (ev["side"] == side)]
+            if len(d):
+                rows[f"{reason} {side}"] = row(d)
+    rows["total"] = row(ev)
+    return pd.DataFrame(rows).T
+
+
 def print_attribution(mk: Market, run: RunPanels, ideal: Ideal, att: Attribution) -> None:
     _head("2. REALISED BOOK ATTRIBUTION (the run's weights x the simulator's returns)")
     W = run.W
     Rn = mk.R[mk.pos + 1]
     C = W * Rn
     recon = C.sum(axis=1)
+    gap_ann = _zero(100 * TDY * float(np.nanmean(run.gross - recon)))
     print(
         f"reconciliation: sum_i w_i r_i vs recorded gross return: corr {_corr(recon, run.gross):.4f}, "
         f"mean |diff| {1e4 * np.nanmean(np.abs(recon - run.gross)):.2f} bp/day, ann. diff "
-        f"{100 * TDY * np.nanmean(run.gross - recon):+.2f} % (delisting haircuts land here)"
+        f"{gap_ann:+.2f} % (sum_i w_i r_i gives a delisted name 0; its booked return is the gap)"
+    )
+    ev, note = delisting_events(mk, run)
+    split = delisting_split(ev, len(run.dec))
+    dl_ann = _zero(float(split.loc["total", "booked %/yr"]))
+    print(f"\n-- the reconciliation gap: delistings by reason and side ({note}) --")
+    print(_table(split, formats={"n": "{:.0f}"}))
+    print(
+        f"gap {gap_ann:+.2f} %/yr = delistings {dl_ann:+.2f} %/yr + remainder {_zero(gap_ann - dl_ann):+.2f} %/yr "
+        "(the remainder should be ~0: anything else is an accounting difference to look into).\n"
+        "'current rule' re-prices the same events with this config's delisting returns (on the stock, by\n"
+        f"reason): the gap would be {_zero(float(split.loc['total', 'current rule %/yr'])):+.2f} %/yr with the "
+        "book unchanged (a re-run also changes the labels)."
     )
 
     # -- long vs short ---------------------------------------------------------
@@ -683,7 +798,7 @@ def print_attribution(mk: Market, run: RunPanels, ideal: Ideal, att: Attribution
     print(_table(pd.DataFrame(rows).T))
     print(
         "var share = cov(piece, total) / var(total) (sums to 100).  'specific' also carries the hybrid\n"
-        "model's statistical factors, names outside the risk model and delisting haircuts."
+        "model's statistical factors, names outside the risk model and delisting returns."
     )
 
     # -- exposures vs bands ------------------------------------------------------

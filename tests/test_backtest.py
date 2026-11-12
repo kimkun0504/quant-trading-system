@@ -59,8 +59,9 @@ def _check_identity(res: BacktestResult, md, haircut: float = -0.30):
     R = md.close.loc[res.nav.index].pct_change(fill_method=None)
     raw = R.values[1:]
     w = res.weights.values
-    # delisting: a held name with NaN next close earns the haircut against its sign
-    r = np.where(np.isnan(raw), np.where(w != 0, haircut * np.sign(w), 0.0), raw)
+    # delisting: a held name with NaN next close earns the (unknown-reason) delisting
+    # return on the stock -- longs lose, shorts gain
+    r = np.where(np.isnan(raw), np.where(w != 0, haircut, 0.0), raw)
     lhs = res.nav.values[1:]
     rhs = res.nav.values[:-1] * (1.0 + (res.weights.values * r).sum(axis=1)) - res.costs["total"].values
     assert np.max(np.abs(lhs - rhs) / res.nav.values[:-1]) < 1e-8
@@ -182,9 +183,9 @@ def test_delisting_is_liquidated_and_flagged(md, risk_model, alpha_model):
     last = dates[14]  # decision row on which the exit is booked
     w_last = res.weights.loc[last, tick]
     assert w_last > 0 and ev["weight"] == pytest.approx(w_last)
-    assert ev["haircut_return"] == pytest.approx(cfg.cost.delisting_haircut)
+    assert ev["haircut_return"] == pytest.approx(cfg.cost.delisting_return_unknown)
     assert ev["liquidation_usd"] == pytest.approx(
-        w_last * (1 + cfg.cost.delisting_haircut) * res.nav.loc[last]
+        w_last * (1 + cfg.cost.delisting_return_unknown) * res.nav.loc[last]
     )
     assert ev["cost_usd"] > 0  # spread + fees charged on the forced exit
     # the forced liquidation is a recorded trade (on top of the day's rebalance) and counts in turnover
@@ -196,12 +197,14 @@ def test_delisting_is_liquidated_and_flagged(md, risk_model, alpha_model):
         / res.nav.loc[last]
     )
     x_opt = w_last - w_pre_last
-    assert res.trades.loc[last, tick] == pytest.approx(x_opt - w_last * (1 + cfg.cost.delisting_haircut))
+    assert res.trades.loc[last, tick] == pytest.approx(
+        x_opt - w_last * (1 + cfg.cost.delisting_return_unknown)
+    )
     assert res.turnover.loc[last] == pytest.approx(res.trades.loc[last].abs().sum())
     assert (res.weights.loc[kill_from:, tick] == 0).all()
     assert (res.trades.loc[kill_from:, tick] == 0).all()
     assert res.nav.notna().all()
-    _check_identity(res, md2, cfg.cost.delisting_haircut)
+    _check_identity(res, md2, cfg.cost.delisting_return_unknown)
 
 
 def test_cost_frame_raises_on_unrecognised_or_nan():

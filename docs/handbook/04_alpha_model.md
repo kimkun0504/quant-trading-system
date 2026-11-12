@@ -412,10 +412,10 @@ where $h$ = `AlphaConfig.horizon_days` = 20 trading days, $L$ the execution lag,
 Why this matters. Before the fix the label was $P_{s+h}/P_s - 1$ while the book traded at $s+1$: the label contained day $s+1$'s return, which the book never earns. It was not a leak (the purge covered it), but every IC, the Grinold IC and the hurdle statistics described a slightly better signal than the one traded. On synthetic seed 0 the raw IC was 0.0566 for the label the model was trained on and 0.0537 for the return the traded book could earn (second-pass audit, finding 4). On real data, where reversal and news decay within days, the gap would be larger.
 </callout>
 
-**Step 2 — halts and delistings, decided causally.** If the stock has no close at the window end $e = s+L+h$, the return runs to its last close $P_{\text{last}}$ before $e$, and the cell is either a **delisting** (the stock is gone: apply a haircut) or a **temporary halt** (it will trade again: no haircut):
+**Step 2 — halts and delistings, decided causally.** If the stock has no close at the window end $e = s+L+h$, the return runs to its last close $P_{\text{last}}$ before $e$, and the cell is either a **delisting** (the stock is gone: apply the delisting return of its reason) or a **temporary halt** (it will trade again: no adjustment):
 
 $$
-R^{(h)}_{i,s} = \frac{P_{i,\text{last}}}{P_{i,s+L}}(1 + d) - 1 \quad\text{(delisting)}, \qquad d = \texttt{CostConfig.delisting\_haircut} = -0.30
+R^{(h)}_{i,s} = \frac{P_{i,\text{last}}}{P_{i,s+L}}(1 + d) - 1 \quad\text{(delisting)}, \qquad d = d_{\text{reason}(i)}
 $$
 
 The decision never uses prices after the date at which it is made:
@@ -428,7 +428,7 @@ The decision never uses prices after the date at which it is made:
 The look-ahead this replaced (second-pass audit, finding 1, HIGH). The first audit's delisting fix decided "delisted" with `c.bfill()` over the whole panel: "no later close *anywhere in the data*". A stock halted for 60 days that later resumed was therefore a halt in a full-sample fit but a −30% delisting in a live fit at a date inside the halt. Labels realised by $t$, and through them the ML fit, the out-of-sample IC, the Grinold IC and `expected_return` at $t$, depended on prices after $t$: in the audit's test 4,228 residualised label cells differed by up to 3.7 z and the IC estimate moved from 0.01248 to 0.01237. The synthetic market has no halts, so no earlier test could see it. Now `tests/test_label_halts.py::test_halt_labels_ic_and_expected_return_are_pit` injects resuming halts and requires identical labels, IC and expected returns whether the data end at $t$ or later. The cost: without a vendor delisting table a real delisting delays its row by up to $G$ = 63 days. Supply `delisting_dates` for real data.
 </callout>
 
-The −30% haircut is the conservative CRSP-style assumption for performance delistings with a missing delisting return (Shumway 1997); it is wrong for cash takeovers, so use actual delisting returns when available. Before the first audit these labels were simply NaN ("0 of 630 pre-delisting labels survive", Finding 5), so training and scoring omitted exactly the observations where shorts pay and longs blow up. The haircut has one source, `CostConfig.delisting_haircut`, shared with the backtest's accounting (the old `AlphaConfig.delisting_return` was removed, finding #42); pass `None`/`0.0` to disable it in the label.
+Here $d_{\text{reason}(i)}$ is the return on the stock of the name's delisting reason, `CostConfig.delisting_returns()`: acquisition 0 (the label is the return to the last price), performance −30% (the CRSP-style assumption for performance delistings with a missing delisting return, Shumway 1997), voluntary −10%, unknown −30%. The reason is `MarketData.delisting_reasons`; a name without one is `unknown`. Until 2026-11-12 every delisting got −30%, which is wrong for cash takeovers (→ see **Backtesting › Delistings by reason**). Before the first audit these labels were simply NaN ("0 of 630 pre-delisting labels survive", Finding 5), so training and scoring omitted exactly the observations where shorts pay and longs blow up. The map has one source, `CostConfig.delisting_returns()`, shared with the backtest's accounting (the old `AlphaConfig.delisting_return` was removed, finding #42); pass `None`/`0.0` to disable it in the label, or one float to apply the same return to every delisting.
 
 **Step 3 — restrict and winsorise.** Keep only names eligible at $t$; clip at the 1st/99th percentile per date.
 
@@ -489,12 +489,12 @@ Why is the low-risk premium removed from the ML target on purpose? The composite
 
 ### In the code
 
-- `targets.py::forward_returns(md, horizon, delisting_return=-0.30, label_lag_days=0, delisting_gap_days=63)` (defaults read from `CostConfig().delisting_haircut` and `AlphaConfig().delisting_gap_days`).
+- `targets.py::forward_returns(md, horizon, delisting_return=-0.30, label_lag_days=0, delisting_gap_days=63)` (defaults read from `CostConfig().delisting_return_unknown` and `AlphaConfig().delisting_gap_days`; `delisting_return` is one float for every delisting or a reason → return map resolved through `md.delisting_reasons`).
 - `targets.py::label_realisation(md, horizon, label_lag_days=0, delisting_gap_days=63, valid=None)` → date each label row is decided.
 - `targets.py::default_exposures(md, features)` — the internal risk-only set, reusing raw feature panels when given.
 - `targets.py::residualize_forward_returns(md, horizon, exposures_fn=None, features=None, winsor_pct=0.01, weights=None, delisting_return=-0.30, only_dates=None, label_lag_days=0, delisting_gap_days=63)` → wide panel. `only_dates` computes only the listed rows (identical values, used for cheap IC-decay labels).
-- `AlphaModel(cfg, ..., delisting_return=None, signal_lag_days=0).fit(md, risk_exposures_fn=None)`; `ResearchPipeline` passes `cfg.cost.delisting_haircut` and `cfg.execution.signal_lag_days`, and refits when the lag changes.
-- Tuning knobs: `AlphaConfig.horizon_days` (changes everything downstream, including the purge), `CostConfig.delisting_haircut`, `AlphaConfig.delisting_gap_days`, `ExecutionConfig.signal_lag_days`, and the role sets in `qts/core/roles.py`.
+- `AlphaModel(cfg, ..., delisting_return=None, signal_lag_days=0).fit(md, risk_exposures_fn=None)`; `ResearchPipeline` passes `cfg.cost.delisting_returns()` and `cfg.execution.signal_lag_days`, and refits when the lag changes.
+- Tuning knobs: `AlphaConfig.horizon_days` (changes everything downstream, including the purge), `CostConfig.delisting_return_<reason>`, `AlphaConfig.delisting_gap_days`, `ExecutionConfig.signal_lag_days`, and the role sets in `qts/core/roles.py`.
 
 ### Pitfalls & checks
 
@@ -957,7 +957,7 @@ $\sigma_i$ = `idio_vol_252` × $\sqrt{h}$ (`AlphaModel.resid_vol_h_`): the daily
 
 ### In the code
 
-`AlphaModel(cfg, composite_weight=None, ml_factory=None, use_ml=True, dynamic_weights=None, ic_window=None, delisting_return=None, signal_lag_days=0)`; `None` means "take it from `AlphaConfig`" (`composite_weight` 0.5, `dynamic_weights` True, `ic_window` 756; the delisting haircut from `CostConfig`). `.fit(md, risk_exposures_fn)`; `.as_of(date)` → `AlphaOutput`; `.ic_used(date)`, `.trailing_ic(date)`, `.half_life_as_of(date)`, `.component_half_lives_as_of(date)`. Config: `neutralize_score` (True), `score_smoothing_halflife_days` (10), `ic_shrink` (0.5), `default_ic` (0.03), `ic_window` (756), `ic_min_obs` (60), `ic_prior_obs` (252), `ic_floor_frac` (0.25), `horizon_days` (20), `half_life_lookback_days` (504). Score processing: `qts/alpha/score_processing.py::process_scores`; the panels are `AlphaModel.combined_score_` (raw), `traded_score_` and `neutralization_r2_`.
+`AlphaModel(cfg, composite_weight=None, ml_factory=None, use_ml=True, dynamic_weights=None, ic_window=None, delisting_return=None, signal_lag_days=0)`; `None` means "take it from `AlphaConfig`" (`composite_weight` 0.5, `dynamic_weights` True, `ic_window` 756; the delisting returns by reason from `CostConfig`). `.fit(md, risk_exposures_fn)`; `.as_of(date)` → `AlphaOutput`; `.ic_used(date)`, `.trailing_ic(date)`, `.half_life_as_of(date)`, `.component_half_lives_as_of(date)`. Config: `neutralize_score` (True), `score_smoothing_halflife_days` (10), `ic_shrink` (0.5), `default_ic` (0.03), `ic_window` (756), `ic_min_obs` (60), `ic_prior_obs` (252), `ic_floor_frac` (0.25), `horizon_days` (20), `half_life_lookback_days` (504). Score processing: `qts/alpha/score_processing.py::process_scores`; the panels are `AlphaModel.combined_score_` (raw), `traded_score_` and `neutralization_r2_`.
 
 ### Pitfalls & checks
 

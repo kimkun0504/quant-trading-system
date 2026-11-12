@@ -85,11 +85,20 @@ halt-period move is realised on the resumption day.  Frozen name-days are
 counted in ``diagnostics["n_halted_name_days"]`` and episodes recorded in
 ``diagnostics["halts"]`` (``outcome`` resumed / delisted / open).
 
-A *delisted* name earns ``cfg.cost.delisting_haircut`` (default -30%, against
-the position's sign) on the decision day ``t+1`` (relative to its last, frozen
-price), is force-liquidated at spread + explicit fees (continuous venue, booked
+A *delisted* name earns its reason's return **on the stock** on the decision day
+``t+1`` (relative to its last, frozen price): ``cfg.cost.delisting_return_<reason>``
+with the reason from ``md.delisting_reasons`` (acquisition 0, performance -30 %,
+voluntary -10 %, unknown -30 %; :mod:`qts.core.delisting`).  A long earns
+``w * r``; a short earns ``w * r`` too, so it gains on a negative return, scaled
+by ``cfg.cost.delisting_short_gain_haircut`` (1 = in full).
+``cfg.cost.delisting_against_position = True`` restores the pre-2026-11-12 rule
+(the return applied against the position's sign: a loss on both sides).  The name
+is then force-liquidated at spread + explicit fees (continuous venue, booked
 as a trade on decision row ``t`` and counted in turnover) and the event is
-recorded in ``BacktestResult.diagnostics["delistings"]``.  Names with no price
+recorded in ``BacktestResult.diagnostics["delistings"]`` (``reason``, ``side``,
+``stock_return``, the booked ``haircut_return`` and ``pnl = weight x booked
+return``); ``diagnostics["delisting_summary"]`` holds counts and P&L by reason
+and side.  Names with no price
 on ``t`` are placed on the optimizer's no-trade list.
 
 Eligibility: ``md.eligible`` (wide bool panel, if present) or the
@@ -171,6 +180,7 @@ from qts.backtest.result import COST_COLUMNS, BacktestResult
 from qts.backtest.spec import BacktestSpec
 from qts.core.config import SystemConfig
 from qts.core.costs import VENUE_CONTINUOUS, VENUE_ROUTED, LiquiditySnapshot
+from qts.core.delisting import cost_position_returns, reasons_by_name, returns_by_name, summarize_delistings
 from qts.core.returns import flag_bad_prices
 from qts.core.types import AlphaOutput, MarketData, RiskModelOutput
 from qts.portfolio.costs import Snapshot
@@ -229,7 +239,8 @@ class _RunContext:
     elig_md: np.ndarray | None  # (len(md.dates), N) eligibility panel, rows = md.dates
     eligible_fn: EligibleFn | None
     exit_days: int
-    haircut: float
+    delist_ret: np.ndarray  # (N,) delisting return on the stock, by the name's reason
+    delist_reason: np.ndarray  # (N,) object: the name's delisting reason
     venue: str
     rebalance_every: int
     neutral_styles: list[str] | None
@@ -588,7 +599,8 @@ class DailyBarSimulator:
             elig_md=elig_md,
             eligible_fn=eligible_fn,
             exit_days=max(exit_days, 1),
-            haircut=float(self.cfg.cost.delisting_haircut),
+            delist_ret=returns_by_name(md, self.cfg.cost.delisting_returns()),
+            delist_reason=reasons_by_name(md),
             venue=spec.venue,
             rebalance_every=int(
                 spec.rebalance_every
@@ -880,7 +892,7 @@ class DailyBarSimulator:
         costs: _Costs,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Returns ``t -> t+1`` per name with halts frozen at 0 and delistings at
-        the haircut; delisted names are force-liquidated (cost added to
+        their reason's return; delisted names are force-liquidated (cost added to
         ``costs``, liquidation added to the trade vector).  Returns
         ``(r, liquidate, x)``."""
         N = ctx.n_names
@@ -949,13 +961,15 @@ class DailyBarSimulator:
         liquidate: np.ndarray,
         costs: _Costs,
     ) -> np.ndarray:
-        """Delisting: apply ``cfg.cost.delisting_haircut`` against the position's
-        sign (a loss for longs and shorts alike -- conservative; written into
-        ``r``), force-liquidate the remaining value at spread + explicit fees
+        """Delisting: write the booked return into ``r`` -- the reason's return on
+        the stock (``ctx.delist_ret``), a short's gain scaled by
+        ``delisting_short_gain_haircut``, or against the position's sign with
+        ``delisting_against_position`` (:func:`qts.core.delisting.position_returns`)
+        --, force-liquidate the remaining value at spread + explicit fees
         (continuous venue, no impact), add the cost to ``costs`` and record the
         event.  Returns the liquidation trade vector (booked on this decision row)."""
         tickers, nav = ctx.tickers, state.nav
-        r[liquidate] = ctx.haircut * np.sign(w_post[liquidate])
+        r[liquidate] = cost_position_returns(self.cfg.cost, ctx.delist_ret[liquidate], w_post[liquidate])
         x_liq = np.zeros(ctx.n_names)
         x_liq[liquidate] = -w_post[liquidate] * (1.0 + r[liquidate])
         liq_cf = cost_frame(
@@ -971,7 +985,12 @@ class DailyBarSimulator:
                     "date": day.t1,
                     "ticker": tickers[int(j)],
                     "weight": float(w_post[j]),
-                    "haircut_return": float(r[j]),
+                    "reason": str(ctx.delist_reason[j]),
+                    "side": "long" if w_post[j] > 0 else "short",
+                    "stock_return": float(ctx.delist_ret[j]),
+                    "haircut_return": float(r[j]),  # booked: multiplies the weight
+                    "pnl": float(w_post[j] * r[j]),  # fraction of NAV at t
+                    "pnl_usd": float(w_post[j] * r[j] * nav),
                     "liquidation_usd": float(abs(x_liq[j]) * nav),
                     "cost_usd": float(liq_cf.iloc[j].sum()),
                 }
@@ -1043,6 +1062,9 @@ class DailyBarSimulator:
             periods_per_year=self.cfg.trading_days_per_year,
             diagnostics={
                 "delistings": events.delistings,
+                "delisting_summary": summarize_delistings(
+                    events.delistings, n_days=T, periods_per_year=self.cfg.trading_days_per_year
+                ),
                 "halts": events.all_halts(),
                 "n_halted_name_days": events.n_halted,
                 "solve_log": events.solve_log,

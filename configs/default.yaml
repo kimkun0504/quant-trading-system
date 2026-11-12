@@ -160,7 +160,13 @@ cost:
   borrow_proxy_si_htb: 0.2
   small_cap_borrow_multiplier: 2.0
   small_cap_threshold_usd: 2000000000.0
-  delisting_haircut: -0.3
+  delisting_return_acquisition: 0.0
+  delisting_return_performance: -0.3
+  delisting_return_voluntary: -0.1
+  delisting_return_unknown: -0.3
+  delisting_short_gain_haircut: 1.0
+  delisting_against_position: false
+  delisting_haircut: null
   impact_persistence: true
   tca_reversion_reference: next_close
 portfolio:

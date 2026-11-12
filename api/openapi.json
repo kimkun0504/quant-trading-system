@@ -1612,6 +1612,11 @@
             "type": "integer",
             "title": "N Delistings"
           },
+          "delisting_pnl_ann": {
+            "type": "number",
+            "title": "Delisting Pnl Ann",
+            "description": "annualised sum over delistings of held names of weight x booked delisting return (return on the stock by delisting reason; null for runs recorded before it)"
+          },
           "n_failed_solves": {
             "type": "integer",
             "title": "N Failed Solves"
@@ -1652,6 +1657,7 @@
           "exante_vol_at_gross2",
           "breakeven_cost_bps",
           "n_delistings",
+          "delisting_pnl_ann",
           "n_failed_solves"
         ],
         "title": "BacktestSummary",

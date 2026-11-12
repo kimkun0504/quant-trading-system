@@ -16,7 +16,9 @@ The bundle's tables (``SHARADAR/<TABLE>``) and what this module makes of them:
             ``earnings_yield``, ``gross_profitability``, ``asset_growth`` through
             :func:`qts.data.loaders.sharadar_sf1_to_pit_fundamentals`
 ``ACTIONS`` corporate actions -> ``corporate_actions`` (long, reference; the
-            ``delisted`` rows cross-check ``delisting_dates`` in :func:`validate`)
+            ``delisted`` rows cross-check ``delisting_dates`` in :func:`validate`);
+            then the derived ``delisting_reasons`` (one row per delisted id:
+            acquisition / performance / voluntary / unknown, see *Delisting reasons*)
 ``SP500``   index membership events -> ``sp500_membership`` (long); the helper
             :func:`sp500_membership_panel` turns it into a date x id boolean panel.
             Stored and exposed only: it is **not** part of the universe rules.
@@ -36,6 +38,34 @@ stable *id*: the Sharadar ticker when exactly one kept ``permaticker`` ever used
 open-ended); rows that match no kept holder are dropped and counted in the
 :class:`SyncReport`.  Sharadar tickers may themselves contain a dot (``BRK.A``); an id's
 suffix is a permaticker only when it is all digits.
+
+Delisting reasons
+-----------------
+:func:`derive_delisting_reasons` classifies every delisted id from the ACTIONS rows
+of its ticker dated within :data:`DELISTING_REASON_WINDOW_DAYS` business days
+(weekdays; +-5) of its delisting date (TICKERS ``lastpricedate``), through
+:data:`DELISTING_REASON_ACTIONS`:
+
+* ``acquisitionby`` / ``mergerto`` -> **acquisition**.  Reading of the ACTIONS
+  columns used here: a row describes the company in ``ticker``; ``contraticker``
+  is the counterparty.  ``acquisitionby`` = "``ticker`` was acquired by
+  ``contraticker``" and ``mergerto`` = "``ticker`` merged into ``contraticker``"
+  (the row's company ceases to trade); the mirror rows ``acquisitionof`` /
+  ``mergerfrom`` sit on the surviving company and are not mapped.  This reading
+  follows Sharadar's action names; it has not been checked against the vendor's
+  field documentation from here, so the derive report prints every action code
+  seen next to a delisting: an acquirer does not delist the week it buys
+  something, so if ``acquisitionof`` -- not ``acquisitionby`` -- dominates
+  there, the reading is inverted and the constant must be corrected.
+* ``bankruptcyliquidation`` / ``regulatorydelisting`` -> **performance**.
+* ``voluntarydelisting`` -> **voluntary**.
+* none of these (a plain ``delisted`` row, or no row at all) -> **unknown**.
+
+Several mapped actions on one delisting: performance > acquisition > voluntary
+(:data:`qts.core.delisting.REASON_PRECEDENCE`).  The table is rebuilt from the
+stored ``corporate_actions`` + ``security_master`` (no download):
+``qts data sharadar derive --store <store>``; ``sync`` also writes it.
+:meth:`ParquetStore.as_market_data` loads it into ``MarketData.delisting_reasons``.
 
 Adjustments and units
 ---------------------
@@ -100,6 +130,8 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from qts.core.delisting import DELISTING_REASONS, REASON_PRECEDENCE
+from qts.core.delisting import UNKNOWN as UNKNOWN_REASON
 from qts.data.loaders import (
     FF48_LONG_NAMES,
     FF48_NAMES,
@@ -199,6 +231,23 @@ DAILY_PANELS: dict[str, str] = {
     "pe": "sharadar_pe",
     "ps": "sharadar_ps",
 }
+
+#: ACTIONS ``action`` code -> delisting reason (module docstring "Delisting reasons").
+#: A module constant so it can be corrected after looking at real counts
+#: (``qts data sharadar derive`` prints them); codes not listed do not set a reason.
+DELISTING_REASON_ACTIONS: dict[str, str] = {
+    "acquisitionby": "acquisition",
+    "mergerto": "acquisition",
+    "bankruptcyliquidation": "performance",
+    "regulatorydelisting": "performance",
+    "voluntarydelisting": "voluntary",
+}
+#: an action counts for a delisting when it is dated within this many business
+#: days (weekdays, holidays not excluded) of the id's delisting date, either side
+DELISTING_REASON_WINDOW_DAYS = 5
+#: wider window used only for the report's hint on unknowns ("is the window too tight?")
+DELISTING_REASON_HINT_WINDOW_DAYS = 63
+DELISTING_REASON_COLUMNS: tuple[str, ...] = ("id", "delisting_date", "reason", "source_action")
 
 _OPEN_START = pd.Timestamp("1900-01-01")
 _OPEN_END = pd.Timestamp("2200-01-01")
@@ -941,6 +990,172 @@ def transform_events(
     return out, c
 
 
+@dataclass
+class DelistingReasonReport:
+    """Counts of :func:`derive_delisting_reasons` (printed by ``qts data sharadar derive``)."""
+
+    n_delisted: int = 0
+    window_days: int = DELISTING_REASON_WINDOW_DAYS
+    by_reason: dict[str, int] = field(default_factory=dict)
+    by_year: dict[int, dict[str, int]] = field(default_factory=dict)
+    #: action codes seen in the window of *any* delisted id (ids counted once per code)
+    actions_near_delistings: dict[str, int] = field(default_factory=dict)
+    #: for ids left unknown: the action codes seen in the window ("(no action row)" = none)
+    unknown_actions: dict[str, int] = field(default_factory=dict)
+    #: for ids left unknown: mapped codes found in the wider hint window
+    unknown_mapped_in_hint_window: dict[str, int] = field(default_factory=dict)
+    mapping: dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+    def format(self, top: int = 15) -> str:
+        n = max(self.n_delisted, 1)
+        lines = [
+            f"Delisting reasons: {self.n_delisted} delisted ids; ACTIONS rows within "
+            f"+-{self.window_days} business days of the delisting date",
+            "  mapping: " + ", ".join(f"{k}->{v}" for k, v in self.mapping.items()),
+            "",
+            "  by reason",
+        ]
+        for r in DELISTING_REASONS:
+            c = self.by_reason.get(r, 0)
+            lines.append(f"    {r:12s} {c:>7,d}  {100 * c / n:5.1f}%")
+        lines += ["", "  by year      " + "".join(f"{r:>13s}" for r in DELISTING_REASONS) + f"{'total':>9s}"]
+        for y in sorted(self.by_year):
+            row = self.by_year[y]
+            lines.append(
+                f"    {y:<11d}"
+                + "".join(f"{row.get(r, 0):>13,d}" for r in DELISTING_REASONS)
+                + f"{sum(row.values()):>9,d}"
+            )
+        lines += ["", "  action codes within the window of a delisting (all delisted ids; ids per code)"]
+        for k, v in list(self.actions_near_delistings.items())[:top]:
+            mapped = self.mapping.get(k)
+            lines.append(f"    {k:24s} {v:>7,d}" + (f"  -> {mapped}" if mapped else ""))
+        lines += ["", "  unknown ids: action codes within the window (top)"]
+        for k, v in list(self.unknown_actions.items())[:top]:
+            lines.append(f"    {k:24s} {v:>7,d}")
+        if self.unknown_mapped_in_hint_window:
+            lines += [
+                "",
+                f"  unknown ids with a mapped action within +-{DELISTING_REASON_HINT_WINDOW_DAYS} business days "
+                "(outside the window; a large count means the window is too tight)",
+            ]
+            for k, v in list(self.unknown_mapped_in_hint_window.items())[:top]:
+                lines.append(f"    {k:24s} {v:>7,d}")
+        return "\n".join(lines)
+
+
+def _busdays_between(a: pd.Series, b: pd.Series) -> np.ndarray:
+    """Signed weekday count from ``a`` to ``b`` (``b`` after ``a`` -> positive)."""
+    a_d = pd.to_datetime(a).to_numpy().astype("datetime64[D]")
+    b_d = pd.to_datetime(b).to_numpy().astype("datetime64[D]")
+    return np.busday_count(a_d, b_d)
+
+
+def _sorted_counts(s: pd.Series) -> dict[str, int]:
+    vc = s.value_counts()
+    order = sorted(vc.index, key=lambda k: (-int(vc[k]), str(k)))
+    return {str(k): int(vc[k]) for k in order}
+
+
+def derive_delisting_reasons(
+    actions: pd.DataFrame,
+    master: pd.DataFrame,
+    window_days: int = DELISTING_REASON_WINDOW_DAYS,
+    mapping: Mapping[str, str] | None = None,
+) -> tuple[pd.DataFrame, DelistingReasonReport]:
+    """``corporate_actions`` + ``security_master`` -> ``delisting_reasons`` (pure).
+
+    ``actions``: ``date, action, ticker`` (+ optional ``id``: when resolved, the
+    row only counts for that id -- reused tickers).  ``master``: ``id, ticker,
+    lastpricedate, isdelisted``.  Returns the long table
+    (:data:`DELISTING_REASON_COLUMNS`, one row per delisted id, sorted by id) and
+    the report.  Rule, mapping and precedence: module docstring "Delisting reasons".
+    """
+    mp = dict(DELISTING_REASON_ACTIONS if mapping is None else mapping)
+    bad = sorted(set(mp.values()) - set(DELISTING_REASONS))
+    if bad:
+        raise ValueError(f"mapping targets {bad} are not delisting reasons {DELISTING_REASONS}")
+    m = master.loc[master["isdelisted"].astype(bool), ["id", "ticker", "lastpricedate"]].copy()
+    m["id"] = m["id"].astype(str)
+    m["ticker"] = m["ticker"].astype(str).str.strip().str.upper()
+    m["delisting_date"] = pd.to_datetime(m["lastpricedate"])
+    m = m[m["delisting_date"].notna()].drop(columns="lastpricedate").drop_duplicates("id")
+    rep = DelistingReasonReport(n_delisted=len(m), window_days=int(window_days), mapping=mp)
+    a = pd.DataFrame(
+        {
+            "date": pd.to_datetime(actions["date"], errors="coerce").to_numpy(),
+            "action": actions["action"].astype(str).str.strip().str.lower().to_numpy(),
+            "ticker": actions["ticker"].astype(str).str.strip().str.upper().to_numpy(),
+            "action_id": (
+                actions["id"].to_numpy() if "id" in actions.columns else np.full(len(actions), None, dtype=object)
+            ),
+        }
+    )
+    a = a[a["date"].notna()]
+    j = m.merge(a, on="ticker", how="inner")
+    # a row resolved to another holder of a reused ticker does not belong to this id
+    other = j["action_id"].notna() & (j["action_id"].astype(str) != j["id"])
+    j = j[~other]
+    j["gap"] = _busdays_between(j["delisting_date"], j["date"]) if len(j) else np.zeros(0, dtype=int)
+    near = j[j["gap"].abs() <= int(window_days)].copy()
+    near["reason"] = near["action"].map(mp)
+    rank = {r: k for k, r in enumerate(REASON_PRECEDENCE)}
+    hit = near[near["reason"].notna()].copy()
+    hit["rank"] = hit["reason"].map(rank)
+    # strongest reason per id; ties: the action closest to the delisting date, then by code
+    hit["absgap"] = hit["gap"].abs()
+    hit = hit.sort_values(["id", "rank", "absgap", "action"], kind="mergesort").drop_duplicates("id")
+    out = m[["id", "delisting_date"]].merge(
+        hit[["id", "reason", "action"]].rename(columns={"action": "source_action"}), on="id", how="left"
+    )
+    plain = set(near.loc[near["action"] == "delisted", "id"])
+    unknown = out["reason"].isna()
+    out.loc[unknown, "source_action"] = np.where(out.loc[unknown, "id"].isin(plain), "delisted", "")
+    out["reason"] = out["reason"].fillna(UNKNOWN_REASON).astype(str)
+    out["source_action"] = out["source_action"].astype(str)
+    out = out.sort_values("id", kind="mergesort").reset_index(drop=True)[list(DELISTING_REASON_COLUMNS)]
+
+    rep.by_reason = {r: int((out["reason"] == r).sum()) for r in DELISTING_REASONS}
+    yr = out["delisting_date"].dt.year
+    for y, g in out.groupby(yr):
+        rep.by_year[int(cast(Any, y))] = {r: int((g["reason"] == r).sum()) for r in DELISTING_REASONS}
+    per_id = near.drop_duplicates(["id", "action"])
+    rep.actions_near_delistings = _sorted_counts(per_id["action"])
+    unk_ids = set(out.loc[out["reason"] == UNKNOWN_REASON, "id"])
+    seen = per_id[per_id["id"].isin(unk_ids)]
+    cnt = _sorted_counts(seen["action"])
+    n_none = len(unk_ids - set(seen["id"]))
+    if n_none:
+        cnt["(no action row)"] = n_none
+    rep.unknown_actions = dict(sorted(cnt.items(), key=lambda kv: (-kv[1], kv[0])))
+    wide = j[
+        j["id"].isin(unk_ids)
+        & (j["gap"].abs() <= DELISTING_REASON_HINT_WINDOW_DAYS)
+        & j["action"].isin(list(mp))
+    ].drop_duplicates(["id", "action"])
+    rep.unknown_mapped_in_hint_window = _sorted_counts(wide["action"])
+    return out, rep
+
+
+def derive_from_store(store_root: str, window_days: int = DELISTING_REASON_WINDOW_DAYS) -> DelistingReasonReport:
+    """Rebuild the ``delisting_reasons`` dataset of an existing store from its
+    ``corporate_actions`` and ``security_master`` (no download; idempotent)."""
+    store = ParquetStore(store_root)
+    missing = [n for n in ("corporate_actions", "security_master") if not store.exists(n)]
+    if missing:
+        raise SharadarError(
+            f"store {store_root} has no {' / '.join(missing)}: run `qts data sharadar sync` "
+            "with TICKERS and ACTIONS first"
+        )
+    master = store.read_long("security_master")
+    out, rep = derive_delisting_reasons(store.read_long("corporate_actions"), master, window_days)
+    store.write_long("delisting_reasons", out, mode="replace", key=["id"])
+    return rep
+
+
 def derive_caps(
     close_raw: pd.DataFrame, daily: pd.DataFrame | None, sharesbas: pd.DataFrame | None
 ) -> pd.DataFrame:
@@ -1132,6 +1347,7 @@ class SyncReport:
     warnings: list[str] = field(default_factory=list)
     dry_run: bool = False
     seconds: float = 0.0
+    delisting_reasons: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         d = dataclasses.asdict(self)
@@ -1173,6 +1389,12 @@ class SyncReport:
                 lines.append(f"           note: {t.note}")
             for n, r in t.datasets.items():
                 lines.append(f"           -> {n} ({r:,d} rows)")
+        if self.delisting_reasons:
+            lines.append(
+                "  delisting_reasons: "
+                + ", ".join(f"{k} {v}" for k, v in self.delisting_reasons.items())
+                + "  (full table: qts data sharadar derive --store <store>)"
+            )
         for w in self.warnings:
             lines.append(f"  WARNING: {w}")
         return "\n".join(lines)
@@ -1354,6 +1576,13 @@ class _Sync:
             elif {"SEP", "DAILY", "SF1"} & set(order):
                 for n in ("derived:caps", "derived:fundamentals"):
                     self._stats(n).skipped, self._stats(n).note = True, "no raw table changed"
+            if self.store.exists("corporate_actions") and self.store.exists("security_master"):
+                # cheap, deterministic, always rebuilt (also when ACTIONS was skipped as unchanged)
+                out, dr = derive_delisting_reasons(
+                    self.store.read_long("corporate_actions"), self.store.read_long("security_master")
+                )
+                self.store.write_long("delisting_reasons", out, mode="replace", key=["id"])
+                self.report.delisting_reasons = dict(dr.by_reason)
             if not self.keep_staging:
                 shutil.rmtree(self.staging_root, ignore_errors=True)
         self.report.seconds = time.perf_counter() - t0

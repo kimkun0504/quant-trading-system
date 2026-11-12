@@ -18,9 +18,13 @@ Simulator semantics pinned here (``qts/backtest/simulator.py``, read 2026-11-04)
   ``md.delisting_dates`` says its last trading date is before ``t+1``, or (name
   not covered) when ``t+1`` is ``cfg.alpha.delisting_gap_days`` trading days
   after its last close; otherwise it is *halted*.
-* delisting: its return on ``t+1`` is
-  ``cfg.cost.delisting_haircut * sign(w)`` (default -0.30: a loss for longs
-  *and* shorts), the residual value ``x_liq = -w * (1 + haircut_ret)`` is
+* delisting: its return on ``t+1`` is the return **on the stock** of its
+  delisting reason (``md.delisting_reasons``; ``cfg.cost.delisting_return_<reason>``:
+  acquisition 0, performance -0.30, voluntary -0.10, unknown -0.30), so a long
+  earns ``w * r`` and a short gains when ``r < 0`` (scaled by
+  ``delisting_short_gain_haircut``); ``delisting_against_position=True`` is the
+  old rule ``r * sign(w)`` (a loss for longs *and* shorts).  The residual value
+  ``x_liq = -w * (1 + booked_ret)`` is
   booked as an extra trade on row ``t`` (counted in trades / turnover), priced
   by ``estimate(x_liq * nav_t, venue="continuous")`` with the **impact column
   zeroed** (spread + fees only), and the name's drifted weight is set to 0.
@@ -72,7 +76,9 @@ def _lag0_config() -> SystemConfig:
     return cfg
 
 
-def make_md(close: dict | None = None, delisting_dates: dict | None = None) -> MarketData:
+def make_md(
+    close: dict | None = None, delisting_dates: dict | None = None, reasons: dict | None = None
+) -> MarketData:
     close_df = pd.DataFrame(close or CLOSE, index=DATES)[list(TICKERS)]
     close_df.columns = TICKERS
     vol = pd.DataFrame(1e6, index=DATES, columns=TICKERS)
@@ -88,6 +94,7 @@ def make_md(close: dict | None = None, delisting_dates: dict | None = None) -> M
         market_cap=cap,
         industry=pd.Series(["X", "Y", "X"], index=TICKERS),
         delisting_dates=dd,
+        delisting_reasons=None if reasons is None else pd.Series(reasons, dtype=object),
     )
     md.validate()
     return md
@@ -170,10 +177,12 @@ def alpha_fn(t) -> AlphaOutput:
     return AlphaOutput(date=t, score=z, expected_return=z, horizon_days=20, half_life_days=60.0)
 
 
-def run(cost, targets, md=None, gap_days: int | None = None):
+def run(cost, targets, md=None, gap_days: int | None = None, overrides: dict | None = None):
     md = md or make_md()
     # mechanics test: trade at the signal close, solve every day
     cfg = SystemConfig().with_overrides({"execution.signal_lag_days": 0, "portfolio.rebalance_every_days": 1})
+    if overrides:
+        cfg = cfg.with_overrides(overrides)
     if gap_days is not None:
         cfg = cfg.with_overrides({"alpha.delisting_gap_days": gap_days})
     opt = PresetOptimizer(targets)
@@ -319,8 +328,8 @@ def test_delisting_long_haircut_and_liquidation_cost():
     close["C"][3] = close["C"][4] = np.nan
     cost = bps_model()
     res, opt, cfg = run(cost, TARGETS_CONST, make_md(close, {"C": DATES[2]}))
-    h = cfg.cost.delisting_haircut
-    assert h == -0.30
+    h = cfg.cost.delisting_return_unknown  # no reason on file -> "unknown"
+    assert h == -0.30 and cfg.cost.delisting_haircut is None
     w = np.array(W_LS)
 
     # d0, d1 exactly as in the constant-bps case (same targets on those days)
@@ -370,26 +379,170 @@ def test_delisting_long_haircut_and_liquidation_cost():
     (ev,) = res.diagnostics["delistings"]
     assert ev["date"] == DATES[3] and ev["ticker"] == "C"
     assert ev["weight"] == pytest.approx(0.25) and ev["haircut_return"] == pytest.approx(-0.30)
+    assert ev["reason"] == "unknown" and ev["side"] == "long" and ev["stock_return"] == pytest.approx(-0.30)
+    assert ev["pnl"] == pytest.approx(-0.075, abs=ATOL) and ev["pnl_usd"] == pytest.approx(-0.075 * nav2)
     assert ev["liquidation_usd"] == pytest.approx(0.175 * nav2, rel=NAV_RTOL)
     assert ev["cost_usd"] == pytest.approx(c2_liq, rel=NAV_RTOL)
     assert res.summary()["n_delistings"] == 1
     assert res.diagnostics["halts"] == [] and res.diagnostics["n_halted_name_days"] == 0
 
 
-def test_delisting_short_haircut_is_a_loss():
-    """B (short -.25) has no close on d3 and d4 (vendor last trading date d2): the
-    haircut is applied *against* the position's sign (r = -0.30 * sign(-.25) =
-    +0.30), i.e. a loss for the short."""
-    close = {k: list(v) for k, v in CLOSE.items()}
-    close["B"][3] = close["B"][4] = np.nan
-    res, opt, _ = run(bps_model(), TARGETS_CONST, make_md(close, {"B": DATES[2]}))
+def _through_d2():
+    """NAV and books up to the trade on d2 for TARGETS_CONST (bps cost model)."""
     w = np.array(W_LS)
     nav1 = NAV0 * 1.0625 - 825.0
     w_pre1 = np.array([0.55, -0.25, 0.2625]) * NAV0 / nav1
     c1 = 8e-4 * np.abs(w - w_pre1).sum() * nav1 + 1e-4 * 0.25 * nav1
     nav2 = nav1 * 0.925 - c1
     w_pre2 = np.array([0.45, -0.275, 0.25]) * nav1 / nav2
-    x2 = w - w_pre2
+    return w, nav2, w - w_pre2
+
+
+def _delist_on_d3(ticker: str, reason: str | None, overrides: dict | None = None):
+    """``ticker`` (C = long +.25, B = short -.25) has no close on d3 / d4 and the
+    vendor table gives d2 as its last trading date; ``reason`` is its delisting reason."""
+    close = {k: list(v) for k, v in CLOSE.items()}
+    close[ticker][3] = close[ticker][4] = np.nan
+    md = make_md(close, {ticker: DATES[2]}, None if reason is None else {ticker: reason})
+    return run(bps_model(), TARGETS_CONST, md, overrides=overrides)
+
+
+# (ticker, reason, config overrides, stock return, booked return, gross return of d2 -> d3)
+#   C is the long (+.25):  gross = .5*0 + (-.25)*(-.10) + .25*booked = .025 + .25*booked
+#   B is the short (-.25): gross = .5*0 + (-.25)*booked + .25*(+.10) = .025 - .25*booked
+DELISTING_CASES = [
+    # ---- long: w * r, whatever the reason
+    ("C", "acquisition", None, 0.00, 0.00, 0.025),  # deal closes at the last price: nothing lost
+    ("C", "performance", None, -0.30, -0.30, -0.05),  # .025 - .075
+    ("C", "voluntary", None, -0.10, -0.10, 0.0),  # .025 - .025
+    ("C", "unknown", None, -0.30, -0.30, -0.05),
+    ("C", None, None, -0.30, -0.30, -0.05),  # no reasons table at all -> unknown
+    # ---- short: the return is on the stock, so a negative one is a GAIN
+    ("B", "acquisition", None, 0.00, 0.00, 0.025),
+    ("B", "performance", None, -0.30, -0.30, 0.10),  # .025 + .075
+    ("B", "voluntary", None, -0.10, -0.10, 0.05),  # .025 + .025
+    ("B", "unknown", None, -0.30, -0.30, 0.10),
+    ("B", None, None, -0.30, -0.30, 0.10),
+    # ---- short-gain haircut: only a short's gain is scaled
+    ("B", "performance", {"cost.delisting_short_gain_haircut": 0.5}, -0.30, -0.15, 0.0625),  # .025 + .0375
+    (
+        "B",
+        "performance",
+        {"cost.delisting_short_gain_haircut": 0.0},
+        -0.30,
+        0.00,
+        0.025,
+    ),  # shorts get nothing
+    ("C", "performance", {"cost.delisting_short_gain_haircut": 0.0}, -0.30, -0.30, -0.05),  # long untouched
+    # a positive delisting return is a short's LOSS: never scaled
+    (
+        "B",
+        "acquisition",
+        {"cost.delisting_return_acquisition": 0.20, "cost.delisting_short_gain_haircut": 0.0},
+        0.20,
+        0.20,
+        -0.025,  # .025 - .05
+    ),
+    ("C", "acquisition", {"cost.delisting_return_acquisition": 0.20}, 0.20, 0.20, 0.075),
+    # ---- configured returns are read per reason
+    ("C", "voluntary", {"cost.delisting_return_voluntary": -0.50}, -0.50, -0.50, -0.10),
+    ("B", "unknown", {"cost.delisting_return_unknown": -1.0}, -1.0, -1.0, 0.275),  # stock goes to 0
+    # ---- escape hatch (pre-2026-11-12): against the position's sign, a loss on both sides
+    ("C", "performance", {"cost.delisting_against_position": True}, -0.30, -0.30, -0.05),
+    ("B", "performance", {"cost.delisting_against_position": True}, -0.30, 0.30, -0.05),  # .025 - .075
+    ("B", "acquisition", {"cost.delisting_against_position": True}, 0.00, 0.00, 0.025),
+    (  # the gain haircut plays no part in the old rule
+        "B",
+        None,
+        {"cost.delisting_against_position": True, "cost.delisting_short_gain_haircut": 0.0},
+        -0.30,
+        0.30,
+        -0.05,
+    ),
+]
+
+
+@pytest.mark.parametrize(("ticker", "reason", "overrides", "stock_r", "booked", "gross"), DELISTING_CASES)
+def test_delisting_return_by_reason_and_side(ticker, reason, overrides, stock_r, booked, gross):
+    res, opt, _ = _delist_on_d3(ticker, reason, overrides)
+    w, nav2, x2 = _through_d2()
+    j = list(TICKERS).index(ticker)
+    w_j = w[j]  # +.25 (C) or -.25 (B)
+    # residual value closed out on decision row d2: x_liq = -w * (1 + booked)
+    x_liq = np.zeros(3)
+    x_liq[j] = -w_j * (1.0 + booked)
+    c2 = 8e-4 * np.abs(x2).sum() * nav2 + 1e-4 * 0.25 * nav2 + 6e-4 * abs(x_liq[j]) * nav2
+    nav3 = nav2 * (1.0 + gross) - c2
+
+    assert res.returns["gross"].iloc[2] == pytest.approx(gross, abs=ATOL)
+    np.testing.assert_allclose(res.trades.iloc[2].to_numpy(), x2 + x_liq, atol=ATOL, rtol=0)
+    assert res.nav.iloc[3] == pytest.approx(nav3, rel=NAV_RTOL)
+    assert res.weights.iloc[3, j] == 0.0 and opt.calls[3]["no_trade"] == [ticker]
+    (ev,) = res.diagnostics["delistings"]
+    assert ev["ticker"] == ticker and ev["date"] == DATES[3]
+    assert ev["reason"] == (reason or "unknown")
+    assert ev["side"] == ("long" if w_j > 0 else "short")
+    assert ev["stock_return"] == pytest.approx(stock_r) and ev["haircut_return"] == pytest.approx(booked)
+    assert ev["pnl"] == pytest.approx(w_j * booked, abs=ATOL)
+    assert ev["liquidation_usd"] == pytest.approx(abs(x_liq[j]) * nav2, rel=NAV_RTOL)
+    # diagnostics: counts and P&L by reason and side; summary field
+    summ = res.diagnostics["delisting_summary"]
+    slot = summ["by_reason"][reason or "unknown"]
+    side = "long" if w_j > 0 else "short"
+    other = "short" if side == "long" else "long"
+    assert summ["n"] == 1 and slot["n"] == 1 and slot[side]["n"] == 1 and slot[other]["n"] == 0
+    assert slot[side]["pnl"] == pytest.approx(w_j * booked, abs=ATOL)
+    assert summ["pnl"] == pytest.approx(w_j * booked, abs=ATOL)
+    assert summ["pnl_ann"] == pytest.approx(w_j * booked * 252 / 4, abs=1e-9)  # 4 return days
+    assert res.summary()["delisting_pnl_ann"] == pytest.approx(w_j * booked * 252 / 4, abs=1e-9)
+    assert sum(v["n"] for k, v in summ["by_reason"].items() if k != (reason or "unknown")) == 0
+
+
+def test_delisting_short_gains_on_a_negative_return_full_path():
+    """B (short -.25) has no close on d3 and d4 (vendor last trading date d2) and
+    no reason on file: the stock earns -0.30, so the short GAINS .25 * .30 = .075
+    and buys back the remaining 70 % of its value."""
+    res, opt, _ = _delist_on_d3("B", None)
+    _, nav2, x2 = _through_d2()
+    nav1 = NAV0 * 1.0625 - 825.0
+    # gross d3 = .5*0 + (-.25)*(-.30) + .25*(+.10) = +.075 + .025 = +.10
+    # x_liq_B = -(-.25) * (1 - .30) = +.175 (buy to cover at 70 % of the last price)
+    x_liq = np.array([0.0, 0.175, 0.0])
+    c2 = 8e-4 * np.abs(x2).sum() * nav2 + 1e-4 * 0.25 * nav2 + 6e-4 * 0.175 * nav2
+    nav3 = nav2 * 1.10 - c2
+    w_pre3 = np.array([0.5, 0.0, 0.25 * 1.1]) * nav2 / nav3
+    w3 = np.array([0.5, 0.0, 0.25])
+    x3 = w3 - w_pre3
+    c3 = 8e-4 * np.abs(x3).sum() * nav3  # no short left -> no borrow on d3
+    nav4 = nav3 * (1 + 0.5 * 0.10) - c3
+
+    assert res.returns["gross"].iloc[2] == pytest.approx(0.10, abs=ATOL)
+    np.testing.assert_allclose(res.trades.iloc[2].to_numpy(), x2 + x_liq, atol=ATOL, rtol=0)
+    assert res.costs["borrow"].iloc[3] == 0.0
+    np.testing.assert_allclose(res.nav.to_numpy(), [NAV0, nav1, nav2, nav3, nav4], rtol=NAV_RTOL, atol=0)
+    (ev,) = res.diagnostics["delistings"]
+    assert ev["ticker"] == "B" and ev["haircut_return"] == pytest.approx(-0.30)
+    assert ev["pnl"] == pytest.approx(0.075, abs=ATOL) and ev["side"] == "short"
+    assert ev["liquidation_usd"] == pytest.approx(0.175 * nav2, rel=NAV_RTOL)
+    assert opt.calls[3]["no_trade"] == ["B"]
+
+
+def test_delisting_escape_hatch_reproduces_the_old_both_sides_haircut():
+    """``delisting_against_position=True`` with every return at -0.30 is the
+    pre-2026-11-12 accounting: r = -0.30 * sign(-.25) = +0.30, a loss for the
+    short.  The numbers below are the old test's, unchanged."""
+    res, opt, cfg = _delist_on_d3(
+        "B",
+        "acquisition",
+        {
+            "cost.delisting_against_position": True,
+            "cost.delisting_return_acquisition": -0.30,
+            "cost.delisting_return_voluntary": -0.30,
+        },
+    )
+    assert set(cfg.cost.delisting_returns().values()) == {-0.30}
+    _, nav2, x2 = _through_d2()
+    nav1 = NAV0 * 1.0625 - 825.0
     # gross d3 = .5*0 + (-.25)*(+.30) + .25*(+.10) = -.075 + .025 = -.05
     # x_liq_B = -(-.25) * (1 + .30) = +.325 (buy to cover at the haircut price)
     x_liq = np.array([0.0, 0.325, 0.0])
@@ -407,8 +560,38 @@ def test_delisting_short_haircut_is_a_loss():
     np.testing.assert_allclose(res.nav.to_numpy(), [NAV0, nav1, nav2, nav3, nav4], rtol=NAV_RTOL, atol=0)
     (ev,) = res.diagnostics["delistings"]
     assert ev["ticker"] == "B" and ev["haircut_return"] == pytest.approx(0.30)
+    assert ev["pnl"] == pytest.approx(-0.075, abs=ATOL)
     assert ev["liquidation_usd"] == pytest.approx(0.325 * nav2, rel=NAV_RTOL)
     assert opt.calls[3]["no_trade"] == ["B"]
+
+
+def test_deprecated_delisting_haircut_maps_to_performance_and_unknown():
+    from qts.core.config import CostConfig
+
+    with pytest.warns(DeprecationWarning, match="delisting_haircut"):
+        c = CostConfig(delisting_haircut=-0.5)
+    assert c.delisting_haircut is None  # consumed: the config round-trips without it
+    assert c.delisting_returns() == {
+        "acquisition": 0.0,
+        "performance": -0.5,
+        "voluntary": -0.10,
+        "unknown": -0.5,
+    }
+    assert c.delisting_against_position is False  # the old key does not bring the old rule back
+    # an old config file / run directory still loads
+    with pytest.warns(DeprecationWarning):
+        old = SystemConfig.from_dict({"cost": {"delisting_haircut": -0.3}})
+    assert old.cost.delisting_return_unknown == -0.3 and old.hash() == SystemConfig().hash()
+    assert SystemConfig.from_dict(SystemConfig().to_dict()).hash() == SystemConfig().hash()
+    with pytest.warns(DeprecationWarning):
+        via_set = SystemConfig().with_overrides({"cost.delisting_haircut": -0.4})
+    assert via_set.cost.delisting_return_performance == -0.4
+    with pytest.raises(ValueError, match="delisting_haircut"), pytest.warns(DeprecationWarning):
+        CostConfig(delisting_haircut=-2.0)
+    with pytest.raises(ValueError, match="delisting_short_gain_haircut"):
+        CostConfig(delisting_short_gain_haircut=1.5)
+    with pytest.raises(ValueError, match="delisting_against_position"):
+        CostConfig(delisting_against_position="yes")  # type: ignore[arg-type]
 
 
 # ----------------------------------------------------------------------------- halts

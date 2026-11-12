@@ -65,7 +65,7 @@ half-life-weighted alpha) when ``PortfolioConfig.use_gp_shrink`` is true.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -195,8 +195,9 @@ class AlphaModel:
     Every knob lives in :class:`~qts.core.config.AlphaConfig`; the keyword
     arguments ``composite_weight``, ``dynamic_weights`` and ``ic_window`` are
     optional per-instance overrides (``None`` -> config value).  ``delisting_return``
-    defaults to ``CostConfig().delisting_haircut`` (the pipeline passes
-    ``cfg.cost.delisting_haircut``).
+    (one float, or a reason -> return map) defaults to
+    ``CostConfig().delisting_returns()`` (the pipeline passes
+    ``cfg.cost.delisting_returns()``).
     """
 
     def __init__(
@@ -207,7 +208,7 @@ class AlphaModel:
         use_ml: bool = True,
         dynamic_weights: bool | None = None,
         ic_window: int | None = None,
-        delisting_return: float | None = None,
+        delisting_return: float | Mapping[str, float] | None = None,
         signal_lag_days: int = 0,
         bad_price_caps: tuple[float, float] | None = DEFAULT_BAD_PRICE_CAPS,
     ):
@@ -219,10 +220,16 @@ class AlphaModel:
         #: decision date s is the return close_{s+L} -> close_{s+L+h} (what the
         #: book trading the signal earns); purge and IC windows grow by L.
         self.signal_lag_days = int(signal_lag_days)
-        #: label haircut for names delisting inside the forward window; ``None`` ->
-        #: ``CostConfig().delisting_haircut`` (single source; pass 0.0 to disable)
-        self.delisting_return = float(
-            CostConfig().delisting_haircut if delisting_return is None else delisting_return
+        #: label return of names delisting inside the forward window: reason ->
+        #: return on the stock (resolved through ``md.delisting_reasons``) or one
+        #: float for all; ``None`` -> ``CostConfig().delisting_returns()`` (single
+        #: source; pass 0.0 to disable)
+        self.delisting_return: float | dict[str, float] = (
+            CostConfig().delisting_returns()
+            if delisting_return is None
+            else {str(k): float(v) for k, v in delisting_return.items()}
+            if isinstance(delisting_return, Mapping)
+            else float(delisting_return)
         )
         self.composite_weight = float(
             self.cfg.composite_weight if composite_weight is None else composite_weight

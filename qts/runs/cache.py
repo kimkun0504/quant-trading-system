@@ -14,16 +14,49 @@ Both are pure functions of (input data, config sections, code, library
 versions), so the key is a SHA-256 over exactly those inputs
 (:meth:`StageCache.key`):
 
-* the **full** SHA-256 of the input ``MarketData`` (every panel, index and
+* the **full** SHA-256 of the input ``MarketData`` panels (every panel, index and
   column labels, the eligibility panel -- :func:`qts.core.manifest.hash_market_data`)
-  plus its first / last date and shape (the *as-of span* of the snapshot);
+  plus its first / last date and shape (the *as-of span* of the snapshot).
+  Reference tables that only one stage reads are left out of this panel hash
+  (:data:`STAGE_EXCLUDED_DATA`: ``delisting_reasons``) and keyed on the stage
+  that reads them (``alpha_fit``: the labels), so adding or re-deriving such a
+  table does not invalidate the risk fit;
 * the hash of every config section the stage reads (``universe`` + ``risk``
-  for ``risk_fit``; additionally ``alpha``, the delisting haircut, the signal
-  lag and the pipeline's constructor knobs for ``alpha_fit``, chained on the
-  ``risk_fit`` key because labels are residualised on the risk model);
-* the code version: SHA-256 of every ``qts/**/*.py`` source file (so an
+  for ``risk_fit``; additionally ``alpha``, the delisting returns by reason and
+  the delisting reasons, the signal lag and the pipeline's constructor knobs
+  for ``alpha_fit``, chained on the ``risk_fit`` key because labels are
+  residualised on the risk model);
+* the code version **of the packages the stage can import**
+  (:data:`STAGE_CODE_PACKAGES`): SHA-256 of their ``*.py`` files (so an
   uncommitted edit invalidates the cache, unlike the git sha) and the versions
   of the numerical libraries (:data:`qts.core.manifest.TRACKED_LIBRARIES`).
+
+Code component per stage
+------------------------
+Until 2026-11-12 the code component hashed every ``qts/**/*.py`` file, so an
+edit to the simulator or the optimizer forced a refit of both stages (25 minutes
+on the real universe) although neither can change a fit.  It is now the hash of
+the packages in the stage's import closure, checked by
+``tests/test_stage_cache.py::test_stage_packages_cover_the_import_graph``
+(static scan of every ``import`` in those packages):
+
+* ``risk_fit``  -> ``qts/core``, ``qts/data``, ``qts/risk``
+  (``qts.risk`` imports ``qts.core`` and ``qts.data``; ``qts.data`` imports ``qts.core``);
+* ``alpha_fit`` -> the same three + ``qts/alpha`` (``qts.alpha`` imports only
+  ``qts.core``; the risk packages are included because the labels are
+  residualised on the fitted risk model and the universe mask comes from ``qts.data``).
+
+Top-level modules of the package (``qts/__init__.py``) are always included.
+What is **not** in the code hash: ``qts/pipeline.py`` as a whole (it also holds
+the evaluation and reporting code and changes with every simulator-side
+feature).  The part of it that builds the two fits is covered separately: the
+pipeline adds the source text of its fit methods to the key parts
+(``fit_glue`` in ``ResearchPipeline._cache_parts``).  An ML factory outside the
+hashed packages is identified by ``callable_identity`` (module + qualname), as before.
+Consequence to remember: a change in ``qts/backtest``, ``qts/portfolio``,
+``qts/tcost``, ``qts/execution``, ``qts/validation``, ``qts/runs`` or the CLI
+never invalidates a fit; delete ``<runs_root>/_cache`` if you ever make one of
+those packages an input of a fit without adding it to :data:`STAGE_CODE_PACKAGES`.
 
 Point-in-time safety
 --------------------
@@ -75,27 +108,58 @@ from typing import Any
 log = logging.getLogger("qts.runs.cache")
 
 #: Bump when the entry layout or the key recipe changes (old entries become misses).
-CACHE_SCHEMA_VERSION = 1
+#: 2 (2026-11-12): per-stage code hash, per-stage data hash, fit-glue part.
+CACHE_SCHEMA_VERSION = 2
 #: Stages ``ResearchPipeline`` knows how to cache.
 CACHEABLE_STAGES = ("risk_fit", "alpha_fit")
 #: Default cache directory name under the runs root.
 DEFAULT_CACHE_DIRNAME = "_cache"
 
 
-@lru_cache(maxsize=1)
-def source_hash() -> str:
-    """SHA-256 over the relative path and bytes of every ``*.py`` file of the
-    ``qts`` package (sorted).  Changes with any code edit, committed or not."""
-    root = Path(__file__).resolve().parents[1]  # .../qts
+#: Sub-packages of ``qts`` whose source enters each stage's key (the stage's
+#: import closure; module docstring "Code component per stage").
+STAGE_CODE_PACKAGES: dict[str, tuple[str, ...]] = {
+    "risk_fit": ("core", "data", "risk"),
+    "alpha_fit": ("core", "data", "risk", "alpha"),
+}
+#: ``MarketData`` fields left out of the panel hash shared by every stage and
+#: keyed on the stage that reads them (``ResearchPipeline._cache_parts``).
+STAGE_EXCLUDED_DATA: frozenset[str] = frozenset({"delisting_reasons"})
+
+
+def package_root() -> Path:
+    """Directory of the ``qts`` package (a function so tests can point it elsewhere)."""
+    return Path(__file__).resolve().parents[1]
+
+
+def _hash_files(root: Path, files: list[Path]) -> str:
     h = hashlib.sha256()
-    for p in sorted(root.rglob("*.py")):
-        if "__pycache__" in p.parts:
-            continue
-        h.update(str(p.relative_to(root)).encode())
+    for p in sorted(files):
+        h.update(p.relative_to(root).as_posix().encode())
         h.update(b"\0")
         h.update(p.read_bytes())
         h.update(b"\0")
     return h.hexdigest()
+
+
+def _source_hash_of(root: Path, packages: tuple[str, ...] | None) -> str:
+    if packages is None:
+        files = [p for p in root.rglob("*.py") if "__pycache__" not in p.parts]
+    else:
+        files = [p for p in root.glob("__init__.py")]
+        for pkg in packages:
+            files += [p for p in (root / pkg).rglob("*.py") if "__pycache__" not in p.parts]
+    return _hash_files(root, files)
+
+
+@lru_cache(maxsize=8)
+def source_hash(stage: str | None = None) -> str:
+    """SHA-256 over the relative path and bytes of the ``*.py`` files a stage can
+    depend on: the packages of :data:`STAGE_CODE_PACKAGES` ``[stage]`` plus
+    ``qts/__init__.py``.  ``stage=None`` (or a stage without an entry): every
+    ``*.py`` file of the ``qts`` package.  Changes with any edit to those
+    files, committed or not; cached per process."""
+    return _source_hash_of(package_root(), STAGE_CODE_PACKAGES.get(stage) if stage else None)
 
 
 @lru_cache(maxsize=1)
@@ -105,9 +169,10 @@ def _library_versions() -> tuple[tuple[str, str], ...]:
     return tuple(sorted(library_versions().items()))
 
 
-def code_identity() -> dict[str, Any]:
-    """Code part of every key: package source hash + numerical library versions."""
-    return {"source": source_hash(), "libraries": dict(_library_versions())}
+def code_identity(stage: str | None = None) -> dict[str, Any]:
+    """Code part of a stage's key: source hash of the stage's packages
+    (:func:`source_hash`) + numerical library versions."""
+    return {"source": source_hash(stage), "libraries": dict(_library_versions())}
 
 
 def _canonical(obj: Any) -> str:
@@ -156,7 +221,7 @@ class StageCache:
         payload = {
             "schema": CACHE_SCHEMA_VERSION,
             "stage": stage,
-            "code": code_identity(),
+            "code": code_identity(stage),
             "parts": dict(parts),
         }
         return hashlib.sha256(_canonical(payload).encode()).hexdigest()
@@ -267,6 +332,8 @@ __all__ = [
     "CACHEABLE_STAGES",
     "CACHE_SCHEMA_VERSION",
     "DEFAULT_CACHE_DIRNAME",
+    "STAGE_CODE_PACKAGES",
+    "STAGE_EXCLUDED_DATA",
     "StageCache",
     "code_identity",
     "source_hash",

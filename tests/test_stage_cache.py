@@ -185,8 +185,162 @@ def test_key_changes_with_the_code(monkeypatch):
     import qts.runs.cache as cache_mod
 
     k = StageCache.key("risk_fit", {"a": 1})
-    monkeypatch.setattr(cache_mod, "source_hash", lambda: "0" * 64)
+    monkeypatch.setattr(cache_mod, "source_hash", lambda stage=None: "0" * 64)
     assert StageCache.key("risk_fit", {"a": 1}) != k
+
+
+# --------------------------------------------------------------------------- per-stage code hash
+@pytest.fixture
+def qts_copy(tmp_path, monkeypatch):
+    """A copy of the ``qts`` sources the cache hashes instead of the real package."""
+    import shutil
+
+    import qts.runs.cache as cache_mod
+
+    root = tmp_path / "qts"
+    shutil.copytree(
+        cache_mod.package_root(), root, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.typed")
+    )
+    monkeypatch.setattr(cache_mod, "package_root", lambda: root)
+    cache_mod.source_hash.cache_clear()
+    yield root
+    cache_mod.source_hash.cache_clear()
+
+
+def _keys() -> tuple[str, str]:
+    import qts.runs.cache as cache_mod
+
+    cache_mod.source_hash.cache_clear()  # the hash is cached per process; the files just changed
+    return StageCache.key("risk_fit", {"a": 1}), StageCache.key("alpha_fit", {"a": 1})
+
+
+def _touch(path):
+    path.write_text(path.read_text() + "\n# edited\n")
+
+
+def test_stage_keys_follow_only_the_packages_the_stage_can_import(qts_copy):
+    risk0, alpha0 = _keys()
+    assert (risk0, alpha0) == _keys()  # stable
+    # simulator / optimizer / cost model / execution / validation / reporting / CLI / pipeline
+    # glue outside the fit methods: neither fit can depend on them
+    for rel in (
+        "backtest/simulator.py",
+        "backtest/result.py",
+        "portfolio/vol_target.py",
+        "portfolio/optimizer/__init__.py",
+        "tcost/model.py",
+        "execution/router.py",
+        "validation/hurdles.py",
+        "runs/report.py",
+        "runs/cache.py",
+        "cli.py",
+        "pipeline.py",
+    ):
+        _touch(qts_copy / rel)
+        assert _keys() == (risk0, alpha0), rel
+    (qts_copy / "backtest" / "new_module.py").write_text("X = 1\n")
+    assert _keys() == (risk0, alpha0)
+    # the alpha package: the alpha fit only
+    _touch(qts_copy / "alpha" / "targets.py")
+    risk1, alpha1 = _keys()
+    assert risk1 == risk0 and alpha1 != alpha0
+    # the risk package: both (labels are residualised on the risk model)
+    _touch(qts_copy / "risk" / "covariance.py")
+    risk2, alpha2 = _keys()
+    assert risk2 != risk1 and alpha2 != alpha1
+    # data and core are shared by both
+    for rel in ("data/universe.py", "core/types.py"):
+        before = _keys()
+        _touch(qts_copy / rel)
+        after = _keys()
+        assert after[0] != before[0] and after[1] != before[1], rel
+    # a new file in a hashed package counts; the package __init__ counts for both
+    before = _keys()
+    (qts_copy / "alpha" / "extra_feature.py").write_text("Y = 2\n")
+    after = _keys()
+    assert after[0] == before[0] and after[1] != before[1]
+    _touch(qts_copy / "__init__.py")
+    assert _keys()[0] != after[0] and _keys()[1] != after[1]
+
+
+def test_stage_packages_cover_the_import_graph():
+    """Static check of ``STAGE_CODE_PACKAGES``: every ``qts.<pkg>`` a stage's
+    packages import (absolute or relative, at any nesting level, including inside
+    functions) is itself one of the stage's packages -- so the code hash covers
+    the stage's whole import closure."""
+    import ast
+
+    import qts.runs.cache as cache_mod
+
+    root = cache_mod.package_root()
+
+    def imported_packages(pkg: str) -> set[str]:
+        out: set[str] = set()
+        for f in (root / pkg).rglob("*.py"):
+            parts = f.relative_to(root).parts  # e.g. ("risk", "model.py")
+            for node in ast.walk(ast.parse(f.read_text())):
+                mods: list[str] = []
+                if isinstance(node, ast.Import):
+                    mods = [a.name for a in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    if node.level:  # relative: resolve against the file's package
+                        base = ["qts", *parts[:-1]]
+                        base = base[: len(base) - (node.level - 1)]
+                        if node.module:
+                            mods = [".".join([*base, node.module])]
+                        else:
+                            mods = [".".join([*base, a.name]) for a in node.names]
+                    elif node.module:
+                        mods = [node.module]
+                        if node.module == "qts":
+                            mods = [f"qts.{a.name}" for a in node.names]
+                for m in mods:
+                    seg = m.split(".")
+                    if seg[0] == "qts" and len(seg) > 1:
+                        out.add(seg[1])
+        return out
+
+    for stage, pkgs in cache_mod.STAGE_CODE_PACKAGES.items():
+        for pkg in pkgs:
+            assert (root / pkg).is_dir(), pkg
+            missing = imported_packages(pkg) - set(pkgs)
+            assert not missing, f"{stage}: qts.{pkg} imports qts.{sorted(missing)}, not in its code hash"
+    assert set(cache_mod.STAGE_CODE_PACKAGES) == set(cache_mod.CACHEABLE_STAGES)
+    assert set(cache_mod.STAGE_CODE_PACKAGES["risk_fit"]) < set(cache_mod.STAGE_CODE_PACKAGES["alpha_fit"])
+    assert len(source_hash("risk_fit")) == 64 and source_hash("risk_fit") != source_hash("alpha_fit")
+    assert source_hash() != source_hash("alpha_fit")  # None = the whole package
+
+
+def test_delisting_inputs_key_the_alpha_fit_only(market, tmp_path):
+    """Delisting reasons and the per-reason returns change the labels (alpha fit),
+    never the risk fit; the simulator-side knobs change neither."""
+    p0, r0 = _run(market, _cfg(tmp_path))
+    assert p0.cache_info_ == {"risk_fit": "stored", "alpha_fit": "stored"}
+    # booking knobs of the simulator: both fits are reused
+    p, _ = _run(
+        market,
+        _cfg(tmp_path, **{"cost.delisting_against_position": True, "cost.delisting_short_gain_haircut": 0.0}),
+    )
+    assert p.cache_info_ == {"risk_fit": "hit", "alpha_fit": "hit"}
+    # a per-reason return changes the labels
+    p, _ = _run(market, _cfg(tmp_path, **{"cost.delisting_return_unknown": -0.5}))
+    assert p.cache_info_ == {"risk_fit": "hit", "alpha_fit": "stored"}
+    # adding the reasons table (what `qts data sharadar derive` does to a store): the
+    # panel hash, hence the risk key, is unchanged; the alpha fit is rebuilt
+    reasons = pd.Series("acquisition", index=market.tickers[:5], dtype=object)
+    with_reasons = dataclasses.replace(market, delisting_reasons=reasons)
+    p1, r1 = _run(with_reasons, _cfg(tmp_path))
+    assert p1.cache_info_ == {"risk_fit": "hit", "alpha_fit": "stored"}
+    assert r1.data_hash != r0.data_hash  # the manifest's data hash does cover the table
+    from qts.pipeline import data_hash_of
+
+    assert r1.data_hash == data_hash_of(with_reasons) and r0.data_hash == data_hash_of(market)
+    p2, _ = _run(with_reasons, _cfg(tmp_path))
+    assert p2.cache_info_ == {"risk_fit": "hit", "alpha_fit": "hit"}
+    # other reasons -> other labels
+    other = dataclasses.replace(market, delisting_reasons=reasons.replace("acquisition", "performance"))
+    p3, _ = _run(other, _cfg(tmp_path))
+    assert p3.cache_info_ == {"risk_fit": "hit", "alpha_fit": "stored"}
 
 
 def test_references_are_reattached_not_pickled(tmp_path):
