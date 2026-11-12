@@ -434,6 +434,61 @@ run directory: runs/20261105T072821098301Z_2d9f80cd
 
 Pipeline notes (any warning the evaluation raised, including the suspect-Sharpe note), seconds per stage, and where the run was written. The backtest dominates: one optimiser solve per day, several when the γ search runs.
 
+## When IC and P&L disagree
+
+A run can show a clean signal (rank IC with a Newey-West t above 5, positive in every fold) and still earn nothing: the first clean real-data run had an annualised ICIR of 1.2 and a gross Sharpe of 0.2, with turnover five times what a 60-day signal needs. `scripts/attribute_run.py` answers *where the IC went* from the run directory and the fitted models, without re-optimising or tuning anything:
+
+```bash
+python scripts/attribute_run.py --store data/store --start 2000-01-01 \
+    --max-names 3000 --min-mcap-ever 3e8 --cache --ml \
+    --set alpha.horizon_days=60 --run runs/<run_id>
+python scripts/attribute_run.py --synthetic      # builds a 250-day run in a temp dir
+```
+
+Pass the **same data and config flags as the run** (`--set` uses the `qts run` parser, so the stage cache is hit and the scores and risk model are the ones the run traded; a config-hash mismatch with the run's manifest is printed as a warning). Options: `--risk-dates` (solves sampled for the ex-ante variance split, default 60), `--cost-every` (trades re-priced on every k-th day, default 5), `--autocorr-every` (default 2). A few minutes after a cached fit. Three self-checks are printed and should read 1.000 or close to it: the reconciliation of `sum w r` with the recorded gross return (the gap is delisting haircuts), the recomputed against the recorded ex-ante vol, and the re-priced against the recorded trading cost.
+
+**Table 1: signal → ideal portfolios.** Paper books built every day from the combined score alone, traded with the run's signal lag, gross of costs, no optimizer, no caps, drift ignored, delisting haircuts not applied. Read down the rows: (a) rank long/short → (b) industry-neutral → (c) also neutral to beta and the risk-only styles → (d) the same with `w ∝ z/σ`. Row (c) is the book the optimizer is *trying* to hold, so its Sharpe is the ceiling for the realised book before costs.
+
+- (a) high and (c) low: the raw score's IC was a style or industry bet that the neutralisation removes; the label is residualised on the same factors, so this should not happen, and if it does the residualisation and the neutral set have drifted apart.
+- (c) low although the IC is high: IC is an equal-weighted rank statistic over ~1,000 names and 60-day returns; a daily-rebalanced portfolio earns it only if the names with the weight carry it. Rows (e) and (f) say where it lives: cap-weighted decile far below equal-weighted, or the small tercile far above the large one, means the signal is in small names.
+- (c) well above the realised book's gross Sharpe: the signal is there and the construction loses it (tables 2 and 3).
+- The last three rows are the slow-trading test. If the 20-day EWMA score or the 5- / 21-day sampled score keeps most of (c)'s Sharpe at a fraction of the turnover, the daily changes of the score are noise and the book should trade on a smoothed signal.
+- `to/day %NAV@10%` is the two-sided turnover each book needs at 10 % vol; `hold d` is the report card's effective holding period. The realised book is printed in the same units at the bottom.
+
+**Table 2: realised book attribution.** Accounting splits of the book the run held.
+
+- *Long vs short*: side P&L minus side exposure × the equal-weight universe return. A short side that loses its excess is a borrow / crowding / small-cap-short problem, not a signal problem.
+- *By year*, with the ideal book (c) next to it: years where (c) made money and the book did not point at construction; years where both lost point at the signal.
+- *By size tercile*: compare `P&L / gross` with rows (f) of table 1. A signal that works in small names and a book whose gross sits in large ones (position and ADV caps push it there) cannot earn the IC.
+- *Factor attribution*: `w_t' B_t f_{t+1}` per factor with the fundamental model's factor returns; `specific` is the remainder (it also carries the hybrid model's statistical factors and delisting haircuts). Alpha should arrive as `specific` and as the alpha-theme styles (momentum, value, quality, investment, short interest); P&L or variance in market, industry or the risk-only styles is unintended.
+- *Exposures vs bands*: mean exposure, and the share of days within 2 % of the band. A risk-only style pinned at its band on most days means the score still loads on it and the optimizer leans against the constraint every day.
+- *Correlations*: the book against ideal (c) (below ~0.5 means the optimizer holds a different portfolio from the one the score describes), the market and every factor return; the last block is ideal (c) against the same factor returns.
+
+**Table 3: risk-forecast gap.** Realised against ex-ante vol by year, then the ex-ante variance split (factor groups, specific, statistical, alignment; averaged over the sampled solves) next to the realised split from table 2's attribution. The row whose `realised / ex-ante vol` is far above 1 is where the forecast is short. The closing lines test the alignment hypothesis directly: the risk model's forecast for the ideal book (c) against its realised vol, and the regression of the book (and of its `specific` piece) on (c). If the model under-forecasts (c) itself and the book's specific piece has a large R² on (c), the missing common risk is the alpha direction: the names the score likes move together, the diagonal specific model cannot see it, and the alignment term (`risk.alignment_nu_scale`, → **Recalibrating ν and b**) is too small. When the vol target is capped on every solve the under-forecast also means the book runs below its intended risk *and* is less diversified than the optimizer believes.
+
+**Table 4: turnover anatomy.** Why the book trades more than the horizon needs.
+
+- *(a) Score persistence*: rank autocorrelation of the combined score and of each sleeve at 1 / 5 / 21 / 63 days, and lag 1 on ML refit days against other days. A 60-day signal should have ρ₁ near 0.99; a rank-weighted book turns over about √(2(1 − ρ₁)) of its gross per day from the score alone (ρ₁ = 0.98 → 20 % of gross per day). A sleeve with a much lower ρ₁, or a drop on refit days, names the source.
+- *(b) Gamma*: the spread of the day-to-day change of the risk aversion the vol-target search picked, and turnover on the days it moved more than 10 %.
+- *(c)(d) What the trades are*: forced exits of names that left the universe, trades that undo drift, proportional re-scaling of the whole book (what a gamma or gross change produces) and the part orthogonal to the book (re-ranking). The rows overlap; read them as upper bounds.
+- *Netting*: the turnover the same sequence of books would need if traded every 5 or 21 days. `vs daily` near 1/√k means the daily trades are mostly reversed within k days (noise in the target); near 1 means a persistent trend that slower trading would not save.
+- Small trades (below 5 bp of NAV), turnover by size tercile, and a standardised regression of daily turnover on its candidate drivers.
+
+**Table 5: cost reality check.** Cost by kind in bp/day, % of NAV per year and bp per side; the breakeven cost per side (gross after borrow over turnover) against the cost paid; and the cost per side by size tercile, re-priced with the run's cost model. If the gross P&L is thin, no cost assumption rescues the run: the fix is in tables 1–4.
+
+What each outcome points to:
+
+| Finding | Next step |
+|---|---|
+| Table 1 (c) is itself weak; equal-weighted decile and small tercile carry it | the signal is a small-cap effect: evaluate IC cap-weighted / by tercile, train with liquidity-aware sample weights, or accept a smaller book |
+| Short side loses its excess (table 2) | check borrow cost and short-side IC; consider asymmetric sizing |
+| (c) is good, book correlation with (c) is low, risk-only styles sit at their bands | construction loses it: residualise the *score* (not only the label) on the neutral set, then re-measure the transfer coefficient with `scripts/diagnose_constraints.py` |
+| (c) is good, gross sits in the large tercile where (f) is weak | position / ADV caps move the book away from the signal: relaxation solves in `scripts/diagnose_constraints.py` |
+| Risk model under-forecasts ideal (c); `specific` loads on (c) | alpha-factor risk is unmodelled: recalibrate ν on real data (`scripts/calibrate_alignment_nu.py`) |
+| Low ρ₁ of the ML sleeve or on refit days; EWMA / 5-day rows keep the Sharpe | score noise: smooth the score or blend refits, lengthen the trade horizon |
+| Turnover concentrated on gamma-jump days; re-scaling share high | gamma jitter: damp the vol-target search (smooth γ, or a no-trade band around the previous scale) |
+| `vs daily` near 1/√k, many sub-5 bp trades | churn: raise trade aversion / add a minimum trade size |
+
 ## The QTS Workbench: API and UI
 
 ### Starting it

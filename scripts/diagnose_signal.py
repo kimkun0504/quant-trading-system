@@ -13,7 +13,7 @@ prints, without running the backtest:
 Usage (same data flags as ``qts run``)::
 
     python scripts/diagnose_signal.py --store data/store --start 2000-01-01 \
-        --max-names 3000 --min-mcap-ever 3e8 --cache
+        --max-names 3000 --min-mcap-ever 3e8 --cache [--ml --set alpha.horizon_days=60]
     python scripts/diagnose_signal.py --synthetic            # smoke test
 """
 
@@ -58,13 +58,27 @@ def add_data_args(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--cache", action="store_true")
     ap.add_argument("--runs-root", default="runs")
     ap.add_argument("--config")
+    ap.add_argument(
+        "--set",
+        dest="set_overrides",
+        action="append",
+        metavar="KEY=VALUE",
+        default=None,
+        help="dotted config override applied after --config (repeatable), exactly as "
+        "`qts run --set` (same parser, so the stage-cache key matches the run)",
+    )
     ap.add_argument("--ml", action="store_true")
 
 
 def load_config(a: argparse.Namespace) -> SystemConfig:
-    """``--config`` (or defaults) with the stage cache switched on by ``--cache``,
-    exactly as ``qts run`` does."""
+    """``--config`` (or defaults), then every ``--set KEY=VALUE`` (``qts.cli``'s own
+    parser: YAML scalars, unknown keys / rejected values raise
+    ``qts.cli.ConfigOverrideError``), with the stage cache switched on by
+    ``--cache``, exactly as ``qts run`` does."""
+    from qts.cli import _apply_set_overrides
+
     cfg = SystemConfig.from_yaml(a.config) if a.config else SystemConfig()
+    cfg = _apply_set_overrides(cfg, getattr(a, "set_overrides", None))
     if a.cache:
         cfg = cfg.with_overrides({"cache.enabled": True, "cache.root": f"{a.runs_root}/_cache"})
     return cfg
@@ -88,6 +102,14 @@ def load_market(a: argparse.Namespace):
             )
         return store.as_market_data(universe_tickers=tickers, start=a.start, end=a.end)
     return None
+
+
+def clamp_universe(cfg: SystemConfig, md) -> SystemConfig:
+    """``universe.top_n_by_mcap`` capped at the number of loaded ids, as
+    ``qts.cli._run_pipeline`` does before it builds the pipeline (a no-op unless
+    fewer ids were loaded than the configured top-N; without it the stage-cache
+    key of such a run would not match)."""
+    return cfg.with_overrides({"universe.top_n_by_mcap": min(cfg.universe.top_n_by_mcap, md.close.shape[1])})
 
 
 def main(argv: list[str] | None = None) -> int:

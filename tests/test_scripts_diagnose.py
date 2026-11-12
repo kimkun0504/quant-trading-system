@@ -1,4 +1,4 @@
-"""Smoke tests of the diagnostic scripts on the synthetic market (slow tier)."""
+"""Smoke tests of the diagnostic scripts on the synthetic market."""
 
 from __future__ import annotations
 
@@ -71,3 +71,68 @@ def test_find_outlier_returns_tags_causes():
     assert "delisting-day" in mod._likely_cause(-0.97, 10.0, 0.3, 10.0, 0.3, 1, True)
     assert mod._likely_cause(0.4, 10.0, 14.0, 10.0, 14.0, 4, False) == "gap(4d)"
     assert mod._likely_cause(0.4, 10.0, 14.0, 10.0, 14.0, 1, False) == "unknown"
+
+
+def test_attribute_run_synthetic(capsys):
+    """Builds a 30-day run in a temp runs root and prints all five tables."""
+    mod = _load("attribute_run")
+    rc = mod.main(["--synthetic", "--max-days", "30", "--risk-dates", "4"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    for title in (
+        "1. SIGNAL -> IDEAL PORTFOLIOS",
+        "2. REALISED BOOK ATTRIBUTION",
+        "3. RISK-FORECAST GAP",
+        "4. TURNOVER ANATOMY",
+        "5. COST REALITY CHECK",
+    ):
+        assert title in out
+    for label in mod.IDEAL_LABELS.values():
+        assert label in out
+    assert "REALISED BOOK gross" in out and "specific (total - factors)" in out
+    # the accounting identities the tables rest on, on a market without halts / delistings
+    assert "recorded gross return: corr 1.0000" in out
+    assert "recomputed ex-ante vol / recorded = 1.000" in out
+    assert "re-priced / recorded = 1.000" in out
+    assert "WARNING" not in out
+
+
+def test_attribute_run_helpers():
+    import numpy as np
+
+    mod = _load("attribute_run")
+    rng = np.random.default_rng(0)
+    X = np.column_stack([np.ones(50), rng.normal(size=(50, 3)), np.zeros(50)])  # with a dead column
+    res = mod._residual(X, rng.normal(size=(50, 2)))
+    assert np.abs(X.T @ res).max() < 1e-9
+    assert np.abs(mod._normalise(res[:, 0])).sum() == pytest.approx(2.0)
+    # ex-ante split is additive: pieces sum to w' (B F B' + D + nu y y') w
+    B = rng.normal(size=(50, 4))
+    A = rng.normal(size=(4, 4))
+    F = A @ A.T
+    D = rng.uniform(0.5, 1.5, size=50)
+    y = rng.normal(size=50)
+    w = rng.normal(size=50)
+    parts = mod._exante_split(w, B, F, D, y, 0.3, {"market": [0], "style": [1, 2, 3], "statistical": []})
+    total = w @ (B @ F @ B.T + np.diag(D) + 0.3 * np.outer(y, y)) @ w
+    assert sum(parts.values()) == pytest.approx(total)
+    assert set(parts) == {"factor:market", "factor:style", "specific", "alignment"}
+
+
+def test_diagnostic_loader_applies_set_overrides():
+    import argparse
+
+    mod = _load("diagnose_signal")
+    from qts.cli import ConfigOverrideError
+
+    ap = argparse.ArgumentParser()
+    mod.add_data_args(ap)
+    a = ap.parse_args(["--synthetic", "--set", "alpha.horizon_days=60", "--set", "portfolio.beta_band=0.1"])
+    cfg = mod.load_config(a)
+    assert cfg.alpha.horizon_days == 60 and cfg.portfolio.beta_band == pytest.approx(0.1)
+    # same result (hence the same stage-cache key) as the CLI's own override path
+    from qts.cli import _apply_set_overrides, _load_config
+
+    assert cfg.hash() == _apply_set_overrides(_load_config(None), a.set_overrides).hash()
+    with pytest.raises(ConfigOverrideError):
+        mod.load_config(ap.parse_args(["--synthetic", "--set", "alpha.no_such_key=1"]))
