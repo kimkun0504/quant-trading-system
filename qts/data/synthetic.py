@@ -83,6 +83,22 @@ other name).  Both are drawn from their own random stream; with both at 0
 ``delisting_dates`` is ``None``).  ``md.extra["true_halts"]`` (1.0 on halted
 days, NaN elsewhere) records the planted halts when ``n_halts > 0``.
 
+Earnings (``with_earnings=True``)
+--------------------------------
+Every name reports each calendar quarter (twelve pre-sample quarters included, so
+the seasonal earnings surprise has history from the first day): a filing date
+(``datekey``) 20-48 calendar days after the quarter end, and -- for about 85 % of
+the filings of the ~90 % of names that file them -- an 8-K style event (code ``22``,
+"results of operations") 0-8 days before it; the announcement table is built from
+both with the production rule (:func:`qts.data.earnings.derive_earnings_dates`).
+Quarterly EPS follows a per-name trend with a seasonal pattern and a surprise that
+loads on the latent alpha score at the quarter end; it is *as reported* (per actual
+share at the filing date), so with ``n_splits > 0`` it jumps at a split and
+``split_cum`` undoes the jump.  Trailing-twelve-month net income, operating cash
+flow (net income minus a persistent accrual component) and total assets complete
+the record.  Drawn from its own stream: with ``with_earnings=False`` (default)
+both tables are ``None`` and every panel -- and the data hash -- is unchanged.
+
 Ground truth in ``md.extra``
 ----------------------------
 * ``true_latent_score``  -- the latent alpha score ``z_t`` (date x ticker).
@@ -147,6 +163,10 @@ class SyntheticSpec:
     n_halts: int = 0
     halt_days: int = 10
     n_delistings: int = 0
+    # Quarterly earnings (``MarketData.earnings_dates`` / ``earnings_fundamentals``,
+    # the inputs of ``AlphaConfig.feature_set = "v2"``).  Separate random stream;
+    # False (default) = neither table, every panel and the data hash unchanged.
+    with_earnings: bool = False
 
 
 def _ar1_path(n_steps: int, n: int, phi: float, rng: np.random.Generator) -> np.ndarray:
@@ -221,6 +241,7 @@ def generate(spec: Optional[SyntheticSpec] = None) -> MarketData:
     r = np.clip(r, -0.5, 1.0)
 
     close = 100 * np.exp(np.cumsum(np.log1p(r), axis=0))
+    close_path = close                              # T x N array (no halts / delistings blanked)
     close = pd.DataFrame(close, index=dates, columns=tickers)
 
     shares = np.exp(log_size0 + 17.2)            # median mcap ≈ $3B at $100; range ≈ $100M–$300B
@@ -298,6 +319,11 @@ def generate(spec: Optional[SyntheticSpec] = None) -> MarketData:
         if n_d:
             delisting_dates = dd
 
+    earnings_dates = earnings_fundamentals = None
+    if spec.with_earnings:
+        earnings_dates, earnings_fundamentals = _synthetic_earnings(
+            spec, dates, tickers, close_path, shares, z, split_panel)
+
     md = MarketData(
         close=close, volume=volume, market_cap=market_cap, industry=industry,
         close_raw=close_raw, shares_outstanding=shares_out,
@@ -317,9 +343,76 @@ def generate(spec: Optional[SyntheticSpec] = None) -> MarketData:
             **extra_events,
         },
         delisting_dates=delisting_dates,
+        earnings_dates=earnings_dates, earnings_fundamentals=earnings_fundamentals,
     )
     md.validate()
     return md
+
+
+def _synthetic_earnings(spec: SyntheticSpec, dates: pd.DatetimeIndex, tickers: pd.Index,
+                        close: np.ndarray, shares: np.ndarray, z: np.ndarray,
+                        split_panel: pd.DataFrame):
+    """``(earnings_dates, earnings_fundamentals)`` of the draw (module docstring
+    "Earnings").  ``close``: the full adjusted price path (T x N, no halts blanked);
+    ``shares``: share count on the adjusted basis; ``z``: latent score (T x N)."""
+    from qts.data.earnings import build_earnings_fundamentals, derive_earnings_dates
+
+    rng = np.random.default_rng([int(spec.seed), 0xEA12])
+    T, N = close.shape
+    n_pre = 12
+    first_q = (dates[0] - pd.offsets.QuarterEnd(n_pre + 1)).normalize()
+    qends = pd.date_range(first_q, dates[-1], freq="QE")
+    Q = len(qends)
+    pos = np.clip(dates.searchsorted(qends, side="right") - 1, 0, T - 1)   # last day <= quarter end
+    px = close[pos]                                                         # Q x N
+    zq = z[pos]
+    # per adjusted share: trend x season + surprise (loads on the latent score)
+    base = 0.0125 * close[0][None, :] * np.exp(np.cumsum(rng.normal(0.01, 0.02, (Q, N)), axis=0))
+    season = 1.0 + 0.10 * rng.standard_normal((4, N))
+    shock = 0.15 * (0.5 * zq + rng.standard_normal((Q, N)))
+    e_adj = base * season[np.arange(Q) % 4] * (1.0 + shock)
+    netinc_q = e_adj * shares[None, :]
+    assets = 0.8 * px[0][None, :] * shares[None, :] * np.exp(np.cumsum(rng.normal(0.015, 0.03, (Q, N)), axis=0))
+    accr = -0.02 + 0.04 * _ar1_path(Q, N, 0.7, rng)
+    lag_name = rng.integers(20, 41, N)
+    datekey = qends.values[:, None] + (lag_name[None, :] + rng.integers(0, 9, (Q, N))).astype("timedelta64[D]")
+    files_events = rng.random(N) < 0.90
+    has_event = files_events[None, :] & (rng.random((Q, N)) < 0.85)
+    lead = rng.integers(0, 9, (Q, N)).astype("timedelta64[D]")
+    # as-reported: per actual share at the filing date (before a k:1 split: k x larger)
+    sp = split_panel.to_numpy(dtype=float)
+    after = np.where(np.isfinite(sp), sp, 1.0)[::-1].cumprod(axis=0)[::-1]  # product of splits at rows >= t
+    fpos = dates.searchsorted(datekey.ravel(), side="right").reshape(Q, N)   # first row > datekey
+    factor = np.concatenate([after, np.ones((1, N))])[fpos, np.arange(N)[None, :]]
+    keep = datekey <= dates[-1].to_datetime64()
+    tk = np.broadcast_to(np.asarray(tickers)[None, :], (Q, N))
+    cd = np.broadcast_to(qends.values[:, None], (Q, N))
+    arq = pd.DataFrame({
+        "ticker": tk[keep], "dimension": "ARQ", "datekey": datekey[keep], "calendardate": cd[keep],
+        "eps": (e_adj * factor)[keep], "netinc": netinc_q[keep], "assets": assets[keep],
+    })
+    ttm = np.full((Q, N), np.nan)
+    ttm[3:] = netinc_q[3:] + netinc_q[2:-1] + netinc_q[1:-2] + netinc_q[:-3]
+    k_art = keep & np.isfinite(ttm)
+    art = pd.DataFrame({
+        "ticker": tk[k_art], "dimension": "ART", "datekey": datekey[k_art], "calendardate": cd[k_art],
+        "eps": (ttm / shares[None, :] * factor)[k_art], "netinc": ttm[k_art],
+        "ncfo": (ttm - accr * assets)[k_art], "assets": assets[k_art],
+    })
+    rows, cols = np.nonzero(np.isfinite(sp))
+    splits = pd.DataFrame({"ticker": np.asarray(tickers)[cols], "date": dates.values[rows], "ratio": sp[rows, cols]})
+    fundamentals = build_earnings_fundamentals(pd.concat([arq, art], ignore_index=True), splits)
+    ev = keep & has_event
+    events = pd.DataFrame({"ticker": tk[ev], "date": (datekey - lead)[ev], "eventcodes": "22|91"})
+    # unrelated 8-K items (director changes, other events) the derive must ignore
+    n_other = max(1, int(0.3 * ev.sum()))
+    other = pd.DataFrame({
+        "ticker": np.asarray(tickers)[rng.integers(0, N, n_other)],
+        "date": dates.values[rng.integers(0, T, n_other)],
+        "eventcodes": rng.choice(["52", "81|91", "71"], n_other),
+    })
+    table, _ = derive_earnings_dates(arq, pd.concat([events, other], ignore_index=True))
+    return table, fundamentals
 
 
 def true_factor_returns(spec: Optional[SyntheticSpec] = None) -> pd.DataFrame:

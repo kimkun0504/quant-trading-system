@@ -38,6 +38,20 @@ RISK_ONLY_FEATURE_PROXIES: dict[str, tuple[str, ...]] = {
 #: Flat tuple of the proxy features, in a stable order.
 RISK_ONLY_FEATURES: tuple[str, ...] = tuple(f for s in RISK_ONLY_STYLES for f in RISK_ONLY_FEATURE_PROXIES[s])
 
+#: The eight features ``AlphaConfig.feature_set = "v2"`` adds, in model-input order
+#: (handbook 04 "Feature set 2").  All are alpha features: none proxies a risk-only
+#: style, so none is ever used to residualise the label or neutralise the score.
+FEATURE_SET_2_FEATURES: tuple[str, ...] = (
+    "ear_3d",
+    "sue",
+    "days_since_earnings",
+    "abn_volume_5d",
+    "abn_volume_earn",
+    "accruals",
+    "net_issuance",
+    "high_52w",
+)
+
 #: Alpha-layer features belonging to traded themes; must never be used to
 #: residualise the label.
 ALPHA_THEME_FEATURES: frozenset[str] = frozenset(
@@ -52,6 +66,8 @@ ALPHA_THEME_FEATURES: frozenset[str] = frozenset(
         "investment_ag",
         "short_interest",
         "borrow_fee",
+        # feature set 2 (``AlphaConfig.feature_set = "v2"``; ML sleeve only)
+        *FEATURE_SET_2_FEATURES,
     }
 )
 

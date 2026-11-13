@@ -256,13 +256,129 @@ where zero-volume days are excluded and $10^6$ rescales to "return per million d
 
 **PIT.** Uses today's close $P_t$. With the default execution lag of one day the signal from close $t$ is traded at close $t+1$, so the close it reads is known well before the order is due (→ see **Backtesting**). The lag investigation found `strev_21` the only feature whose IC changes sign within 1–2 days of lag (h = 20 IC × 1000: +0.17 at lag 0, −2.41 at lag 1, −9.84 at lag 5; `docs/notes/lag_investigation_2026-11-05.md` §4), so rerun the lag-0 vs lag-1 comparison with `use_ml=True` before trusting a fast ML sleeve.
 
+### Feature set 2 (`alpha.feature_set = "v2"`)
+
+**What it is.** Eight more inputs for the ML sleeve, switched on by one config value: `AlphaConfig.feature_set = "v2"` (default `"v1"`: the 18 features above, unchanged bit for bit). They cover four ideas the first set lacks: how the market took the last earnings report, unusual trading volume, the quality and financing of earnings, and nearness to the one-year high.
+
+**Why it is one switch.** The set was fixed in advance and is run as **one** logged trial, with `alpha.horizon_days = 60` and `alpha.sample_weight_halflife_years = 8` (`docs/notes/feature_set_2_2026-11-13.md`). Adding features one at a time and keeping the winners would be a search, and every step of a search is a trial the deflated Sharpe ratio must count (→ see **Validation & statistics › Deflated Sharpe ratio**).
+
+| Feature | Definition (at date $t$) | Expected sign | Reference |
+|---|---|---|---|
+| `ear_3d` | stock return minus equal-weight universe return over the three trading days around the last announcement | + | Ball & Brown (1968); Bernard & Thomas (1989) |
+| `sue` | seasonal earnings surprise of the last filed quarter, in standard deviations | + | Foster, Olsen & Shevlin (1984) |
+| `days_since_earnings` | trading days since the last announcement, capped at 126, divided by 126 | conditioning | — |
+| `abn_volume_5d` | $\ln$(mean dollar volume, last 5 days / mean of the 252 days before) | + | Gervais, Kaniel & Mingelgrin (2001) |
+| `abn_volume_earn` | the same ratio for the three announcement days | + | Gervais, Kaniel & Mingelgrin (2001) |
+| `accruals` | (net income − operating cash flow) / average total assets, trailing twelve months | − | Sloan (1996) |
+| `net_issuance` | $-\ln$(adjusted shares now / 252 days ago) | + (issuance is bad) | Pontiff & Woodgate (2008); Daniel & Titman (2006) |
+| `high_52w` | adjusted close / highest adjusted close of the last 252 days | + | George & Hwang (2004) |
+
+"Expected sign" is the sign of the published effect on the feature as defined here; the models are free to learn otherwise. The feature IC table (`AlphaModel.feature_ic_table()`, the Signal lab) reports these eight with sign +1, so `accruals` should show a *negative* IC if Sloan's effect is present.
+
+<callout icon="⚠️" color="yellow_bg">
+The build plan excluded post-earnings drift on evidence (t = 1.43 outside microcaps, 2001–2024; "Why this feature set" below). `ear_3d` and `sue` are that effect. They are in this set as inputs a tree can condition on (a surprise in a small, thinly traded name; a surprise two days old versus sixty), not because the standalone premium is expected to have come back. The single pre-registered trial is the test.
+</callout>
+
+**The announcement date.** Three of the features need the day the market learned the quarter's result. A company usually publishes results in a press release, filed with the SEC the same day as a form **8-K** under **item 2.02** ("Results of Operations and Financial Condition"), and files the full quarterly report (10-Q, or 10-K for the fourth quarter) days or weeks later. The date of the 10-Q is the SF1 `datekey` (→ see **Data & universe › Fundamentals**); the date of the 8-K comes from Sharadar's `EVENTS` table. The announcement series of a stock is every 8-K item 2.02 date, plus every quarterly filing date that had no such 8-K in the 45 days before it (→ see **Data & universe › Earnings dates and the quarterly record**). Write $a$ for an announcement date and $p$ for the first trading day on or after it.
+
+**`ear_3d`: the earnings announcement return.**
+
+$$
+\text{ear\_3d} = \frac{P_{p+1}}{P_{p-2}} - 1 \;-\; \Big(\prod_{s=p-1}^{p+1}(1+m_s) - 1\Big)
+$$
+
+where:
+- $P$ is the adjusted close, so the first term is the stock's return over trading days $p-1$, $p$, $p+1$;
+- $m_s$ is the equal-weight mean return on day $s$ of the names eligible on day $s$ (the same market series `beta_252` uses).
+
+*Rationale.* Ball & Brown (1968) found that prices keep moving in the direction of an earnings surprise for months; Bernard & Thomas (1989) measured it and named it post-earnings-announcement drift. The three-day return measures the surprise as the market itself judged it, with no analyst forecasts needed.
+
+**`sue`: standardised unexpected earnings.** The "expected" earnings of a quarter are those of the same quarter a year earlier (a seasonal random walk; Foster, Olsen & Shevlin 1984):
+
+$$
+u_q = e_q - e_{q-4}, \qquad \text{sue}_q = \frac{u_q}{\operatorname{sd}(u_{q-7},\dots,u_q)}
+$$
+
+where:
+- $e_q = \text{eps}_q \times \text{split\_cum}_q$ is the quarter's basic EPS (SF1 `eps`, dimension `ARQ`) per *original* share;
+- sd is the sample standard deviation (divisor $n-1$) over the quarters of the trailing eight that have a value, at least four of them; a quarter filed after quarter $q$ is left out, since it was not known then.
+
+*Split adjustment.* Sharadar's `eps` is as reported: per share of the share count at the filing. After a 2-for-1 split reported EPS halves, and $e_q - e_{q-4}$ across the split would be a large false negative surprise. `split_cum` is the product of the ratios of all splits dated on or before the filing, so $\text{eps}\times\text{split\_cum}$ is continuous across splits. Only earlier splits enter, and the ratio $u/\operatorname{sd}(u)$ does not change if every quarter is rescaled by one constant, so a later split cannot alter a value already computed. Basic `eps` is used rather than diluted because it is the field already in every Sharadar-filled store.
+
+**`days_since_earnings`.** Trading days since $p$, capped at 126, divided by 126. It is a *conditioning variable*: it carries no return forecast of its own but tells a model how fresh `ear_3d` and `sue` are. It is therefore **not** winsorised, industry-demeaned or ranked, only scaled to $[0, 1]$; a stock with no announcement yet gets the cap, 1.0 ("nothing recent"), not 0.
+
+**`abn_volume_5d` and `abn_volume_earn`: abnormal volume.**
+
+$$
+\text{abn\_volume\_5d}_t = \ln\frac{\overline{DV}_{[t-4,\,t]}}{\overline{DV}_{[t-256,\,t-5]}}, \qquad
+\text{abn\_volume\_earn} = \ln\frac{\overline{DV}_{[p-1,\,p+1]}}{\overline{DV}_{[p-253,\,p-2]}}
+$$
+
+where $\overline{DV}$ is mean dollar volume (as-traded close × shares traded) over the trading days in brackets. The 252-day base needs at least 126 days, the five-day mean at least three, the announcement mean at least two.
+
+*Rationale.* Gervais, Kaniel & Mingelgrin (2001): stocks with unusually high volume over a day or a week earn higher returns over the next month, which they attribute to visibility — a volume shock puts the stock in front of more potential buyers.
+
+**`accruals`.** Earnings are cash received plus accruals, the accountant's estimates of cash not yet received (credit sales, inventory build-up). Sloan (1996) showed that the accrual part of earnings is less persistent than the cash part and that investors price both alike, so firms with high accruals go on to underperform.
+
+$$
+\text{accruals} = \frac{\text{netinc} - \text{ncfo}}{(\text{assets} + \text{assets}_{-4q})/2}
+$$
+
+where `netinc` and `ncfo` (net cash flow from operations) are trailing-twelve-month values and `assets` the total assets of the same SF1 `ART` row, and $\text{assets}_{-4q}$ those of the row four quarters earlier, used only if filed on or before the current filing. This is the cash-flow-statement form of Sloan's measure; his original used balance-sheet changes.
+
+**`net_issuance`.** Firms that issue shares underperform and firms that buy back outperform (Pontiff & Woodgate 2008).
+
+$$
+\text{net\_issuance}_t = -\ln\frac{S_t}{S_{t-252}}, \qquad S_t = \frac{\text{market cap}_t}{P_t}
+$$
+
+where $P_t$ is the adjusted close, so $S_t$ is the share count in units a split leaves unchanged (a 2-for-1 split doubles the shares and halves the as-traded price; market cap and the adjusted close do not move). The sign is flipped so that a high value is good. Because the adjusted close also reinvests dividends, $\ln(S_t/S_{t-252})$ equals the log growth of market cap minus the log total return, which is the *composite issuance* of Daniel & Titman (2006): a cash dividend counts as a small negative issuance. On the pure share-count definition of Pontiff & Woodgate the two differ by the dividend yield.
+
+**`high_52w`.** $P_t / \max(P_{t-251},\dots,P_t)$, in $(0, 1]$, with at least 126 days of prices. George & Hwang (2004): stocks near their 52-week high outperform, and the measure forecasts returns better than past returns do; their reading is that traders anchor on the high and are slow to bid through it on good news.
+
+**Point-in-time rules.**
+
+| Features | Visible from | Carried until |
+|---|---|---|
+| `ear_3d`, `abn_volume_earn`, `days_since_earnings` | the close of trading day $p+2$ | the next announcement becomes visible; `ear_3d` and `abn_volume_earn` turn missing 126 trading days after $p$ |
+| `sue` | the first trading day on or after `datekey` + 1 calendar day | the next filing becomes visible, at most 126 trading days |
+| `accruals` | the first trading day on or after `datekey` + 1 calendar day | the next filing becomes visible (no limit, as for every fundamental) |
+| `abn_volume_5d`, `net_issuance`, `high_52w` | the close of $t$ | recomputed daily |
+
+The two-day wait for the announcement features exists because the time of day of an announcement is not in the data. A release after the close of day $a$ moves the price on $a+1$, so the reaction window must reach $p+1$, and the value is used from the close of $p+2$, one more day for safety. On $p$ and $p+1$ the panels still show the *previous* announcement. A filing follows the rule of all fundamentals: public on its `datekey`, possibly after the close, so usable the next day.
+
+**Processing.** The seven ranked features go through the same chain as the rest (§3): eligibility mask → winsorise → industry demean → rank-gauss → missing filled with 0. All seven are industry-demeaned (`features.py::V2_INDUSTRY_DEMEAN`), in addition to the four in `AlphaConfig.industry_demean`. No missing-value indicator columns are added, because the existing features have none.
+
+**Composite.** No theme of the rank composite reads these features: the composite is identical under `v1` and `v2`, and only the ML sleeve changes. That keeps the trial a clean comparison of feature sets with everything else equal.
+
+**Roles.** All eight are registered as alpha features (`qts/core/roles.py::FEATURE_SET_2_FEATURES`, part of `ALPHA_THEME_FEATURES`); none is a proxy for a risk-only style, so none is used to residualise the label or neutralise the score.
+
+**Deferred: short interest.** A short-interest feature from FINRA data was left out: the history would cover only part of 2003–2026, and a feature that is missing for half the training sample cannot be judged in one trial.
+
+**In the code.** `qts/alpha/features_v2.py` (one function per feature; constants for every window), `features.py::FEATURE_SETS`, `CONDITIONING_FEATURES`. Inputs: `MarketData.earnings_dates` and `MarketData.earnings_fundamentals`, loaded from the store datasets of the same names. Without them a `v2` run stops before any fit and names the command that builds them:
+
+```bash
+qts data sharadar derive-earnings --store data/store
+python scripts/diagnose_signal.py --store data/store --start 2000-01-01 --max-names 3000 \
+    --min-mcap-ever 3e8 --set alpha.feature_set=v2 --coverage-only
+```
+
+The second command prints, per year, the share of eligible names with a value for each feature, without fitting anything. The feature IC table, the refit importances (`alpha_refits.parquet`) and the Signal lab read the fitted feature list, so they show the new columns with no further change.
+
+**Pitfalls & checks.**
+- *Timing:* `tests/test_feature_set_2.py::test_ear_3d_hand_computed_and_visible_only_from_a_plus_two` and `::test_on_a_and_a_plus_one_every_earnings_feature_shows_the_previous_quarter`.
+- *Look-ahead:* `::test_v2_features_pit_under_truncation` (features on data cut at $t$ equal the full build, exactly) and `::test_perturbing_anything_after_t_never_changes_a_feature_at_or_before_t` (prices, volume, market cap and both earnings tables scrambled after $t$).
+- *Splits:* `::test_sue_is_unchanged_by_a_split_inside_the_window`.
+- *Synthetic market:* share counts there never change, so `net_issuance` is constant and has no IC on synthetic data.
+- *Stage cache:* `feature_set` is part of the alpha-fit key; the risk-fit key does not depend on it, nor on the earnings tables.
+
 ### Why this feature set
 
-The plan specifies ~60–100 Tier-1 features; the code has 18, a deliberate thin slice (review item 11): every extra feature is another ledger trial and leakage surface, and each must pass the incremental-IC gate (§9). Excluded on evidence (plan §2.2): post-earnings drift (t = 1.43 ex-microcaps, 2001–2024), retail order imbalance (no longer predictive 2016–2021), and anything whose profits concentrate in microcaps (Avramov, Cheng & Metzker).
+The plan specifies ~60–100 Tier-1 features; the default set (`v1`) has 18, a deliberate thin slice (review item 11): every extra feature is another ledger trial and leakage surface, and each must pass the incremental-IC gate (§9). Excluded on evidence (plan §2.2): post-earnings drift (t = 1.43 ex-microcaps, 2001–2024), retail order imbalance (no longer predictive 2016–2021), and anything whose profits concentrate in microcaps (Avramov, Cheng & Metzker).
 
 ### In the code
 
-`FeatureBuilder.build(md)` → dict of panels; fundamental features appear only if their `MarketData` panel exists. To add one: trailing operations only, append to `FEATURE_ORDER`, optionally add to `composite.THEMES` with a sign, run the hurdle protocol.
+`FeatureBuilder.build(md)` → dict of panels; fundamental features appear only if their `MarketData` panel exists. The feature list is `FEATURE_SETS[cfg.feature_set]` (`v1` = `FEATURE_ORDER`). To add one: trailing operations only, append to `FEATURE_ORDER`, optionally add to `composite.THEMES` with a sign, run the hurdle protocol.
 
 ### Pitfalls & checks
 
@@ -283,6 +399,14 @@ The plan specifies ~60–100 Tier-1 features; the code has 18, a deliberate thin
 - [Ang, Hodrick, Xing & Zhang (2006), The Cross-Section of Volatility and Expected Returns](https://doi.org/10.1111/j.1540-6261.2006.00836.x)
 - [Frazzini & Pedersen (2014), Betting against beta](https://doi.org/10.1016/j.jfineco.2013.10.005)
 - [Amihud (2002), Illiquidity and stock returns](https://doi.org/10.1016/S1386-4181(01)00024-6)
+- [Ball & Brown (1968), An Empirical Evaluation of Accounting Income Numbers](https://doi.org/10.2307/2490232)
+- [Bernard & Thomas (1989), Post-Earnings-Announcement Drift: Delayed Price Response or Risk Premium?](https://doi.org/10.2307/2491062)
+- [Foster, Olsen & Shevlin (1984), Earnings Releases, Anomalies, and the Behavior of Security Returns](https://www.jstor.org/stable/247321)
+- [Gervais, Kaniel & Mingelgrin (2001), The High-Volume Return Premium](https://doi.org/10.1111/0022-1082.00349)
+- [Sloan (1996), Do Stock Prices Fully Reflect Information in Accruals and Cash Flows About Future Earnings?](https://www.jstor.org/stable/248290)
+- [Pontiff & Woodgate (2008), Share Issuance and Cross-sectional Returns](https://doi.org/10.1111/j.1540-6261.2008.01335.x)
+- [Daniel & Titman (2006), Market Reactions to Tangible and Intangible Information](https://doi.org/10.1111/j.1540-6261.2006.00884.x)
+- [George & Hwang (2004), The 52-Week High and Momentum Investing](https://doi.org/10.1111/j.1540-6261.2004.00695.x)
 
 ## 3. Cross-sectional processing
 
@@ -329,7 +453,7 @@ where $q_{p,t}$ is the $p$-quantile of the feature across eligible names at $t$ 
 
 ### Industry demeaning
 
-**What.** For the features in `AlphaConfig.industry_demean` (default `["value_bp", "value_ep", "quality_gpa", "investment_ag"]`), subtract the date's industry mean:
+**What.** For the features in `AlphaConfig.industry_demean` (default `["value_bp", "value_ep", "quality_gpa", "investment_ag"]`; under feature set 2 also its seven ranked features, §2), subtract the date's industry mean:
 
 $$
 x^{\text{dm}}_{i,t} = \tilde{x}_{i,t} - \frac{1}{\lvert g(i)\rvert_t}\sum_{j \in g(i)} \tilde{x}_{j,t}

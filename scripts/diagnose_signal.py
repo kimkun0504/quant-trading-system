@@ -8,12 +8,20 @@ prints, without running the backtest:
   against the pipeline's own residualised labels, with t-stats;
 * the Grinold ``IC_used`` the simulator would see on each rebalance date and the
   share of dates where it is zero (trailing IC <= 0 => alpha 0 => empty book);
-* industry label counts of the loaded names ("Other" / "UNKNOWN" share).
+* industry label counts of the loaded names ("Other" / "UNKNOWN" share);
+* **coverage per year** of every raw feature: the share of eligible (date, name)
+  cells with a non-missing value before the cross-sectional fill (the feature-set-2
+  features are marked).  ``--coverage-only`` prints this table and stops: it
+  applies the universe and builds the raw feature panels but fits nothing (no risk
+  model, no labels, no ML), so it takes a minute or two on the full store -- run it
+  before a long ``alpha.feature_set=v2`` run to check the earnings data.
 
 Usage (same data flags as ``qts run``)::
 
     python scripts/diagnose_signal.py --store data/store --start 2000-01-01 \
         --max-names 3000 --min-mcap-ever 3e8 --cache [--ml --set alpha.horizon_days=60]
+    python scripts/diagnose_signal.py --store data/store --start 2000-01-01 \
+        --max-names 3000 --min-mcap-ever 3e8 --set alpha.feature_set=v2 --coverage-only
     python scripts/diagnose_signal.py --synthetic            # smoke test
 """
 
@@ -84,13 +92,14 @@ def load_config(a: argparse.Namespace) -> SystemConfig:
     return cfg
 
 
-def load_market(a: argparse.Namespace):
+def load_market(a: argparse.Namespace, with_earnings: bool = False):
     """``MarketData`` from ``--store`` (with the peak-market-cap prefilter) or
-    ``--synthetic``; ``None`` when neither was given."""
+    ``--synthetic`` (``with_earnings``: also the synthetic earnings tables, which
+    ``alpha.feature_set=v2`` reads); ``None`` when neither was given."""
     if a.synthetic:
         from qts.data.synthetic import SyntheticSpec, generate
 
-        return generate(SyntheticSpec(n_stocks=120, n_days=900, seed=0))
+        return generate(SyntheticSpec(n_stocks=120, n_days=900, seed=0, with_earnings=with_earnings))
     if a.store:
         from qts.data.store import ParquetStore
 
@@ -112,19 +121,95 @@ def clamp_universe(cfg: SystemConfig, md) -> SystemConfig:
     return cfg.with_overrides({"universe.top_n_by_mcap": min(cfg.universe.top_n_by_mcap, md.close.shape[1])})
 
 
+def feature_coverage_by_year(raw: dict[str, pd.DataFrame], eligible: pd.DataFrame) -> pd.DataFrame:
+    """Year x feature: share of the eligible (date, name) cells of the year whose
+    *raw* feature value is present (before winsorising / ranking / the fill of
+    missing values).  The last row, ``all``, is the whole sample."""
+    elig = eligible.to_numpy(dtype=bool)
+    years = np.asarray(eligible.index.year)
+    uniq = np.unique(years)
+    n_year = np.array([elig[years == y].sum() for y in uniq], dtype=float)
+    out = {}
+    for name, panel in raw.items():
+        have = panel.reindex(index=eligible.index, columns=eligible.columns).notna().to_numpy() & elig
+        per = np.array([have[years == y].sum() for y in uniq], dtype=float)
+        col = np.append(per / np.where(n_year > 0, n_year, np.nan), have.sum() / max(elig.sum(), 1))
+        out[name] = col
+    return pd.DataFrame(out, index=[*map(str, uniq), "all"])
+
+
+def print_coverage(raw: dict[str, pd.DataFrame], eligible: pd.DataFrame) -> None:
+    from qts.core.roles import FEATURE_SET_2_FEATURES
+
+    cov = feature_coverage_by_year(raw, eligible)
+    new = [f for f in FEATURE_SET_2_FEATURES if f in cov.columns]
+    old = [f for f in cov.columns if f not in new]
+    pct = "{:.1%}".format
+    with pd.option_context("display.width", 250, "display.max_columns", 60):
+        if new:
+            print("\n== coverage per year: feature set 2 (share of eligible names with a value) ==")
+            print(cov[new].to_string(float_format=pct))
+            low = [f for f in new if cov.loc["all", f] < 0.5]
+            if low:
+                print(f"LOW COVERAGE (< 50% over the sample): {', '.join(low)}")
+        print("\n== coverage per year: v1 features ==")
+        print(cov[old].to_string(float_format=pct))
+
+
+def print_earnings_sources(md) -> None:
+    """Announcements per year by source (EVENTS 8-K vs filing-date fallback) for the loaded names."""
+    ed = getattr(md, "earnings_dates", None)
+    if ed is None or ed.empty:
+        return
+    ed = ed[ed["ticker"].isin(set(md.tickers))]
+    tab = ed.groupby([pd.to_datetime(ed["announce_date"]).dt.year, "source"]).size().unstack(fill_value=0)
+    tab["share_events"] = tab.get("events", 0) / tab.sum(axis=1)
+    print("\n== earnings announcements per year by source (loaded names) ==")
+    print(tab.to_string(float_format="{:.1%}".format))
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_data_args(ap)
+    ap.add_argument(
+        "--coverage-only",
+        action="store_true",
+        help="print the per-year feature coverage (and the earnings-date sources) and stop: universe "
+        "+ raw features only, no risk / alpha fit",
+    )
     a = ap.parse_args(argv)
 
     cfg = load_config(a)
-    md = load_market(a)
+    md = load_market(a, with_earnings=cfg.alpha.feature_set == "v2")
     if md is None:
         print("give --store or --synthetic", file=sys.stderr)
         return 2
     print(
         f"loaded: {md.close.shape[1]} ids x {md.close.shape[0]} days ({md.dates[0].date()}..{md.dates[-1].date()})"
     )
+    print(f"feature set: {cfg.alpha.feature_set}")
+    if cfg.alpha.feature_set == "v2":
+        from qts.alpha.features_v2 import FeatureSetDataError, require_v2_inputs
+
+        try:
+            require_v2_inputs(md)
+        except FeatureSetDataError as e:
+            print(f"error: {str(e).replace('<store>', a.store or '<store>')}", file=sys.stderr)
+            return 2
+
+    if a.coverage_only:
+        from qts.alpha.features import FeatureBuilder
+        from qts.data.universe import apply_mask, build_universe_mask
+
+        cfg_u = clamp_universe(cfg, md)
+        md_cov = apply_mask(md, build_universe_mask(md, cfg_u.universe))
+        elig_cov = md_cov.eligibility()
+        per_year = elig_cov.sum(axis=1).groupby(elig_cov.index.year).agg(["mean", "min", "max"])
+        print("\n== eligible names per year (mean / min / max) ==")
+        print(per_year.round(0).astype(int).to_string())
+        print_earnings_sources(md_cov)
+        print_coverage(FeatureBuilder(cfg_u.alpha).build(md_cov), elig_cov)
+        return 0
 
     pipe = ResearchPipeline(cfg, use_ml=a.ml, runs_root=None)
     pipe.fit(md)
@@ -182,6 +267,10 @@ def main(argv: list[str] | None = None) -> int:
                 "\n== processed features: full-sample rank IC vs label (sign as used: + means higher value -> higher return) =="
             )
             print(_fmt(fdf, ["IC", "t"]))
+
+    # -- coverage of the raw features -------------------------------------------
+    print_earnings_sources(md_u)
+    print_coverage(alpha.raw_features_, elig)
 
     # -- IC_used over time -----------------------------------------------------
     dates = alpha.combined_score_.index

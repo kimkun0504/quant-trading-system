@@ -66,7 +66,7 @@ TRACKED_LIBRARIES = (
 #: Optional fields added after the hash format was fixed: when ``None`` they
 #: contribute nothing, so data hashes of existing ``MarketData`` (and the trial
 #: ledger keys built on them) do not change; when present they are hashed.
-_SKIP_IF_NONE = frozenset({"delisting_dates", "delisting_reasons"})
+_SKIP_IF_NONE = frozenset({"delisting_dates", "delisting_reasons", "earnings_dates", "earnings_fundamentals"})
 
 
 def _hash_frame(h: Any, name: str, obj: Any) -> None:
@@ -131,7 +131,9 @@ def hash_market(md: MarketData, n_chars: int = 16) -> str:
 #: keys the risk fit on the panel hash alone and the manifest's ``data_hash`` is
 #: ``chain_reference_hash(panel_hash, md)`` without hashing the panels twice.
 #: Absent (``None``) fields leave the hash equal to the panel hash.
-CHAINED_REFERENCE_FIELDS: frozenset[str] = frozenset({"delisting_reasons"})
+CHAINED_REFERENCE_FIELDS: frozenset[str] = frozenset(
+    {"delisting_reasons", "earnings_dates", "earnings_fundamentals"}
+)
 
 
 def chain_reference_hash(panel_hash: str, md: MarketData, exclude: frozenset[str] = frozenset()) -> str:

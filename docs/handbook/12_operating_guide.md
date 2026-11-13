@@ -649,6 +649,16 @@ qts data sharadar derive --store data/store              # rebuild delisting_rea
 
 `sync` already writes the `delisting_reasons` table; `derive` rebuilds it from the stored `corporate_actions` and `security_master` without downloading anything (use it on a store synced before 2026-11-12, or after changing the mapping). It prints the counts by reason and by year, the `ACTIONS` codes found next to delistings, and what was seen next to the ids left `unknown`. Read it before a run: the backtest books a delisted name at the return of its reason, and `unknown` is charged −30% like a bankruptcy (→ see **Data & universe › Delisting reasons**, **Backtesting › Delistings by reason**). The table is part of the alpha fit's cache key (the labels read it), not of the risk fit's.
 
+### 4c. Earnings tables (feature set 2)
+
+```bash
+qts data sharadar derive-earnings --store data/store     # build earnings_dates / earnings_fundamentals
+python scripts/diagnose_signal.py --store data/store --start 2000-01-01 --max-names 3000 \
+    --min-mcap-ever 3e8 --set alpha.feature_set=v2 --coverage-only
+```
+
+`alpha.feature_set=v2` (→ see **Alpha model › Feature set 2**) reads two derived tables. `derive-earnings` builds them from the stored `sharadar_sf1`, `sharadar_events` and `corporate_actions` without downloading anything, and prints: announcements by source (8-K event or filing-date fallback) and year, the frequency of every `EVENTS` code (to confirm that `22` is the earnings code), and how many split ratios the prices confirm. Two things it may ask for, both from the bulk folder: `qts data sharadar sync --tables EVENTS --from-files DIR` when the store has no `EVENTS` table (it then uses filing dates), and `qts data sharadar sync --tables SF1 --from-files DIR` when the stored SF1 predates the `ncfo` field (needed by `accruals`). `sync` rebuilds both tables at the end of every run. The second command prints the share of eligible names with a value per feature and year; it builds the features but fits nothing, so it takes minutes, not the run's hour. A `v2` run on a store without the tables stops before any fit with the command to run.
+
 ### 5. Incremental refresh
 
 ```bash

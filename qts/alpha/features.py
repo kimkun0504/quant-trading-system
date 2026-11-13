@@ -30,8 +30,11 @@ import pandas as pd
 from qts.core import stats
 from qts.core.config import AlphaConfig
 from qts.core.crosssection import demean_by_group
+from qts.core.roles import FEATURE_SET_2_FEATURES
 from qts.core.stats import rank_gauss
 from qts.core.types import Long, MarketData, Wide, to_long
+
+from .features_v2 import EARNINGS_MAX_AGE_DAYS, build_v2_features
 
 # Canonical feature order.  Keep stable: it is part of the live/train parity hash.
 FEATURE_ORDER: list[str] = [
@@ -54,6 +57,33 @@ FEATURE_ORDER: list[str] = [
     "borrow_fee",
     "strev_21",
 ]
+
+
+#: ``AlphaConfig.feature_set`` -> canonical feature order.  ``"v2"`` appends the
+#: eight feature-set-2 features (handbook 04 "Feature set 2"); ``FEATURE_ORDER``
+#: (v1) is a prefix, so the v1 columns keep their positions.
+FEATURE_SETS: dict[str, list[str]] = {
+    "v1": FEATURE_ORDER,
+    "v2": [*FEATURE_ORDER, *FEATURE_SET_2_FEATURES],
+}
+#: v2 features that go through the ordinary chain winsorise -> industry demean ->
+#: rank-Gaussian (all but the conditioning variable below), in addition to
+#: ``AlphaConfig.industry_demean``.
+V2_INDUSTRY_DEMEAN: frozenset[str] = frozenset(FEATURE_SET_2_FEATURES) - {"days_since_earnings"}
+#: Conditioning variables: not winsorised, industry-demeaned or ranked.  feature ->
+#: (divisor, fill): the processed value is ``raw / divisor`` in [0, 1] and a missing
+#: value (no announcement seen yet) is ``fill`` -- the cap, i.e. "no recent earnings".
+CONDITIONING_FEATURES: dict[str, tuple[float, float]] = {
+    "days_since_earnings": (float(EARNINGS_MAX_AGE_DAYS), 1.0),
+}
+
+
+def feature_order(feature_set: str = "v1") -> list[str]:
+    """Canonical feature order of ``AlphaConfig.feature_set``."""
+    try:
+        return FEATURE_SETS[feature_set]
+    except KeyError:
+        raise ValueError(f"unknown feature_set {feature_set!r}; known: {sorted(FEATURE_SETS)}") from None
 
 
 def feature_signature(columns) -> str:
@@ -188,7 +218,12 @@ class FeatureBuilder:
         r21 = _trailing_return(close, 21, 0).where(valid)  # demean within eligible names only
         f["strev_21"] = -_by_industry(demean_by_group, r21, segs)
 
-        ordered = {k: f[k] for k in FEATURE_ORDER if k in f}
+        if self.cfg.feature_set == "v2":
+            # earnings reaction, abnormal volume, accruals / issuance, 52-week high
+            # (qts.alpha.features_v2; raises FeatureSetDataError without the earnings tables)
+            f.update(build_v2_features(md, market))
+
+        ordered = {k: f[k] for k in feature_order(self.cfg.feature_set) if k in f}
         for v in ordered.values():
             v.index.name = "date"
             v.columns.name = "ticker"
@@ -197,19 +232,29 @@ class FeatureBuilder:
     # ------------------------------------------------------------------ processing
     def process(self, features: dict[str, Wide], md: MarketData, valid: Wide | None = None) -> Long:
         """Per-date, over eligible names only: winsorize -> industry demean
-        (cfg.industry_demean) -> rank_gauss -> fill 0.  Returns a long frame
+        (cfg.industry_demean; under ``feature_set = "v2"`` also the seven ranked v2
+        features) -> rank_gauss -> fill 0; a conditioning variable
+        (``CONDITIONING_FEATURES``: ``days_since_earnings``) is only scaled to
+        [0, 1] and filled with its cap.  Returns a long frame
         indexed by (date, ticker) that contains **only** rows eligible at that
         date (``valid`` defaults to ``md.eligibility()``).  Ineligible names are
         dropped, not zero-filled, so they never enter a cross-sectional
         statistic or receive a score."""
         valid = md.eligibility() if valid is None else valid.astype(bool)
         cols = []
+        order = feature_order(self.cfg.feature_set)
         demean_set = set(self.cfg.industry_demean)
+        if self.cfg.feature_set == "v2":
+            demean_set |= V2_INDUSTRY_DEMEAN
         segs = industry_segments(md)
-        for name in FEATURE_ORDER:
+        for name in order:
             if name not in features:
                 continue
             panel = features[name].where(valid.reindex_like(features[name]).fillna(False).astype(bool))
+            if name in CONDITIONING_FEATURES:
+                divisor, fill = CONDITIONING_FEATURES[name]
+                cols.append(to_long((panel / divisor).fillna(fill), name))
+                continue
             w = _winsorize_rows(panel, self.cfg.winsor_pct)
             if name in demean_set:
                 w = _by_industry(demean_by_group, w, segs)
@@ -218,7 +263,7 @@ class FeatureBuilder:
         out = pd.concat(cols, axis=1)
         keep = to_long(valid, "eligible").reindex(out.index).fillna(False).astype(bool)
         out = out.loc[keep.to_numpy()].fillna(0.0)
-        out = out.reindex(columns=[c for c in FEATURE_ORDER if c in out.columns])
+        out = out.reindex(columns=[c for c in order if c in out.columns])
         return out
 
     def build_and_process(self, md: MarketData) -> Long:

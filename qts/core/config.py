@@ -208,6 +208,10 @@ class MLPParams(_ConfigBase):
     refit_on_full: bool = True
 
 
+#: Values of ``AlphaConfig.feature_set`` (the feature lists live in ``qts.alpha.features``).
+ALPHA_FEATURE_SETS: tuple[str, ...] = ("v1", "v2")
+
+
 @dataclass(frozen=True)
 class AlphaConfig(_ConfigBase):
     horizon_days: int = 20
@@ -294,6 +298,16 @@ class AlphaConfig(_ConfigBase):
     # bitwise the earlier behaviour).  Pre-registered test value: 8 years, to be
     # run as ONE logged trial, not swept (every value tried is a trial in the DSR).
     sample_weight_halflife_years: float = 0.0
+    # Feature set of the ML sleeve (qts.alpha.features; handbook 04 "Feature set 2").
+    # "v1": the 18 Tier-1 features.  "v2": v1 + eight features (earnings reaction
+    # ear_3d / sue / days_since_earnings, abnormal volume abn_volume_5d /
+    # abn_volume_earn, accruals, net_issuance, high_52w); needs
+    # MarketData.earnings_dates / earnings_fundamentals (store: `qts data sharadar
+    # derive-earnings`).  The rank composite is the same under both (no theme reads
+    # the new features).  Pre-registered: "v2" is ONE logged trial, with
+    # horizon_days=60 and sample_weight_halflife_years=8
+    # (docs/notes/feature_set_2_2026-11-13.md).
+    feature_set: str = "v1"
     # Causal delisting rule for labels when ``MarketData.delisting_dates`` does not
     # cover a name: a price gap at the label's window end counts as a delisting
     # only once the name has had no close for this many trading days after its
@@ -313,6 +327,10 @@ class AlphaConfig(_ConfigBase):
         sw: Any = self.sample_weight_halflife_years
         if isinstance(sw, bool) or not isinstance(sw, (int, float)) or not math.isfinite(sw) or sw < 0:
             raise ValueError(f"AlphaConfig: sample_weight_halflife_years must be >= 0 (0 = off), got {sw!r}")
+        if self.feature_set not in ALPHA_FEATURE_SETS:
+            raise ValueError(
+                f"AlphaConfig: feature_set must be one of {ALPHA_FEATURE_SETS}, got {self.feature_set!r}"
+            )
 
 
 @dataclass(frozen=True)

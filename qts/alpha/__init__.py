@@ -21,13 +21,14 @@ from .evaluation import (
     rank_ic_series,
     signal_half_life,
 )
-from .features import FEATURE_ORDER, FeatureBuilder, feature_signature
+from .features import FEATURE_ORDER, FEATURE_SETS, FeatureBuilder, feature_order, feature_signature
 from .models import DateGroupedRankIC, EnsembleModel, LGBMModel, MLPModel, RankCompositeModel, RidgeModel
 from .targets import forward_returns, residualize_forward_returns
 from .trainer import WalkForwardTrainer, train_live_parity_check
 
 __all__ = [
     "FEATURE_ORDER",
+    "FEATURE_SETS",
     "THEMES",
     "AlphaModel",
     "DateGroupedRankIC",
@@ -45,6 +46,7 @@ __all__ = [
     "decile_spread",
     "default_ml_factory",
     "factor_momentum_tilt",
+    "feature_order",
     "feature_signature",
     "forward_returns",
     "ic_decay_curve",

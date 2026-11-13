@@ -189,6 +189,8 @@ root/
   industry/all.parquet                 long table without a date: ticker, industry
   delisting_dates/all.parquet          long table: ticker, delisting_date
   delisting_reasons/all.parquet        long table: id, delisting_date, reason, source_action
+  earnings_dates/year=2019/...         long table: date (announcement), ticker, source, datekey, ...
+  earnings_fundamentals/year=2019/...  long table: date (datekey), ticker, dimension, eps, split_cum, ...
 ```
 
 ### Why we need it here
@@ -436,6 +438,7 @@ Forming the ratio at the settlement date keeps it split-consistent: if the stock
 - FINRA publishes after the close; the first audit (finding 14) recommends FINRA's dissemination calendar plus one session. The 8-session default approximates it; raise `lag_business_days` to 9 to be conservative.
 - `shares_outstanding` must be a wide panel of actual share counts (`MarketData.shares_outstanding`, or `shares_outstanding_panel(md)`); the function refuses anything else.
 - Twice-monthly data is stale by up to three weeks plus the lag; do not read it as a daily signal.
+- FINRA short interest is **not** part of feature set 2 of the alpha model: the history available would cover only part of 2003–2026 (deferred; → see **Alpha model › Feature set 2**).
 
 ### References
 
@@ -720,6 +723,7 @@ TICKERS carries only the **current** classification, so no `industry_history` is
 - `delisting_dates`: `lastpricedate` for `isdelisted = "Y"`, `NaT` for alive names, so **every** kept id is covered and the label builder and simulator use the vendor rule rather than the 63-day gap rule. `validate` cross-checks the dates against `ACTIONS` rows of type `delisted` (within 5 days) without overriding TICKERS.
 - `corporate_actions` keeps every `ACTIONS` row (date, action, ticker, id, value, contra ticker) for reference; `validate` confirms that raw-close jumps of more than 40% with a continuous adjusted close line up with `split` actions.
 - `delisting_reasons`: one row per delisted id with its reason, derived from `corporate_actions` (next subsection).
+- `earnings_dates` and `earnings_fundamentals`: earnings announcements and the as-reported quarterly record, derived from `sharadar_sf1`, the optional `EVENTS` table and the splits in `corporate_actions` (→ see **Earnings dates and the quarterly record** below).
 - `sp500_membership` stores the `SP500` events (`added`, `removed`, plus the vendor's `current` and `historical` listings). `sp500_membership_panel(store)` turns the add/remove events into a date × id boolean panel (member on `[added, removed)`, events before the panel start carried in). It is stored and exposed only: **it is not a universe rule** and nothing in the pipeline reads it yet.
 
 ### Delisting reasons
@@ -758,6 +762,53 @@ qts data sharadar derive --store data/store --window 10 --json reasons.json
 - The action can be dated a few days after the last price date, while the simulator books the delisting the day after it. The reason therefore sets the size of an accounting entry with information up to 5 business days ahead; it never reaches a signal or a trade.
 - The stage cache keys the alpha fit (the labels read the reasons) on this table and the risk fit not at all, so deriving or re-deriving it refits the alpha model only.
 - Tests: `tests/test_sharadar.py::test_derive_delisting_reasons_mapping_precedence_and_window`, `::test_sync_writes_delisting_reasons_and_market_data_loads_them`, `::test_derive_from_an_existing_store_without_download`.
+
+### Earnings dates and the quarterly record
+
+**What it is.** Two derived long tables that feed feature set 2 of the alpha model (→ see **Alpha model › Feature set 2**): `earnings_dates`, one row per earnings announcement, and `earnings_fundamentals`, the as-reported quarterly numbers with a split factor. Both are plain functions of tables already in the store (`sharadar_sf1`, `sharadar_events`, `corporate_actions`), so they are derived, never downloaded.
+
+**Why we need it here.** The SF1 `datekey` is the date of the full quarterly report. The market usually learns the result earlier, from a press release filed as a form 8-K under item 2.02 ("Results of Operations and Financial Condition"). A feature that measures the price reaction to earnings needs that earlier date; measured around the 10-Q date it would miss the reaction.
+
+**`earnings_dates`.**
+
+| Column | Meaning |
+|---|---|
+| `date` | the announcement date (`announce_date` on `MarketData`) |
+| `ticker` | the store id |
+| `source` | `events` (an 8-K item 2.02 from Sharadar `EVENTS`) or `datekey` (the filing date, the fallback) |
+| `datekey`, `calendardate`, `reportperiod` | the quarterly filing the announcement precedes, if one follows within 45 days. Informational: attached with hindsight and never read by a feature |
+
+The announcement series of a name is the union of two sets:
+
+1. every `EVENTS` row whose `eventcodes` contain the earnings code (`qts/data/earnings.py::EARNINGS_EVENT_CODES`, default `22`);
+2. every SF1 `ARQ` filing date that has **no** such event in the 45 calendar days up to and including the filing date (and after the previous filing date).
+
+Each row is public on its own date: an 8-K is public the day it is filed, and on a filing date it is known whether an 8-K came before it. No row is chosen or dropped using anything dated later, so the series as of $t$ is simply the rows dated $\le t$. That is why the rule keeps *every* item 2.02 event, including a pre-announcement, instead of picking "the" announcement of each quarter, which would need to know which filing follows.
+
+<callout icon="⚠️" color="yellow_bg">
+The event code is an assumption. Sharadar's `eventcodes` are taken to be the 8-K item numbers without the dot (`22` = item 2.02); this was not checked against the vendor's documentation. `derive-earnings` prints the frequency of every code with two tell-tales: events per name-year (an earnings code shows about four) and the share of events dated in the 45 days before a quarterly filing (high for earnings). If another code fits, pass `--codes`.
+</callout>
+
+**`earnings_fundamentals`.** One row per SF1 row of the `ARQ` and `ART` dimensions: `date` (= `datekey`), `ticker`, `dimension`, `calendardate`, `eps`, `netinc`, `ncfo`, `assets`, and `split_cum`. `split_cum` is the product of the ratios of every split of the name dated on or before the row's `datekey` (1.0 without splits), so `eps × split_cum` is EPS per original share, continuous across splits, built from past splits only. Split dates and ratios come from the `corporate_actions` rows with `action = split`. Whether the vendor's `value` is the ratio (2 for a 2-for-1) or its inverse is checked row by row against the prices: on the split date $(P^{\text{raw}}_{t-1}/P^{\text{raw}}_t)\cdot(P^{\text{adj}}_t/P^{\text{adj}}_{t-1})$ is the ratio the two closes imply; the command reports how many rows the prices confirm each way.
+
+**In the code.**
+
+```bash
+qts data sharadar derive-earnings --store data/store          # build both tables, print the report
+qts data sharadar sync --tables EVENTS --from-files ~/Downloads/sharadar    # add EVENTS, then derive again
+qts data sharadar sync --tables SF1 --from-files ~/Downloads/sharadar       # re-read SF1 (adds ncfo)
+```
+
+- `qts/data/earnings.py`: `derive_earnings_dates`, `build_earnings_fundamentals`, `confirm_split_ratios`, `cumulative_split_factor` (pure functions); `qts/data/sharadar.py::derive_earnings_from_store`. `sync` rebuilds both tables at the end of every run.
+- `ParquetStore.as_market_data` loads them into `MarketData.earnings_dates` / `earnings_fundamentals` for the loaded ids, rows up to `end` (no `start` cut: the earnings surprise needs three years of quarters before the first panel date). `MarketData.slice_until(t)` keeps the rows dated $\le t$.
+- Without `EVENTS` in the store the command says so, uses the filing date for every announcement and prints the `sync` line that adds the table.
+- `ncfo` (operating cash flow) was added to the kept SF1 fields on 2026-11-13. A store synced earlier lacks it; the command warns, and `sync --tables SF1` reads the table again even if the raw file is unchanged, because the kept field list is part of the step's resume state.
+
+**Pitfalls & checks.**
+- A filing date as announcement date is late by the gap between press release and report (days for a 10-Q, often weeks for a 10-K). The reaction window then misses the real reaction; the feature is noisier, not forward-looking.
+- 8-K item 2.02 exists since August 2004, so earlier years rest on filing dates. The report's by-year table shows the split.
+- Neither table enters the risk fit's cache key, and they enter the alpha fit's key only under `alpha.feature_set = "v2"`.
+- Tests: `tests/test_feature_set_2.py::test_announcement_is_the_event_and_the_filing_date_is_the_fallback`, `::test_the_series_as_of_t_is_the_series_restricted_to_t`, `::test_sync_derives_the_earnings_tables_from_sf1_events_and_actions`, `::test_split_ratio_is_confirmed_against_the_stored_prices`, `::test_derive_earnings_cli_on_an_existing_store`.
 
 ### Incremental refresh and memory
 

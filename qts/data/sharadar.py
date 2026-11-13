@@ -132,6 +132,16 @@ import pyarrow.parquet as pq
 
 from qts.core.delisting import DELISTING_REASONS, REASON_PRECEDENCE
 from qts.core.delisting import UNKNOWN as UNKNOWN_REASON
+from qts.data.earnings import (
+    ANNOUNCE_WINDOW_DAYS,
+    EARNINGS_DIMENSIONS,
+    EARNINGS_EVENT_CODES,
+    EARNINGS_SF1_FIELDS,
+    EarningsDatesReport,
+    build_earnings_fundamentals,
+    confirm_split_ratios,
+    derive_earnings_dates,
+)
 from qts.data.loaders import (
     FF48_LONG_NAMES,
     FF48_NAMES,
@@ -200,6 +210,10 @@ SF1_FIELDS: tuple[str, ...] = (
     "fcf",
     "debt",
     "liabilities",
+    # added 2026-11-13 for feature set 2 (accruals needs operating cash flow); a
+    # store synced before then lacks them until SF1 is read again
+    "ncfo",
+    "epsdil",
 )
 SF1_KEYS: tuple[str, ...] = ("ticker", "dimension", "calendardate", "datekey", "reportperiod", "lastupdated")
 SF1_DIMENSIONS: tuple[str, ...] = ("ART", "ARQ")
@@ -1090,7 +1104,9 @@ def derive_delisting_reasons(
             "action": actions["action"].astype(str).str.strip().str.lower().to_numpy(),
             "ticker": actions["ticker"].astype(str).str.strip().str.upper().to_numpy(),
             "action_id": (
-                actions["id"].to_numpy() if "id" in actions.columns else np.full(len(actions), None, dtype=object)
+                actions["id"].to_numpy()
+                if "id" in actions.columns
+                else np.full(len(actions), None, dtype=object)
             ),
         }
     )
@@ -1140,7 +1156,9 @@ def derive_delisting_reasons(
     return out, rep
 
 
-def derive_from_store(store_root: str, window_days: int = DELISTING_REASON_WINDOW_DAYS) -> DelistingReasonReport:
+def derive_from_store(
+    store_root: str, window_days: int = DELISTING_REASON_WINDOW_DAYS
+) -> DelistingReasonReport:
     """Rebuild the ``delisting_reasons`` dataset of an existing store from its
     ``corporate_actions`` and ``security_master`` (no download; idempotent)."""
     store = ParquetStore(store_root)
@@ -1153,6 +1171,118 @@ def derive_from_store(store_root: str, window_days: int = DELISTING_REASON_WINDO
     master = store.read_long("security_master")
     out, rep = derive_delisting_reasons(store.read_long("corporate_actions"), master, window_days)
     store.write_long("delisting_reasons", out, mode="replace", key=["id"])
+    return rep
+
+
+#: column of the stored ``sharadar_events`` that holds the 8-K item codes
+EVENTS_CODE_COLUMNS: tuple[str, ...] = ("eventcodes", "eventcode", "events")
+SYNC_SF1_HINT = "qts data sharadar sync --store <store> --tables SF1 --from-files <bulk dir>"
+SYNC_EVENTS_HINT = "qts data sharadar sync --store <store> --tables EVENTS --from-files <bulk dir>"
+
+
+def _stored_splits(store: ParquetStore) -> tuple[pd.DataFrame | None, dict[str, Any]]:
+    """Split ratios ``ticker (id), date, ratio`` from the stored ``corporate_actions``
+    (``action == "split"``, rows resolved to an id), each checked against the stored
+    as-traded / adjusted closes (:func:`qts.data.earnings.confirm_split_ratios`)."""
+    if not store.exists("corporate_actions"):
+        return None, {}
+    ca = store.read_long("corporate_actions")
+    ca = ca[(ca["action"].astype(str) == "split") & ca["id"].notna()]
+    sp = pd.DataFrame(
+        {
+            "ticker": ca["id"].astype(str).to_numpy(),
+            "date": pd.to_datetime(ca["date"]).to_numpy(),
+            "value": pd.to_numeric(ca["value"], errors="coerce").to_numpy(dtype=float),
+        }
+    ).drop_duplicates(["ticker", "date"], keep="last")
+    if sp.empty:
+        return None, {"n": 0}
+    if store.exists("prices_close_raw") and store.exists("prices_close"):
+        con = store.duckdb_connection()
+        try:
+            con.register("sp", sp)
+            sp = con.execute(
+                "WITH px AS (SELECT r.ticker, r.date, r.value AS raw, c.value AS adj, "
+                "LAG(r.value) OVER w AS raw_prev, LAG(c.value) OVER w AS adj_prev "
+                "FROM prices_close_raw r JOIN prices_close c ON r.date = c.date AND r.ticker = c.ticker "
+                "WHERE r.ticker IN (SELECT DISTINCT ticker FROM sp) "
+                "WINDOW w AS (PARTITION BY r.ticker ORDER BY r.date)) "
+                "SELECT sp.ticker, sp.date, sp.value, px.raw, px.raw_prev, px.adj, px.adj_prev "
+                "FROM sp LEFT JOIN px ON px.ticker = sp.ticker AND px.date = sp.date "
+                "ORDER BY sp.ticker, sp.date"
+            ).df()
+        finally:
+            con.close()
+    return confirm_split_ratios(sp)
+
+
+def derive_earnings_from_store(
+    store_root: str,
+    codes: Sequence[str] = EARNINGS_EVENT_CODES,
+    window_days: int = ANNOUNCE_WINDOW_DAYS,
+) -> EarningsDatesReport:
+    """Rebuild ``earnings_dates`` and ``earnings_fundamentals`` of an existing store
+    from its ``sharadar_sf1`` (ARQ / ART), ``sharadar_events`` (optional: without it
+    every announcement date is the filing date) and ``corporate_actions`` (splits;
+    optional).  No download; idempotent.  :mod:`qts.data.earnings` has the rules."""
+    store = ParquetStore(store_root)
+    if not store.exists("sharadar_sf1"):
+        raise SharadarError(
+            f"store {store_root} has no sharadar_sf1: run `{SYNC_SF1_HINT.replace('<store>', store_root)}` first"
+        )
+    sf1 = store.read_long("sharadar_sf1").rename(columns={"date": "datekey"})
+    sf1 = sf1[sf1["dimension"].isin(EARNINGS_DIMENSIONS)]
+    events = None
+    if store.exists("sharadar_events"):
+        ev = store.read_long("sharadar_events")
+        code_col = next((c for c in EVENTS_CODE_COLUMNS if c in ev.columns), None)
+        if code_col is None or not {"ticker", "date"} <= set(ev.columns):
+            raise SharadarError(
+                f"sharadar_events has columns {sorted(ev.columns)}: expected ticker, date and one of "
+                f"{EVENTS_CODE_COLUMNS}"
+            )
+        ev = ev[ev["ticker"].notna()]
+        events = pd.DataFrame(
+            {"ticker": ev["ticker"].astype(str), "date": ev["date"], "eventcodes": ev[code_col]}
+        )
+    arq = sf1[sf1["dimension"] == "ARQ"]
+    table, rep = derive_earnings_dates(arq, events, codes=codes, window_days=window_days)
+    splits, counts = _stored_splits(store)
+    fund = build_earnings_fundamentals(sf1, splits)
+    rep.splits = counts
+    rep.n_fundamental_rows = {d: int((fund["dimension"] == d).sum()) for d in EARNINGS_DIMENSIONS}
+    rep.fields_missing = [c for c in EARNINGS_SF1_FIELDS if c not in sf1.columns or not sf1[c].notna().any()]
+    if "ncfo" in rep.fields_missing:
+        rep.warnings.append(
+            "the stored SF1 has no operating cash flow (ncfo), so the `accruals` feature cannot be built "
+            f"and a feature_set=v2 run will stop: re-read SF1 with `{SYNC_SF1_HINT.replace('<store>', store_root)}` "
+            "(the SF1 field list changed, so the table is re-read even if the file is unchanged), "
+            "then run derive-earnings again"
+        )
+    if counts and counts.get("n", 0):
+        minority = min(counts["as_given"], counts["inverse"])
+        confirmed = counts["as_given"] + counts["inverse"]
+        if confirmed and minority / confirmed > 0.05:
+            rep.warnings.append(
+                f"split ratios: {counts['as_given']} confirmed by prices as given but {counts['inverse']} as the "
+                "inverse; the per-row price-implied orientation is used"
+            )
+        if counts["unconfirmed"] > 0.2 * counts["n"]:
+            rep.warnings.append(
+                f"split ratios: {counts['unconfirmed']} of {counts['n']} are not confirmed by the prices"
+            )
+    store.write_long(
+        "earnings_dates",
+        table.rename(columns={"announce_date": "date"}),
+        mode="replace",
+        key=["date", "ticker"],
+    )
+    store.write_long(
+        "earnings_fundamentals",
+        fund.rename(columns={"datekey": "date"}),
+        mode="replace",
+        key=["date", "ticker", "dimension", "calendardate"],
+    )
     return rep
 
 
@@ -1348,6 +1478,7 @@ class SyncReport:
     dry_run: bool = False
     seconds: float = 0.0
     delisting_reasons: dict[str, int] = field(default_factory=dict)
+    earnings: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         d = dataclasses.asdict(self)
@@ -1394,6 +1525,12 @@ class SyncReport:
                 "  delisting_reasons: "
                 + ", ".join(f"{k} {v}" for k, v in self.delisting_reasons.items())
                 + "  (full table: qts data sharadar derive --store <store>)"
+            )
+        if self.earnings:
+            lines.append(
+                "  earnings_dates: "
+                + ", ".join(f"{k} {v:,d}" for k, v in self.earnings.items())
+                + "  (full table: qts data sharadar derive-earnings --store <store>)"
             )
         for w in self.warnings:
             lines.append(f"  WARNING: {w}")
@@ -1583,6 +1720,19 @@ class _Sync:
                 )
                 self.store.write_long("delisting_reasons", out, mode="replace", key=["id"])
                 self.report.delisting_reasons = dict(dr.by_reason)
+            if self.store.exists("sharadar_sf1"):
+                # earnings_dates / earnings_fundamentals (feature set 2): derived, always rebuilt
+                try:
+                    er = derive_earnings_from_store(self.store_root)
+                except SharadarError as e:
+                    self.report.warnings.append(f"earnings tables not derived: {e}")
+                else:
+                    self.report.earnings = {
+                        "announcements": er.n_rows,
+                        "from_events": er.n_event_rows,
+                        "from_datekey": er.n_datekey_rows,
+                    }
+                    self.report.warnings.extend(er.warnings)
             if not self.keep_staging:
                 shutil.rmtree(self.staging_root, ignore_errors=True)
         self.report.seconds = time.perf_counter() - t0
@@ -1757,7 +1907,9 @@ class _Sync:
         if self.dry_run:
             st.note = "would write sharadar_sf1 (then book_to_price, earnings_yield, gross_profitability, asset_growth)"
             return
-        if self._skip("SF1", files):
+        # the kept field list is part of the step's state: a store synced with an
+        # older SF1_FIELDS is re-read even when the raw file is unchanged
+        if self._skip("SF1", files) and self.state.get("SF1", {}).get("fields") == list(SF1_FIELDS):
             st.skipped, st.note = True, "unchanged (state)"
             return
         assert self.master is not None
@@ -1797,6 +1949,8 @@ class _Sync:
             )
         st.datasets["sharadar_sf1"] = len(sf1)
         self._done("SF1", files)
+        self.state["SF1"]["fields"] = list(SF1_FIELDS)
+        _save_state(self.store_root, self.state)
         st.seconds = time.perf_counter() - t0
 
     def step_actions(self) -> None:

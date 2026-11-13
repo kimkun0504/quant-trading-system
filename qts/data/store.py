@@ -36,7 +36,19 @@ Dataset names understood by :meth:`ParquetStore.as_market_data`:
                             source_action`` (one row per delisted id; reason in
                             acquisition / performance / voluntary / unknown)
                             -> ``delisting_reasons`` (absent -> all unknown)
+``earnings_dates``          long table ``date (= announce_date), ticker (id),
+                            source, datekey, calendardate, reportperiod``: one
+                            row per earnings announcement -> ``earnings_dates``
+``earnings_fundamentals``   long table ``date (= datekey), ticker (id),
+                            dimension (ARQ / ART), calendardate, eps, split_cum,
+                            netinc, ncfo, assets`` -> ``earnings_fundamentals``
 ==========================  ===========================================
+
+The two earnings tables (:mod:`qts.data.earnings`) are the inputs of
+``AlphaConfig.feature_set = "v2"``; ``qts data sharadar derive-earnings`` builds
+them from the stored ``sharadar_sf1`` / ``sharadar_events`` / ``corporate_actions``.
+Rows up to ``end`` are loaded (no ``start`` cut: the seasonal earnings surprise
+needs three years of quarters before the first panel date).
 
 Dated industries: dates before a ticker's first dated classification read
 ``"UNKNOWN"`` (never the static map, which in a store is the *current*
@@ -429,9 +441,28 @@ class ParquetStore:
             industry_history=self._industry_history(end, cols, idx[0] if len(idx) else None),
             delisting_dates=self._delisting_dates(cols),
             delisting_reasons=self._delisting_reasons(cols),
+            earnings_dates=self._dated_table("earnings_dates", "announce_date", cols, end),
+            earnings_fundamentals=self._dated_table("earnings_fundamentals", "datekey", cols, end),
         )
         md.validate()
         return md
+
+    def _dated_table(self, name: str, date_col: str, cols: pd.Index, end) -> Optional[pd.DataFrame]:
+        """A long earnings table (stored with ``date`` = ``date_col``) for the loaded
+        ids, rows dated ``<= end``; ``None`` when the dataset is absent.  Sorted by
+        ``ticker, date_col`` with a fresh index (deterministic for the data hash)."""
+        if not self.exists(name):
+            return None
+        df = self.read_long(name, None, end, tickers=[str(c) for c in cols])
+        df = df.rename(columns={"date": date_col})
+        for c in ("announce_date", "datekey", "calendardate", "reportperiod"):
+            if c in df.columns:
+                df[c] = pd.to_datetime(df[c])
+        df["ticker"] = df["ticker"].astype(str)
+        by = [c for c in ("ticker", "dimension", date_col, "calendardate") if c in df.columns]
+        first = ["ticker", *[c for c in ("dimension", date_col) if c in df.columns]]
+        df = df[first + [c for c in df.columns if c not in first]]
+        return df.sort_values(by, kind="mergesort").reset_index(drop=True)
 
     def _industry_history(self, end, cols: pd.Index, first_date=None) -> Optional[Wide]:
         """Dated labels up to ``end`` (no ``start`` cut: the label in force at the
@@ -513,6 +544,12 @@ class ParquetStore:
                                "reason": md.delisting_reasons.astype(str).to_numpy(),
                                "source_action": ""})
             self.write_long("delisting_reasons", dr, mode="replace")
+        if md.earnings_dates is not None:
+            self.write_long("earnings_dates", md.earnings_dates.rename(columns={"announce_date": "date"}),
+                            mode="replace", key=["date", "ticker"])
+        if md.earnings_fundamentals is not None:
+            self.write_long("earnings_fundamentals", md.earnings_fundamentals.rename(columns={"datekey": "date"}),
+                            mode="replace", key=["date", "ticker", "dimension", "calendardate"])
         if include_extra:
             for k, v in md.extra.items():
                 self.write_wide(k, v)

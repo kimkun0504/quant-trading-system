@@ -82,6 +82,7 @@ alpha:
   train_min_days: 756
   embargo_days: null
   sample_weight_halflife_years: 0.0
+  feature_set: v1
   delisting_gap_days: 63
 risk:
   vol_half_life: 84

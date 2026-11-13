@@ -112,6 +112,25 @@ class MarketData:
     #: from the series -> ``"unknown"``.  Only read for names already decided
     #: delisted; :meth:`slice_until` blanks reasons of later delistings.
     delisting_reasons: pd.Series | None = None
+    #: Optional earnings announcements, long table ``ticker, announce_date, source``
+    #: (+ informational ``datekey, calendardate``; :mod:`qts.data.earnings`;
+    #: ParquetStore dataset ``earnings_dates``, written by ``qts data sharadar
+    #: derive-earnings``).  One row per announcement, public on ``announce_date``.
+    #: Read only by the ``v2`` alpha features.  Not a panel: :meth:`slice_until`
+    #: keeps the rows with ``announce_date <= date``.
+    earnings_dates: pd.DataFrame | None = None
+    #: Optional as-reported quarterly record, long table ``ticker, dimension (ARQ /
+    #: ART), datekey, calendardate, eps, split_cum, netinc, ncfo, assets``
+    #: (:mod:`qts.data.earnings`; dataset ``earnings_fundamentals``).  A row is
+    #: public on its ``datekey`` (filing date); :meth:`slice_until` keeps the rows
+    #: with ``datekey <= date``.  Read only by the ``v2`` alpha features.
+    earnings_fundamentals: pd.DataFrame | None = None
+
+    #: Long tables cut by a date column in :meth:`slice_until`: field -> column.
+    DATED_TABLES: ClassVar[dict[str, str]] = {
+        "earnings_dates": "announce_date",
+        "earnings_fundamentals": "datekey",
+    }
 
     #: Panels that share ``close``'s index/columns (checked by ``validate``).
     ALIGNED_PANELS: ClassVar[tuple[str, ...]] = ("volume", "market_cap", "close_raw", "shares_outstanding")
@@ -216,6 +235,12 @@ class MarketData:
             cast(object, self.delisting_reasons), pd.Series
         ):
             raise ValueError("delisting_reasons must be a Series ticker -> reason")
+        for name, col in self.DATED_TABLES.items():
+            tbl = getattr(self, name)
+            if tbl is None:
+                continue
+            if not isinstance(cast(object, tbl), pd.DataFrame) or not {"ticker", col} <= set(tbl.columns):
+                raise ValueError(f"{name} must be a long DataFrame with columns ticker and {col}")
 
     def slice_until(self, date: pd.Timestamp) -> MarketData:
         """Point-in-time view: every date-indexed panel cut at ``<= date``."""
@@ -240,6 +265,13 @@ class MarketData:
                     rs = cast(pd.Series, v)
                     dd = cast(pd.Series, pd.to_datetime(self.delisting_dates)).reindex(rs.index)
                     changes[fl.name] = rs.where((dd <= pd.Timestamp(date)).to_numpy(), "unknown")
+                continue
+            if fl.name in self.DATED_TABLES:
+                # long tables: a row is known from its own date column on
+                if v is not None:
+                    tbl = cast(pd.DataFrame, v)
+                    when = pd.to_datetime(tbl[self.DATED_TABLES[fl.name]])
+                    changes[fl.name] = tbl.loc[(when <= pd.Timestamp(date)).to_numpy()]
                 continue
             if fl.name == "extra":
                 changes["extra"] = {k: cut(x) for k, x in v.items()}

@@ -169,6 +169,7 @@ from qts.alpha.evaluation import (
     ic_report,
     infer_periods_per_year,
 )
+from qts.alpha.features_v2 import require_v2_inputs
 from qts.alpha.targets import forward_returns, residualize_forward_returns
 from qts.backtest import BacktestResult, BacktestSpec, BacktestSummary, DailyBarSimulator
 from qts.backtest import metrics as M
@@ -424,6 +425,9 @@ class ResearchPipeline:
         stores.  ``self.cache_info_`` records ``hit`` / ``stored`` / ``miss``
         per stage."""
         cfg = self.cfg
+        if cfg.alpha.feature_set == "v2":
+            # fail before the risk fit, naming the command that builds the missing tables
+            require_v2_inputs(md)
         t: dict[str, float] = {}
         self._md_input = md
         cache = self._stage_cache()
@@ -530,6 +534,13 @@ class ResearchPipeline:
                 delisting_reasons=reference_hash(md, "delisting_reasons"),
                 signal_lag_days=self.signal_lag_days(),
             )
+            if cfg.alpha.feature_set != "v1":
+                # the earnings tables are read by the v2 features only: a v1 fit
+                # stays valid when they are added or re-derived
+                parts.update(
+                    earnings_dates=reference_hash(md, "earnings_dates"),
+                    earnings_fundamentals=reference_hash(md, "earnings_fundamentals"),
+                )
         return parts
 
     @classmethod

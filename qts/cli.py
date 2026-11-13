@@ -16,6 +16,8 @@ Commands
 ``data sharadar sync``      fill a ParquetStore from the Sharadar bundle (``--store``,
                      ``--raw``, ``--tables``, ``--since``, ``--from-files DIR``, ``--dry-run``)
 ``data sharadar derive``    rebuild ``delisting_reasons`` from the stored ACTIONS / TICKERS
+``data sharadar derive-earnings``  build ``earnings_dates`` / ``earnings_fundamentals``
+                            (``alpha.feature_set=v2``) from the stored SF1 / EVENTS / ACTIONS
                             tables (no download) and print the counts by reason and year
 ``data sharadar validate``  sanity checks of a Sharadar-filled store (PASS/WARN per check)
 ``config dump``      print the default (or ``--config``) SystemConfig as YAML;
@@ -180,6 +182,15 @@ def _run_pipeline(md, cfg, a: argparse.Namespace, out=None) -> int:
         nav0=a.nav,
         runs_root=None if a.no_save else a.runs_root,
     )
+    if cfg.alpha.feature_set == "v2":
+        from qts.alpha.features_v2 import FeatureSetDataError, require_v2_inputs
+
+        try:  # before any fit: the message names the command that builds the tables
+            require_v2_inputs(md)
+        except FeatureSetDataError as e:
+            store = getattr(a, "store", None) or "<store>"
+            print(f"error: {str(e).replace('<store>', store)}", file=sys.stderr)
+            return 2
     if not a.compare_lag:
         res = pipe.run(md, progress=a.verbose, max_days=a.max_days)
         print(format_result(res), file=out)
@@ -231,16 +242,21 @@ def compare_lag_report(r0, r1) -> str:
 def cmd_demo(a: argparse.Namespace) -> int:
     from qts.data.synthetic import SyntheticSpec, generate
 
-    t0 = time.time()
-    md = generate(SyntheticSpec(n_stocks=a.stocks, n_days=a.days, seed=a.seed))
-    print(
-        f"synthetic market: {md.close.shape[1]} stocks x {md.close.shape[0]} days  ({time.time() - t0:.1f}s)"
-    )
     try:
         cfg = _apply_set_overrides(_load_config(a.config).with_overrides({"seed": a.seed}), a.set_overrides)
     except ConfigOverrideError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
+    t0 = time.time()
+    # the earnings tables are generated only for the feature set that reads them, so
+    # the default demo's data (and data hash) is unchanged
+    spec = SyntheticSpec(
+        n_stocks=a.stocks, n_days=a.days, seed=a.seed, with_earnings=cfg.alpha.feature_set == "v2"
+    )
+    md = generate(spec)
+    print(
+        f"synthetic market: {md.close.shape[1]} stocks x {md.close.shape[0]} days  ({time.time() - t0:.1f}s)"
+    )
     return _run_pipeline(md, cfg, a)
 
 
@@ -300,14 +316,27 @@ def data_hash_aliases(md) -> dict[str, str]:
     (``hash_market(md)``).  Used by ``qts ledger rekey --store``."""
     from itertools import combinations
 
-    from qts.core.manifest import _SKIP_IF_NONE, hash_market, hash_market_data
+    from qts.core.manifest import (
+        _SKIP_IF_NONE,
+        CHAINED_REFERENCE_FIELDS,
+        chain_reference_hash,
+        hash_market,
+        hash_market_data,
+    )
 
     market = hash_market(md)
     present = sorted(n for n in _SKIP_IF_NONE if getattr(md, n, None) is not None)
+    # the panels are hashed once per subset of the fields hashed *with* them; the
+    # chained reference tables (cheap) are then added on top in every combination
+    in_panels = [n for n in present if n not in CHAINED_REFERENCE_FIELDS]
+    chained = [n for n in present if n in CHAINED_REFERENCE_FIELDS]
     out: dict[str, str] = {}
-    for k in range(len(present) + 1):
-        for drop in combinations(present, k):
-            out[hash_market_data(md, exclude=frozenset(drop))] = market
+    for k in range(len(in_panels) + 1):
+        for drop in combinations(in_panels, k):
+            base = hash_market_data(md, n_chars=64, exclude=CHAINED_REFERENCE_FIELDS | frozenset(drop))
+            for j in range(len(chained) + 1):
+                for drop_c in combinations(chained, j):
+                    out[chain_reference_hash(base, md, exclude=frozenset(drop_c))[:16]] = market
     return out
 
 
@@ -354,6 +383,12 @@ def cmd_run(a: argparse.Namespace) -> int:
     return _run_pipeline(md, cfg, a)
 
 
+def _earnings_codes() -> tuple[str, ...]:
+    from qts.data.earnings import EARNINGS_EVENT_CODES
+
+    return EARNINGS_EVENT_CODES
+
+
 def cmd_data(a: argparse.Namespace) -> int:
     if a.data_cmd != "sharadar":
         return 2
@@ -390,6 +425,22 @@ def cmd_data(a: argparse.Namespace) -> int:
         print(f"written: {a.store}/delisting_reasons ({drep.n_delisted} rows)")
         if a.json:
             Path(a.json).write_text(json.dumps(drep.to_dict(), indent=1, default=str))
+            print(f"written {a.json}")
+        return 0
+    if a.sharadar_cmd == "derive-earnings":
+        codes = tuple(c.strip() for c in a.codes.split(",") if c.strip())
+        try:
+            erep = sharadar.derive_earnings_from_store(a.store, codes=codes, window_days=a.window)
+        except sharadar.SharadarError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        print(erep.format(top=a.top).replace("<store>", a.store))
+        print(
+            f"written: {a.store}/earnings_dates ({erep.n_rows:,d} rows), {a.store}/earnings_fundamentals "
+            f"({sum(erep.n_fundamental_rows.values()):,d} rows)"
+        )
+        if a.json:
+            Path(a.json).write_text(json.dumps(erep.to_dict(), indent=1, default=str))
             print(f"written {a.json}")
         return 0
     if a.sharadar_cmd == "validate":
@@ -692,6 +743,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sd.add_argument("--top", type=int, default=15, help="action codes listed per table")
     sd.add_argument("--json", default=None, help="also write the count report as JSON to this path")
+    se = shsub.add_parser(
+        "derive-earnings",
+        help="build earnings_dates / earnings_fundamentals (alpha.feature_set=v2) from the stored "
+        "SF1, EVENTS and ACTIONS tables; no download",
+    )
+    se.add_argument("--store", default="data/store", help="ParquetStore root")
+    se.add_argument(
+        "--codes",
+        default=",".join(_earnings_codes()),
+        help="EVENTS codes that mark an earnings announcement (comma separated; default: 8-K item 2.02)",
+    )
+    se.add_argument(
+        "--window",
+        type=int,
+        default=45,
+        help="calendar days before a quarterly filing in which an event counts for it (default 45)",
+    )
+    se.add_argument("--top", type=int, default=25, help="event codes listed in the frequency table")
+    se.add_argument("--json", default=None, help="also write the count report as JSON to this path")
     sv = shsub.add_parser("validate", help="sanity checks of a Sharadar-filled store")
     sv.add_argument("--store", default="data/store")
     sv.add_argument("--sample", type=int, default=50, help="ids sampled for the per-name checks")

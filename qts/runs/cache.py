@@ -18,9 +18,10 @@ versions), so the key is a SHA-256 over exactly those inputs
   column labels, the eligibility panel -- :func:`qts.core.manifest.hash_market_data`)
   plus its first / last date and shape (the *as-of span* of the snapshot).
   Reference tables that only one stage reads are left out of this panel hash
-  (:data:`STAGE_EXCLUDED_DATA`: ``delisting_reasons``) and keyed on the stage
-  that reads them (``alpha_fit``: the labels), so adding or re-deriving such a
-  table does not invalidate the risk fit;
+  (:data:`STAGE_EXCLUDED_DATA`: ``delisting_reasons``, ``earnings_dates``,
+  ``earnings_fundamentals``) and keyed on the stage that reads them (``alpha_fit``:
+  the labels; the earnings tables only under ``alpha.feature_set != "v1"``), so
+  adding or re-deriving such a table does not invalidate the risk fit;
 * the hash of every config section the stage reads (``universe`` + ``risk``
   for ``risk_fit``; additionally ``alpha``, the delisting returns by reason and
   the delisting reasons, the signal lag and the pipeline's constructor knobs
@@ -124,7 +125,9 @@ STAGE_CODE_PACKAGES: dict[str, tuple[str, ...]] = {
 }
 #: ``MarketData`` fields left out of the panel hash shared by every stage and
 #: keyed on the stage that reads them (``ResearchPipeline._cache_parts``).
-STAGE_EXCLUDED_DATA: frozenset[str] = frozenset({"delisting_reasons"})
+STAGE_EXCLUDED_DATA: frozenset[str] = frozenset(
+    {"delisting_reasons", "earnings_dates", "earnings_fundamentals"}
+)
 
 
 def package_root() -> Path:
