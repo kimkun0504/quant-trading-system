@@ -124,6 +124,33 @@ handbook link; replaces margin notes) · `EmptyState`, `ErrorState`, `Skeleton`.
 - Keyboard: `/` focuses search, `c` opens Compare, `j` / `k` step through a dossier's sections; checkboxes, sort buttons, family toggles,
   disclosure lines and tooltips are all reachable by Tab.
 
+### Run builder (`/builder`)
+
+```
+┌ Start from: (Defaults | An existing run) [search runs]   Base: label, config hash ─────────┐
+│ [Variant A · 2 changes] [Variant B · 1 change ×] [+ Add variant]                            │
+├───────────────────────────────────────────────────────┬────────────────────────────────────┤
+│ Common settings   plain-language labels, 3 across     │ Before launch              ● Valid │
+│ Data and model    market, range, prefilter, ML, seed  │  key              base   A     B   │
+│ All settings      [search] [changed only]             │  alpha.…halflife  0      8     =   │
+│  ▸ Universe 8   ▸ Alpha model 46, 1 changed  …        │  config hash, warm-up              │
+│    name  path                [input] [reset]          │  ◆ cautions  ● trial N+1 in family │
+│    description               default, bounds          │  qts demo … --set k=v       [copy] │
+│                                                       │  [Queue all 2 variants]            │
+│                                                       ├────────────────────────────────────┤
+│                                                       │ Queue  1 running, 1 queued         │
+│                                                       │  ▓▓▓░░ 42%  stages · message · ETA │
+└───────────────────────────────────────────────────────┴────────────────────────────────────┘
+```
+
+The memorable element is the **launch slip**: it stays in view (sticky) while fields change, and shows
+the edit the way the compare view will later show the result, as the keys that differ, one column per
+variant. Everything else is quiet: a changed field gets a 3-px accent edge, its base value and a reset
+button (never colour alone); sections are closed until searched or opened; the slip's checks use a
+shape per tone (bar = must fix, diamond = caution, dot = note) as well as colour. The command line is
+the one place with a monospace face, because it is literal text to paste into a shell. Below 1100 px the
+slip and the queue move above the editor; at 390 px every field stacks label, control, help.
+
 ## Principles
 
 1. **The comparison is the unit.** Selection is global (tray + URL + storage); every table of
@@ -143,63 +170,75 @@ handbook link; replaces margin notes) · `EmptyState`, `ErrorState`, `Skeleton`.
 `scripts/contrast.mjs` reads `tokens.css`, mixes the `color-mix()` washes the way the browser
 does, and exits non-zero if any pair drops below its minimum (4.5:1 text, 3:1 marks and UI).
 
-| Theme | Pair                                          | Foreground | Background | Ratio | Needs | Result |
-| ----- | --------------------------------------------- | ---------- | ---------- | ----- | ----- | ------ |
-| light | fg on canvas (body text)                      | `#1a1f27`  | `#f4f5f7`  | 15.17 | 4.5   | pass   |
-| light | fg on surface (tables, panels, charts)        | `#1a1f27`  | `#ffffff`  | 16.55 | 4.5   | pass   |
-| light | fg on surface-2 (chips, hover rows, kbd)      | `#1a1f27`  | `#eef0f3`  | 14.49 | 4.5   | pass   |
-| light | fg-muted on canvas (secondary text)           | `#5b6574`  | `#f4f5f7`  | 5.41  | 4.5   | pass   |
-| light | fg-muted on surface (captions, axis labels)   | `#5b6574`  | `#ffffff`  | 5.90  | 4.5   | pass   |
-| light | fg-muted on surface-2 (table header)          | `#5b6574`  | `#eef0f3`  | 5.17  | 4.5   | pass   |
-| light | accent on canvas (links)                      | `#4f46c9`  | `#f4f5f7`  | 6.31  | 4.5   | pass   |
-| light | accent on surface (links, selected text)      | `#4f46c9`  | `#ffffff`  | 6.88  | 4.5   | pass   |
-| light | fg on accent-wash (selected rows, chips)      | `#1a1f27`  | `#efeefa`  | 14.40 | 4.5   | pass   |
-| light | accent on accent-wash (chip text)             | `#4f46c9`  | `#efeefa`  | 5.99  | 4.5   | pass   |
-| light | on-accent on accent (primary button)          | `#ffffff`  | `#4f46c9`  | 6.88  | 4.5   | pass   |
-| light | gain on canvas (positive numbers)             | `#1f5f8b`  | `#f4f5f7`  | 6.27  | 4.5   | pass   |
-| light | gain on surface                               | `#1f5f8b`  | `#ffffff`  | 6.84  | 4.5   | pass   |
-| light | loss on canvas (negative numbers, FAIL)       | `#9b2f52`  | `#f4f5f7`  | 6.59  | 4.5   | pass   |
-| light | loss on surface                               | `#9b2f52`  | `#ffffff`  | 7.19  | 4.5   | pass   |
-| light | caution-ink on canvas (warnings as text)      | `#7d5b00`  | `#f4f5f7`  | 5.72  | 4.5   | pass   |
-| light | caution-ink on surface                        | `#7d5b00`  | `#ffffff`  | 6.23  | 4.5   | pass   |
-| light | canvas on fg (tooltip)                        | `#f4f5f7`  | `#1a1f27`  | 15.17 | 4.5   | pass   |
-| light | fg on caution-wash (suspicious banner)        | `#1a1f27`  | `#f5eedd`  | 14.31 | 4.5   | pass   |
-| light | loss on loss-wash (error summary links)       | `#9b2f52`  | `#f7eef1`  | 6.32  | 4.5   | pass   |
-| light | fg on gain wash 50% (heatmap max tint)        | `#1a1f27`  | `#8fafc5`  | 7.17  | 4.5   | pass   |
-| light | fg on loss wash 50% (heatmap max tint)        | `#1a1f27`  | `#cd97a9`  | 6.77  | 4.5   | pass   |
-| light | focus ring (accent) on canvas (UI, 3:1)       | `#4f46c9`  | `#f4f5f7`  | 6.31  | 3     | pass   |
-| light | focus ring (accent) on surface (UI, 3:1)      | `#4f46c9`  | `#ffffff`  | 6.88  | 3     | pass   |
-| light | border-strong on surface (inputs, 3:1)        | `#8690a0`  | `#ffffff`  | 3.23  | 3     | pass   |
-| light | gain marks on surface (chart lines/bars, 3:1) | `#1f5f8b`  | `#ffffff`  | 6.84  | 3     | pass   |
-| light | loss marks on surface (chart bars, 3:1)       | `#9b2f52`  | `#ffffff`  | 7.19  | 3     | pass   |
-| light | caution marks on surface (drawdown line, 3:1) | `#b8860b`  | `#ffffff`  | 3.25  | 3     | pass   |
-| light | fg-muted input border on surface (UI, 3:1)    | `#5b6574`  | `#ffffff`  | 5.90  | 3     | pass   |
-| dark  | fg on canvas (body text)                      | `#e6e9ef`  | `#13161b`  | 14.91 | 4.5   | pass   |
-| dark  | fg on surface (tables, panels, charts)        | `#e6e9ef`  | `#1a1e25`  | 13.74 | 4.5   | pass   |
-| dark  | fg on surface-2 (chips, hover rows, kbd)      | `#e6e9ef`  | `#232831`  | 12.17 | 4.5   | pass   |
-| dark  | fg-muted on canvas (secondary text)           | `#9aa4b3`  | `#13161b`  | 7.20  | 4.5   | pass   |
-| dark  | fg-muted on surface (captions, axis labels)   | `#9aa4b3`  | `#1a1e25`  | 6.63  | 4.5   | pass   |
-| dark  | fg-muted on surface-2 (table header)          | `#9aa4b3`  | `#232831`  | 5.87  | 4.5   | pass   |
-| dark  | accent on canvas (links)                      | `#a9a0ff`  | `#13161b`  | 7.91  | 4.5   | pass   |
-| dark  | accent on surface (links, selected text)      | `#a9a0ff`  | `#1a1e25`  | 7.29  | 4.5   | pass   |
-| dark  | fg on accent-wash (selected rows, chips)      | `#e6e9ef`  | `#2e3044`  | 10.64 | 4.5   | pass   |
-| dark  | accent on accent-wash (chip text)             | `#a9a0ff`  | `#2e3044`  | 5.65  | 4.5   | pass   |
-| dark  | on-accent on accent (primary button)          | `#13161b`  | `#a9a0ff`  | 7.91  | 4.5   | pass   |
-| dark  | gain on canvas (positive numbers)             | `#6fa8d6`  | `#13161b`  | 7.12  | 4.5   | pass   |
-| dark  | gain on surface                               | `#6fa8d6`  | `#1a1e25`  | 6.57  | 4.5   | pass   |
-| dark  | loss on canvas (negative numbers, FAIL)       | `#d97a9a`  | `#13161b`  | 6.22  | 4.5   | pass   |
-| dark  | loss on surface                               | `#d97a9a`  | `#1a1e25`  | 5.73  | 4.5   | pass   |
-| dark  | caution-ink on canvas (warnings as text)      | `#d9b25c`  | `#13161b`  | 9.04  | 4.5   | pass   |
-| dark  | caution-ink on surface                        | `#d9b25c`  | `#1a1e25`  | 8.34  | 4.5   | pass   |
-| dark  | canvas on fg (tooltip)                        | `#13161b`  | `#e6e9ef`  | 14.91 | 4.5   | pass   |
-| dark  | fg on caution-wash (suspicious banner)        | `#e6e9ef`  | `#31302c`  | 10.86 | 4.5   | pass   |
-| dark  | loss on loss-wash (error summary links)       | `#d97a9a`  | `#2d2731`  | 4.98  | 4.5   | pass   |
-| dark  | fg on gain wash 50% (heatmap max tint)        | `#e6e9ef`  | `#45637e`  | 5.17  | 4.5   | pass   |
-| dark  | fg on loss wash 50% (heatmap max tint)        | `#e6e9ef`  | `#7a4c60`  | 5.70  | 4.5   | pass   |
-| dark  | focus ring (accent) on canvas (UI, 3:1)       | `#a9a0ff`  | `#13161b`  | 7.91  | 3     | pass   |
-| dark  | focus ring (accent) on surface (UI, 3:1)      | `#a9a0ff`  | `#1a1e25`  | 7.29  | 3     | pass   |
-| dark  | border-strong on surface (inputs, 3:1)        | `#6e7a8b`  | `#1a1e25`  | 3.84  | 3     | pass   |
-| dark  | gain marks on surface (chart lines/bars, 3:1) | `#6fa8d6`  | `#1a1e25`  | 6.57  | 3     | pass   |
-| dark  | loss marks on surface (chart bars, 3:1)       | `#d97a9a`  | `#1a1e25`  | 5.73  | 3     | pass   |
-| dark  | caution marks on surface (drawdown line, 3:1) | `#d9b25c`  | `#1a1e25`  | 8.34  | 3     | pass   |
-| dark  | fg-muted input border on surface (UI, 3:1)    | `#9aa4b3`  | `#1a1e25`  | 6.63  | 3     | pass   |
+| Theme | Pair                                                        | Foreground | Background | Ratio | Needs | Result |
+| ----- | ----------------------------------------------------------- | ---------- | ---------- | ----- | ----- | ------ |
+| light | fg on canvas (body text)                                    | `#1a1f27`  | `#f4f5f7`  | 15.17 | 4.5   | pass   |
+| light | fg on surface (tables, panels, charts)                      | `#1a1f27`  | `#ffffff`  | 16.55 | 4.5   | pass   |
+| light | fg on surface-2 (chips, hover rows, kbd)                    | `#1a1f27`  | `#eef0f3`  | 14.49 | 4.5   | pass   |
+| light | fg-muted on canvas (secondary text)                         | `#5b6574`  | `#f4f5f7`  | 5.41  | 4.5   | pass   |
+| light | fg-muted on surface (captions, axis labels)                 | `#5b6574`  | `#ffffff`  | 5.90  | 4.5   | pass   |
+| light | fg-muted on surface-2 (table header)                        | `#5b6574`  | `#eef0f3`  | 5.17  | 4.5   | pass   |
+| light | accent on canvas (links)                                    | `#4f46c9`  | `#f4f5f7`  | 6.31  | 4.5   | pass   |
+| light | accent on surface (links, selected text)                    | `#4f46c9`  | `#ffffff`  | 6.88  | 4.5   | pass   |
+| light | fg on accent-wash (selected rows, chips)                    | `#1a1f27`  | `#efeefa`  | 14.40 | 4.5   | pass   |
+| light | accent on accent-wash (chip text)                           | `#4f46c9`  | `#efeefa`  | 5.99  | 4.5   | pass   |
+| light | on-accent on accent (primary button)                        | `#ffffff`  | `#4f46c9`  | 6.88  | 4.5   | pass   |
+| light | gain on canvas (positive numbers)                           | `#1f5f8b`  | `#f4f5f7`  | 6.27  | 4.5   | pass   |
+| light | gain on surface                                             | `#1f5f8b`  | `#ffffff`  | 6.84  | 4.5   | pass   |
+| light | loss on canvas (negative numbers, FAIL)                     | `#9b2f52`  | `#f4f5f7`  | 6.59  | 4.5   | pass   |
+| light | loss on surface                                             | `#9b2f52`  | `#ffffff`  | 7.19  | 4.5   | pass   |
+| light | caution-ink on canvas (warnings as text)                    | `#7d5b00`  | `#f4f5f7`  | 5.72  | 4.5   | pass   |
+| light | caution-ink on surface                                      | `#7d5b00`  | `#ffffff`  | 6.23  | 4.5   | pass   |
+| light | canvas on fg (tooltip)                                      | `#f4f5f7`  | `#1a1f27`  | 15.17 | 4.5   | pass   |
+| light | fg on caution-wash (suspicious banner)                      | `#1a1f27`  | `#f5eedd`  | 14.31 | 4.5   | pass   |
+| light | loss on loss-wash (error summary links)                     | `#9b2f52`  | `#f7eef1`  | 6.32  | 4.5   | pass   |
+| light | fg on gain wash 50% (heatmap max tint)                      | `#1a1f27`  | `#8fafc5`  | 7.17  | 4.5   | pass   |
+| light | fg on loss wash 50% (heatmap max tint)                      | `#1a1f27`  | `#cd97a9`  | 6.77  | 4.5   | pass   |
+| light | focus ring (accent) on canvas (UI, 3:1)                     | `#4f46c9`  | `#f4f5f7`  | 6.31  | 3     | pass   |
+| light | focus ring (accent) on surface (UI, 3:1)                    | `#4f46c9`  | `#ffffff`  | 6.88  | 3     | pass   |
+| light | border-strong on surface (inputs, 3:1)                      | `#8690a0`  | `#ffffff`  | 3.23  | 3     | pass   |
+| light | gain marks on surface (chart lines/bars, 3:1)               | `#1f5f8b`  | `#ffffff`  | 6.84  | 3     | pass   |
+| light | loss marks on surface (chart bars, 3:1)                     | `#9b2f52`  | `#ffffff`  | 7.19  | 3     | pass   |
+| light | caution marks on surface (drawdown line, 3:1)               | `#b8860b`  | `#ffffff`  | 3.25  | 3     | pass   |
+| light | fg-muted input border on surface (UI, 3:1)                  | `#5b6574`  | `#ffffff`  | 5.90  | 3     | pass   |
+| light | accent on surface-2 (changed count in a section header)     | `#4f46c9`  | `#eef0f3`  | 6.03  | 4.5   | pass   |
+| light | loss on surface-2 (errors-to-fix count in a section header) | `#9b2f52`  | `#eef0f3`  | 6.29  | 4.5   | pass   |
+| light | fg-muted on accent-wash (current variant chip)              | `#5b6574`  | `#efeefa`  | 5.14  | 4.5   | pass   |
+| light | fg-muted on caution-wash (discard-edits prompt)             | `#5b6574`  | `#f5eedd`  | 5.10  | 4.5   | pass   |
+| light | accent marks on surface-2 (queue progress, 3:1)             | `#4f46c9`  | `#eef0f3`  | 6.03  | 3     | pass   |
+| light | caution marks on surface (launch-slip caution mark, 3:1)    | `#b8860b`  | `#ffffff`  | 3.25  | 3     | pass   |
+| dark  | fg on canvas (body text)                                    | `#e6e9ef`  | `#13161b`  | 14.91 | 4.5   | pass   |
+| dark  | fg on surface (tables, panels, charts)                      | `#e6e9ef`  | `#1a1e25`  | 13.74 | 4.5   | pass   |
+| dark  | fg on surface-2 (chips, hover rows, kbd)                    | `#e6e9ef`  | `#232831`  | 12.17 | 4.5   | pass   |
+| dark  | fg-muted on canvas (secondary text)                         | `#9aa4b3`  | `#13161b`  | 7.20  | 4.5   | pass   |
+| dark  | fg-muted on surface (captions, axis labels)                 | `#9aa4b3`  | `#1a1e25`  | 6.63  | 4.5   | pass   |
+| dark  | fg-muted on surface-2 (table header)                        | `#9aa4b3`  | `#232831`  | 5.87  | 4.5   | pass   |
+| dark  | accent on canvas (links)                                    | `#a9a0ff`  | `#13161b`  | 7.91  | 4.5   | pass   |
+| dark  | accent on surface (links, selected text)                    | `#a9a0ff`  | `#1a1e25`  | 7.29  | 4.5   | pass   |
+| dark  | fg on accent-wash (selected rows, chips)                    | `#e6e9ef`  | `#2e3044`  | 10.64 | 4.5   | pass   |
+| dark  | accent on accent-wash (chip text)                           | `#a9a0ff`  | `#2e3044`  | 5.65  | 4.5   | pass   |
+| dark  | on-accent on accent (primary button)                        | `#13161b`  | `#a9a0ff`  | 7.91  | 4.5   | pass   |
+| dark  | gain on canvas (positive numbers)                           | `#6fa8d6`  | `#13161b`  | 7.12  | 4.5   | pass   |
+| dark  | gain on surface                                             | `#6fa8d6`  | `#1a1e25`  | 6.57  | 4.5   | pass   |
+| dark  | loss on canvas (negative numbers, FAIL)                     | `#d97a9a`  | `#13161b`  | 6.22  | 4.5   | pass   |
+| dark  | loss on surface                                             | `#d97a9a`  | `#1a1e25`  | 5.73  | 4.5   | pass   |
+| dark  | caution-ink on canvas (warnings as text)                    | `#d9b25c`  | `#13161b`  | 9.04  | 4.5   | pass   |
+| dark  | caution-ink on surface                                      | `#d9b25c`  | `#1a1e25`  | 8.34  | 4.5   | pass   |
+| dark  | canvas on fg (tooltip)                                      | `#13161b`  | `#e6e9ef`  | 14.91 | 4.5   | pass   |
+| dark  | fg on caution-wash (suspicious banner)                      | `#e6e9ef`  | `#31302c`  | 10.86 | 4.5   | pass   |
+| dark  | loss on loss-wash (error summary links)                     | `#d97a9a`  | `#2d2731`  | 4.98  | 4.5   | pass   |
+| dark  | fg on gain wash 50% (heatmap max tint)                      | `#e6e9ef`  | `#45637e`  | 5.17  | 4.5   | pass   |
+| dark  | fg on loss wash 50% (heatmap max tint)                      | `#e6e9ef`  | `#7a4c60`  | 5.70  | 4.5   | pass   |
+| dark  | focus ring (accent) on canvas (UI, 3:1)                     | `#a9a0ff`  | `#13161b`  | 7.91  | 3     | pass   |
+| dark  | focus ring (accent) on surface (UI, 3:1)                    | `#a9a0ff`  | `#1a1e25`  | 7.29  | 3     | pass   |
+| dark  | border-strong on surface (inputs, 3:1)                      | `#6e7a8b`  | `#1a1e25`  | 3.84  | 3     | pass   |
+| dark  | gain marks on surface (chart lines/bars, 3:1)               | `#6fa8d6`  | `#1a1e25`  | 6.57  | 3     | pass   |
+| dark  | loss marks on surface (chart bars, 3:1)                     | `#d97a9a`  | `#1a1e25`  | 5.73  | 3     | pass   |
+| dark  | caution marks on surface (drawdown line, 3:1)               | `#d9b25c`  | `#1a1e25`  | 8.34  | 3     | pass   |
+| dark  | fg-muted input border on surface (UI, 3:1)                  | `#9aa4b3`  | `#1a1e25`  | 6.63  | 3     | pass   |
+| dark  | accent on surface-2 (changed count in a section header)     | `#a9a0ff`  | `#232831`  | 6.45  | 4.5   | pass   |
+| dark  | loss on surface-2 (errors-to-fix count in a section header) | `#d97a9a`  | `#232831`  | 5.07  | 4.5   | pass   |
+| dark  | fg-muted on accent-wash (current variant chip)              | `#9aa4b3`  | `#2e3044`  | 5.14  | 4.5   | pass   |
+| dark  | fg-muted on caution-wash (discard-edits prompt)             | `#9aa4b3`  | `#31302c`  | 5.24  | 4.5   | pass   |
+| dark  | accent marks on surface-2 (queue progress, 3:1)             | `#a9a0ff`  | `#232831`  | 6.45  | 3     | pass   |
+| dark  | caution marks on surface (launch-slip caution mark, 3:1)    | `#d9b25c`  | `#1a1e25`  | 8.34  | 3     | pass   |

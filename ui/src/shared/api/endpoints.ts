@@ -4,8 +4,11 @@ import type {
   AlphaRefits,
   AlphaThemeWeights,
   ConfigSchema,
+  ConfigValidation,
   Health,
   Job,
+  JobLog,
+  JobQueue,
   LaunchRunRequest,
   LaunchRunResponse,
   Ledger,
@@ -72,6 +75,14 @@ export const api = {
       signal,
     ),
   cancelJob: (jobId: string) => apiDelete<Job>(`/jobs/${encodeURIComponent(jobId)}`),
+  /** Dry run of a launch: errors, warnings, the resulting config hash and warm-up. */
+  validateConfig: (body: LaunchRunRequest, signal?: AbortSignal) =>
+    apiPost<ConfigValidation>('/config/validate', body, signal),
+  listJobs: (signal?: AbortSignal) => apiGet<JobQueue>('/jobs', undefined, signal),
+  getJobLog: (jobId: string, tail: number, signal?: AbortSignal) =>
+    apiGet<JobLog>(`/jobs/${encodeURIComponent(jobId)}/log`, { tail: String(tail) }, signal),
+  moveJob: (jobId: string, position: number) =>
+    apiPost<Job>(`/jobs/${encodeURIComponent(jobId)}/move`, { position }),
   getHealth: (signal?: AbortSignal) => apiGet<Health>('/health', undefined, signal),
 };
 

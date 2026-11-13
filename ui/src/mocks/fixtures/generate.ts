@@ -23,6 +23,7 @@ import type {
   RunIc,
   RunKind,
   RunSeriesName,
+  RunSource,
   RunStatus,
   RunSummary,
   BacktestSummary,
@@ -75,6 +76,8 @@ export interface RunSpec {
   investedDayFrac?: number;
   /** Scales the lab fixtures' IC story (1 = the baseline story). */
   icLevel?: number;
+  /** Recorded data source beyond kind / stocks / days (store slice, prefilter, flags). */
+  source?: Partial<RunSource>;
 }
 
 export interface GeneratedRun {
@@ -332,11 +335,19 @@ function configTree(spec: RunSpec): ConfigTree {
       horizon_days: 20,
       use_ml: spec.use_ml,
       ic_window: 756,
+      score_smoothing_halflife_days: 10.0,
+      sample_weight_halflife_years: 0.0,
+      embargo_days: null,
       themes: '["value","momentum","quality","low_risk"]',
       lgbm: { n_estimators: 400, learning_rate: 0.03, num_leaves: 15 },
     },
     risk: { n_factors: 12, halflife_days: 90, shrinkage: 'ledoit_wolf' },
-    cost: { impact_coefficient: 0.3, spread_model: 'quoted', borrow_bps: 50 },
+    cost: {
+      impact_coefficient: 0.3,
+      spread_model: 'quoted',
+      borrow_bps: 50,
+      delisting_short_gain_haircut: 1.0,
+    },
     portfolio: {
       book: 'long_short',
       gross_leverage_max: 2.0,
@@ -344,7 +355,9 @@ function configTree(spec: RunSpec): ConfigTree {
       risk_aversion: 2.0,
       target_vol_annual: 0.1,
       trade_aversion: spec.label.includes('aversion 2') ? 2.0 : 1.0,
-      max_name_weight: 0.02,
+      max_position_weight: 0.02,
+      rebalance_every_days: 5,
+      beta_neutral: true,
     },
     execution: { signal_lag_days: spec.signal_lag_days, venue: 'routed' },
     validation: { n_splits: 6, dsr_threshold: 0.95, pbo_threshold: 0.5 },
@@ -364,6 +377,61 @@ function configTree(spec: RunSpec): ConfigTree {
   }
   return tree;
 }
+
+/** The config hash of a spec: same config leaves, same hash (like `SystemConfig.hash()`). */
+export function mockConfigHash(spec: RunSpec): string {
+  return hex(mulberry32(hashString(JSON.stringify(flattenConfig(configTree(spec))))), 16);
+}
+
+/** `RunConfig.source` of a spec: what `qts demo` / `qts run --store` would have recorded. */
+export function mockSource(spec: RunSpec): RunSource {
+  const synthetic = spec.kind === 'synthetic';
+  const base: RunSource = {
+    recorded: true,
+    origin: 'cli',
+    kind: spec.kind,
+    stocks: synthetic ? spec.stocks : null,
+    days: synthetic ? spec.days : null,
+    store_path: synthetic ? null : MOCK_STORE_PATH,
+    start: synthetic ? null : (spec.startDate ?? null),
+    end: null,
+    max_names: synthetic ? null : spec.stocks,
+    min_mcap_ever: null,
+    max_days: null,
+    cache: false,
+    venue: null,
+    command: '',
+    ...spec.source,
+  };
+  if (base.command) return base;
+  const parts = synthetic
+    ? [
+        'qts',
+        'demo',
+        '--stocks',
+        String(spec.stocks),
+        '--days',
+        String(spec.days),
+        '--seed',
+        String(spec.seed),
+      ]
+    : [
+        'qts',
+        'run',
+        '--store',
+        base.store_path ?? MOCK_STORE_PATH,
+        ...(base.start ? ['--start', base.start] : []),
+        ...(base.end ? ['--end', base.end] : []),
+        ...(base.max_names !== null ? ['--max-names', String(base.max_names)] : []),
+      ];
+  if (spec.use_ml) parts.push('--ml');
+  for (const [k, v] of Object.entries(spec.overrides ?? {}))
+    parts.push('--set', `${k}=${String(v)}`);
+  return { ...base, command: parts.join(' ') };
+}
+
+/** The store path the mock API "runs" with (`Health.store_path`). */
+export const MOCK_STORE_PATH = 'data/store';
 
 /** Dotted-path leaves of a config tree, like the API's `config_leaves`. */
 export function flattenConfig(tree: ConfigTree, prefix = ''): ConfigLeaves {
@@ -623,6 +691,7 @@ export function generateRun(spec: RunSpec): GeneratedRun {
       git_dirty: false,
       config_hash: configHash,
       data_hash: dataHash,
+      ledger_family: ledgerFamily(spec.phase, dataHash),
       python: '3.12.7',
       platform: 'Linux-6.8-x86_64',
       versions: {
@@ -649,6 +718,7 @@ export function generateRun(spec: RunSpec): GeneratedRun {
       seed: spec.seed,
       signal_lag_days: spec.signal_lag_days,
       config_yaml: configYaml(spec, tree),
+      source: mockSource(spec),
     },
     hurdles,
     ic_report,
@@ -680,6 +750,7 @@ export function generateRun(spec: RunSpec): GeneratedRun {
     use_ml: spec.use_ml,
     config_hash: configHash,
     data_hash: dataHash,
+    ledger_family: ledgerFamily(spec.phase, dataHash),
     git_sha: gitSha,
     status: spec.status,
     headline:

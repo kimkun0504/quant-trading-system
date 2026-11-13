@@ -479,7 +479,7 @@ Every financial, statistical, mathematical and machine-learning term used in the
 
 **Transfer coefficient (TC)** — The correlation between the weights you actually hold and the weights an unconstrained optimizer would hold given the same alphas; how much of the forecast survives constraints and costs. Phase-1 acceptance asks TC ≥ 0.6; demo 0.53. → see **Portfolio construction**, **Validation & statistics**
 
-**Trial family** — The group of ledger trials that belong to one search and are deflated together. The pipeline uses `pipeline_phase{p}:{data_hash[:12]}`: one family per phase and data set, so runs on another synthetic seed or on real data do not mix into the cross-trial variance. → see **Validation & statistics › The trial ledger**
+**Trial family** — The group of ledger trials that belong to one search and are deflated together. The pipeline uses `pipeline_phase{p}:{market_hash[:12]}` (`market_hash`: hash of the adjusted-close panel, so auxiliary tables do not split a family; `qts ledger list / rekey / merge-families` maintain it): one family per phase and data set, so runs on another synthetic seed or on real data do not mix into the cross-trial variance. → see **Validation & statistics › The trial ledger**
 
 **Trial ledger** — The append-only JSON-lines record of every experiment (`runs/trial_ledger.jsonl`), supplying the trial count and cross-trial Sharpe variance for the DSR. It must never be reset. Every log appends one line under a file lock; nothing is rewritten. When reading, records with the same key (name, config hash, data hash, clean code version, run spec) count as one trial; runs from a dirty or unknown code version always count. → see **Validation & statistics › The trial ledger**
 

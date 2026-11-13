@@ -30,6 +30,7 @@ function run(
     id,
     created_at: created,
     label,
+    ledger_family: null,
     kind: 'synthetic',
     phase: 1,
     use_ml: false,
@@ -131,6 +132,14 @@ describe('families', () => {
     expect(commonLabel(['Alpha run', 'Beta run'])).toBe('');
     expect(commonLabel(['Only one'])).toBe('Only one');
     expect(ledgerFamilyOf({ phase: 1, data_hash: '' })).toBe('legacy');
+    // the manifest's own family (keyed by the market hash) wins over the data-hash form
+    expect(
+      ledgerFamilyOf({
+        phase: 1,
+        data_hash: 'abcdef0123456789',
+        ledger_family: 'pipeline_phase1:mkt',
+      }),
+    ).toBe('pipeline_phase1:mkt');
     expect(
       trialsFor(a, [
         {

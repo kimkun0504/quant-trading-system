@@ -206,6 +206,18 @@ qts ledger show --path /shared/trial_ledger.jsonl
 
 It prints one row per trial after de-duplication: timestamp, family, annualised Sharpe, observation count, mean IC, config hash, data hash, code version and `reruns` (how many identical re-runs collapsed into this row). Remember the rules from **Architecture & data flow › The trial ledger**: identical re-runs collapse only when the name, config hash, data hash, a *clean* code version and the run spec all match; a run from a dirty tree is always a new trial. Families are `pipeline_phase{1|2}:{first 12 characters of the data hash}`. Records written before November 2026 carry the bare family `pipeline_phase1` and empty hashes.
 
+### `qts ledger list`, `rekey`, `merge-families`, `restate`
+
+```bash
+qts ledger list                                   # families, trial counts, N_eff, hashes
+qts ledger rekey --dry-run                        # what would move to the market-hash family
+qts ledger rekey --store data/store --start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8
+qts ledger merge-families --into <family> <family> ...
+qts ledger restate runs/<run_id>                  # DSR at the family's current trial count
+```
+
+The trial family is keyed on the price history (`market_hash`, the adjusted-close panel), not on every input table, so adding a table such as `delisting_reasons` no longer resets the DSR's trial count. `rekey` moves records written under the older data-hash families; give it `--store` with the same loader flags as the original `qts run` so it can prove from the data which old hashes belong to the current market. `merge-families` is the explicit fallback, and the tool to use after every data refresh (a refresh changes adjusted closes and therefore the market hash). `restate` recomputes a finished run's DSR without re-running it and writes `dsr_restated` into the run's `extras.json`. Both rewrites back the ledger up first (`<path>.bak-<timestamp>`) and never drop a record. → see **Validation & statistics › Research family**.
+
 <callout icon="⚠️" color="yellow_bg">
 Never delete or edit `runs/trial_ledger.jsonl`. It is the input to the deflated Sharpe ratio: every variant you tried raises the bar for the best one. Deleting failed trials makes every later result look more significant than it is. Back it up, and share one ledger across everyone who runs experiments on the same data.
 </callout>

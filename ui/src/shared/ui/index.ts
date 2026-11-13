@@ -2,6 +2,7 @@ export { About, HandbookLink } from './About';
 export { Badge } from './Badge';
 export type { BadgeTone } from './Badge';
 export { Button } from './Button';
+export { CopyButton } from './CopyButton';
 export type { ButtonProps, ButtonSize, ButtonVariant } from './Button';
 export { IconButton } from './IconButton';
 export { LinkButton } from './LinkButton';

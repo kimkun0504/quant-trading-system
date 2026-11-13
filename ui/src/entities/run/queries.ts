@@ -6,8 +6,9 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
+import { useRef } from 'react';
 import { api } from '@/shared/api';
-import type { LaunchRunRequest, RunId, RunSeriesName } from '@/shared/api';
+import type { Job, JobQueue, LaunchRunRequest, RunId, RunSeriesName } from '@/shared/api';
 
 /**
  * Query keys are hierarchical so one invalidation clears a run's dependants:
@@ -32,10 +33,6 @@ export const runKeys = {
   compare: (ids: readonly RunId[]) => [...runKeys.all, 'compare', ids.join(',')] as const,
 };
 
-export const jobKeys = {
-  detail: (jobId: string) => ['jobs', jobId] as const,
-};
-
 export const runsQuery = () =>
   queryOptions({ queryKey: runKeys.list(), queryFn: ({ signal }) => api.listRuns(signal) });
 
@@ -48,6 +45,11 @@ export function useRuns() {
 
 export function useRun(id: RunId) {
   return useQuery(runQuery(id));
+}
+
+/** `useRun` for an id that may not be chosen yet (the builder's "start from a run"). */
+export function useOptionalRun(id: RunId | null) {
+  return useQuery({ ...runQuery(id ?? ''), enabled: id !== null });
 }
 
 export function useRunSeries<N extends RunSeriesName>(id: RunId, names: readonly N[]) {
@@ -192,32 +194,119 @@ export function useCompareRuns(ids: readonly RunId[]) {
   });
 }
 
+export const queueKeys = {
+  all: ['jobs'] as const,
+  list: () => ['jobs', 'list'] as const,
+  log: (jobId: string) => ['jobs', 'log', jobId] as const,
+};
+
+const isActiveJob = (j: Pick<Job, 'status'>) => j.status === 'queued' || j.status === 'running';
+
+/** Queue polling: fast while something runs or waits, slow when idle. */
+export const QUEUE_POLL_ACTIVE_MS = 1000;
+export const QUEUE_POLL_IDLE_MS = 15_000;
+
+/**
+ * `GET /api/jobs`, polled. When a job reaches a terminal state the runs list and the
+ * ledger are refreshed (a finished run appears in Experiments, the trial count moves).
+ */
+export function useQueue() {
+  const qc = useQueryClient();
+  const seen = useRef<Map<string, Job['status']>>(new Map());
+  return useQuery({
+    queryKey: queueKeys.list(),
+    queryFn: async ({ signal }) => {
+      const q = await api.listJobs(signal);
+      let settled = false;
+      for (const j of q.jobs) {
+        const before = seen.current.get(j.job_id);
+        if (before !== undefined && before !== j.status) settled = true;
+        seen.current.set(j.job_id, j.status);
+      }
+      if (settled) {
+        void qc.invalidateQueries({ queryKey: runKeys.all });
+        void qc.invalidateQueries({ queryKey: ['ledger'] });
+      }
+      return q;
+    },
+    refetchInterval: (q) =>
+      q.state.data?.jobs.some(isActiveJob) ? QUEUE_POLL_ACTIVE_MS : QUEUE_POLL_IDLE_MS,
+  });
+}
+
+/** `GET /api/jobs/{id}/log`: the tail of a job's log, refreshed while the job runs. */
+export function useJobLog(jobId: string, opts: { enabled: boolean; live: boolean; tail?: number }) {
+  return useQuery({
+    queryKey: queueKeys.log(jobId),
+    queryFn: ({ signal }) => api.getJobLog(jobId, opts.tail ?? 200, signal),
+    enabled: opts.enabled,
+    refetchInterval: opts.enabled && opts.live ? 2000 : false,
+  });
+}
+
+/** Adds a run to the queue (`POST /api/runs`). */
 export function useLaunchRun() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: LaunchRunRequest) => api.launchRun(body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: runKeys.list() }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queueKeys.list() });
+      return qc.invalidateQueries({ queryKey: runKeys.list() });
+    },
   });
 }
 
-export const JOB_POLL_MS = 750;
-
-export function useJob(jobId: string | undefined) {
+/** Cancel a job / move a queued job; `apply` edits the cached listing before the API answers. */
+export function useCancelJob(apply: (jobs: Job[], jobId: string) => Job[]) {
   const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (jobId: string) => api.cancelJob(jobId),
+    onMutate: (jobId) => {
+      qc.setQueryData<JobQueue>(queueKeys.list(), (q) =>
+        q ? { ...q, jobs: apply(q.jobs, jobId) } : q,
+      );
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: queueKeys.list() });
+      void qc.invalidateQueries({ queryKey: runKeys.list() });
+    },
+  });
+}
+
+export function useMoveJob(apply: (jobs: Job[], jobId: string, position: number) => Job[]) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ jobId, position }: { jobId: string; position: number }) =>
+      api.moveJob(jobId, position),
+    onMutate: ({ jobId, position }) => {
+      qc.setQueryData<JobQueue>(queueKeys.list(), (q) =>
+        q ? { ...q, jobs: apply(q.jobs, jobId, position) } : q,
+      );
+    },
+    onSettled: () => void qc.invalidateQueries({ queryKey: queueKeys.list() }),
+  });
+}
+
+/**
+ * `POST /api/config/validate` for a launch body: errors, warnings, the resulting config
+ * hash and warm-up. Keyed by the body, so each distinct edit is validated once.
+ */
+export function useValidateConfig(body: LaunchRunRequest | undefined) {
   return useQuery({
-    queryKey: jobKeys.detail(jobId ?? 'none'),
-    queryFn: async ({ signal }) => {
-      const job = await api.getJob(jobId ?? '', signal);
-      if (job.status === 'done' || job.status === 'failed') {
-        void qc.invalidateQueries({ queryKey: runKeys.all });
-      }
-      return job;
-    },
-    enabled: Boolean(jobId),
-    refetchInterval: (q) => {
-      const s = q.state.data?.status;
-      return s === 'done' || s === 'failed' ? false : JOB_POLL_MS;
-    },
+    queryKey: ['config-validate', body] as const,
+    queryFn: ({ signal }) => api.validateConfig(body as LaunchRunRequest, signal),
+    enabled: body !== undefined,
+    staleTime: 30_000,
+    placeholderData: keepPreviousData,
+    retry: false,
+  });
+}
+
+export function useHealth() {
+  return useQuery({
+    queryKey: ['health'],
+    queryFn: ({ signal }) => api.getHealth(signal),
+    staleTime: 60_000,
   });
 }
 
@@ -229,15 +318,6 @@ export function useConfigSchema() {
   return useQuery({
     queryKey: ['config-schema'],
     queryFn: ({ signal }) => api.getConfigSchema(signal),
-    staleTime: Infinity,
-  });
-}
-
-/** Effective warm-up for the default config (`GET /api/config/warmup`); the launch form's `days` floor. */
-export function useWarmup(ml: boolean, signalLagDays: 0 | 1) {
-  return useQuery({
-    queryKey: ['config-warmup', ml, signalLagDays],
-    queryFn: ({ signal }) => api.getWarmup(ml, signalLagDays, signal),
     staleTime: Infinity,
   });
 }

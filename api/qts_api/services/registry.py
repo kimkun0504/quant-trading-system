@@ -55,6 +55,8 @@ def valid_run_id(run_id: object) -> bool:
 
 GATE_NAMES = set(S.GateName.__args__)  # type: ignore[attr-defined]
 DEMO_DEFAULTS = {"stocks": 300, "days": 1512}
+#: Written by the API worker next to the run's artifacts (``qts_api.services.jobs``).
+LAUNCH_FILE = "launch.json"
 #: ``/api/runs/compare``: at most this many points on the shared date axis.
 COMPARE_MAX_POINTS = 2000
 #: ``/api/runs/compare``: at most this many runs per request.
@@ -65,6 +67,7 @@ FILE_DESCRIPTIONS: dict[str, str] = {
     "summary.json": "Backtest summary, IC report, DSR inputs, cost sensitivity and the pipeline's notes",
     "hurdles.json": "Hurdle gates with values, thresholds and reasons",
     "config.yaml": "The SystemConfig the run used",
+    "launch.json": "The API launch request that produced the run (data source, flags, base run, CLI equivalent)",
     "extras.json": "Run facts recorded at save time (label, universe size, venue, exposure roles)",
     "nav.parquet": "Net asset value by realisation date",
     "returns.parquet": "Gross and net daily returns",
@@ -198,6 +201,105 @@ def _command_args(command: str) -> dict[str, Any]:
     return out
 
 
+_SOURCE_NULLS: dict[str, Any] = {
+    "stocks": None,
+    "days": None,
+    "store_path": None,
+    "start": None,
+    "end": None,
+    "max_names": None,
+    "min_mcap_ever": None,
+    "max_days": None,
+    "cache": False,
+    "venue": None,
+}
+
+
+def _flag_value(argv: list[str], flag: str, cast: Any = str) -> Any:
+    """Value of ``--flag V`` or ``--flag=V`` in an argv (``None`` when absent or malformed)."""
+    for i, a in enumerate(argv):
+        raw = None
+        if a == flag and i + 1 < len(argv):
+            raw = argv[i + 1]
+        elif a.startswith(flag + "="):
+            raw = a.split("=", 1)[1]
+        if raw is not None:
+            try:
+                return cast(raw)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def command_source(command: str) -> dict[str, Any] | None:
+    """Data source and flags recoverable from a recorded ``qts demo`` / ``qts run``
+    command line (``None`` when it is neither)."""
+    try:
+        argv = shlex.split(command or "")
+    except ValueError:
+        return None
+    out = dict(_SOURCE_NULLS)
+    out["max_days"] = _flag_value(argv, "--max-days", int)
+    out["cache"] = "--cache" in argv
+    if "demo" in argv:
+        out.update(
+            kind="synthetic",
+            stocks=_flag_value(argv, "--stocks", int) or DEMO_DEFAULTS["stocks"],
+            days=_flag_value(argv, "--days", int) or DEMO_DEFAULTS["days"],
+        )
+        return out
+    if "run" in argv and _flag_value(argv, "--store") is not None:
+        out.update(
+            kind="store",
+            store_path=_flag_value(argv, "--store"),
+            start=_flag_value(argv, "--start"),
+            end=_flag_value(argv, "--end"),
+            max_names=_flag_value(argv, "--max-names", int),
+            min_mcap_ever=_flag_value(argv, "--min-mcap-ever", float),
+        )
+        return out
+    return None
+
+
+def run_source(e: RunEntry) -> dict[str, Any]:
+    """The run's :class:`~qts_api.schemas.RunSource`: ``launch.json`` (API jobs), else the
+    manifest's CLI command, else ``recorded: false`` with what the run facts say."""
+    command = str(e.manifest.get("command", "") or "")
+    req = e.launch.get("request") if isinstance(e.launch.get("request"), dict) else None
+    if req is not None:
+        kind = "store" if req.get("kind") == "store" else "synthetic"
+        synthetic = kind == "synthetic"
+        return {
+            "recorded": True,
+            "origin": "api",
+            "kind": kind,
+            "stocks": req.get("stocks") if synthetic else None,
+            "days": req.get("days") if synthetic else None,
+            "store_path": None if synthetic else e.launch.get("store_path"),
+            "start": None if synthetic else req.get("start"),
+            "end": None if synthetic else req.get("end"),
+            "max_names": None if synthetic else req.get("max_names"),
+            "min_mcap_ever": None if synthetic else req.get("min_mcap_ever"),
+            "max_days": req.get("max_days"),
+            "cache": bool(req.get("cache", False)),
+            "venue": req.get("venue") if req.get("venue") in ("routed", "auction", "continuous") else None,
+            "command": str(e.launch.get("command") or command),
+        }
+    parsed = command_source(command)
+    if parsed is not None:
+        return {"recorded": True, "origin": "cli", **parsed, "command": command}
+    synthetic = e.facts.get("kind", "synthetic") != "store"
+    return {
+        "recorded": False,
+        "origin": "unknown",
+        **_SOURCE_NULLS,
+        "kind": "synthetic" if synthetic else "store",
+        "stocks": e.facts.get("stocks") if synthetic else None,
+        "days": e.facts.get("days") if synthetic else None,
+        "command": command,
+    }
+
+
 @dataclass
 class Frames:
     """The Parquet side of a run (``load_run``) plus the derived return-series frame."""
@@ -232,6 +334,7 @@ class RunEntry:
     config_yaml: str
     config: dict[str, Any]
     facts: dict[str, Any] = field(default_factory=dict)
+    launch: dict[str, Any] = field(default_factory=dict)  # launch.json (API-launched runs)
 
     # ------------------------------------------------------------------ facts
     @property
@@ -296,6 +399,10 @@ class RunRegistry:
         except yaml.YAMLError:
             config = {}
         extras = read_extras(path) if (path / EXTRAS_FILE).exists() else {}
+        try:
+            launch = _json(path / LAUNCH_FILE) if (path / LAUNCH_FILE).exists() else {}
+        except (OSError, ValueError):
+            launch = {}
         facts = {**_command_args(str(manifest.get("command", ""))), **(extras.get("run") or {})}
         # The id is the directory name (unique, and what get() resolves); a copied run
         # directory keeps its manifest's run_id, which would duplicate list rows (audit 2 #12).
@@ -316,6 +423,7 @@ class RunRegistry:
             config_yaml=config_yaml,
             config=config if isinstance(config, dict) else {},
             facts={k: v for k, v in facts.items() if v is not None},
+            launch=launch if isinstance(launch, dict) else {},
         )
 
     def _entry_for(self, path: Path) -> RunEntry:
@@ -443,6 +551,7 @@ class RunRegistry:
             "use_ml": e.use_ml,
             "config_hash": str(e.manifest.get("config_hash", e.summary.get("config_hash", ""))),
             "data_hash": str(e.manifest.get("data_hash", e.summary.get("data_hash", ""))),
+            "ledger_family": str(e.manifest["ledger_family"]) if e.manifest.get("ledger_family") else None,
             "git_sha": str(e.manifest.get("git_sha", "unknown")),
             "status": "done",
             "headline": {
@@ -499,6 +608,7 @@ class RunRegistry:
             "git_dirty": m.get("git_dirty"),
             "config_hash": str(m.get("config_hash", "")),
             "data_hash": str(m.get("data_hash", "")),
+            "ledger_family": str(m["ledger_family"]) if m.get("ledger_family") else None,
             "python": str(m.get("python_version", m.get("python", ""))),
             "platform": str(m.get("platform", "")),
             "versions": {str(k): str(v) for k, v in (m.get("versions") or {}).items()},
@@ -573,6 +683,7 @@ class RunRegistry:
                 "seed": e.seed,
                 "signal_lag_days": e.signal_lag_days,
                 "config_yaml": e.config_yaml,
+                "source": run_source(e),
             },
             "hurdles": self._hurdles(e),
             "ic_report": self._ic_report(e),

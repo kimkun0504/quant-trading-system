@@ -1,0 +1,14 @@
+.loading,
+.missing {
+  display: grid;
+  gap: var(--space-3);
+  justify-items: start;
+}
+
+.loading {
+  justify-items: stretch;
+}
+
+.missing p {
+  color: var(--color-fg-muted);
+}

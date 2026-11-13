@@ -126,4 +126,38 @@ export const Icons = {
       <path d="M9 2.5h4.5V7M13.5 2.5 7 9M11 9.5v3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h3" />
     </Icon>
   ),
+  Reset: (p: IconProps) => (
+    <Icon {...p}>
+      <path d="M3 3.5v3.5h3.5" />
+      <path d="M3.4 7A5 5 0 1 1 4.5 11.6" />
+    </Icon>
+  ),
+  Plus: (p: IconProps) => (
+    <Icon {...p}>
+      <path d="M8 3v10M3 8h10" />
+    </Icon>
+  ),
+  ArrowUp: (p: IconProps) => (
+    <Icon {...p}>
+      <path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" />
+    </Icon>
+  ),
+  ArrowDown: (p: IconProps) => (
+    <Icon {...p}>
+      <path d="M8 3v10M3.5 8.5 8 13l4.5-4.5" />
+    </Icon>
+  ),
+  Queue: (p: IconProps) => (
+    <Icon {...p}>
+      <path d="M2.5 4h7M2.5 8h7M2.5 12h4" />
+      <path d="m11 9.5 3 2-3 2Z" />
+    </Icon>
+  ),
+  Clone: (p: IconProps) => (
+    <Icon {...p}>
+      <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+      <path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2" />
+      <path d="M9.5 8v3M8 9.5h3" />
+    </Icon>
+  ),
 };

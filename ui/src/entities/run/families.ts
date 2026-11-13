@@ -32,8 +32,16 @@ export interface RunFamily {
   diffKeys: string[];
 }
 
-/** The trial family the pipeline logs under; records without a data hash are `legacy`. */
-export function ledgerFamilyOf(run: Pick<RunSummary, 'phase' | 'data_hash'>): string {
+type FamilyKeyed = Pick<RunSummary, 'phase' | 'data_hash'> &
+  Partial<Pick<RunSummary, 'ledger_family'>>;
+
+/**
+ * The trial family the pipeline logs under: the one the run's manifest records (keyed by the
+ * market hash today), else `pipeline_phase{p}:{data_hash[:12]}` for runs written before the
+ * manifest carried it; records without a data hash are `legacy`.
+ */
+export function ledgerFamilyOf(run: FamilyKeyed): string {
+  if (run.ledger_family) return run.ledger_family;
   return run.data_hash ? `pipeline_phase${run.phase}:${run.data_hash.slice(0, 12)}` : 'legacy';
 }
 
@@ -160,7 +168,7 @@ export function clusterFamilies(runs: readonly RunSummary[]): RunFamily[] {
 
 /** The ledger's trial count for a run's family, when the ledger knows it. */
 export function trialsFor(
-  run: Pick<RunSummary, 'phase' | 'data_hash'>,
+  run: FamilyKeyed,
   families: readonly LedgerFamily[] | undefined,
 ): LedgerFamily | undefined {
   const key = ledgerFamilyOf(run);

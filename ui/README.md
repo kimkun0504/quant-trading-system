@@ -5,7 +5,7 @@ into a tray and compared side by side (NAV, fold Sharpe, gates, config diff); ea
 one-page dossier (verdict, gates, performance, signal, portfolio, costs, validation, config,
 artifacts); the run builder; the trial ledger. Design system and
 tokens: [`DESIGN.md`](./DESIGN.md); the agreed redesign plan and build order:
-[`REDESIGN.md`](./REDESIGN.md) (shipped: step 1 design system, shell, Experiments; step 2 Compare; step 3 the run dossier; steps 4–5 the three labs).
+[`REDESIGN.md`](./REDESIGN.md) (shipped: all six steps: design system, shell and Experiments; Compare; the run dossier; the three labs; the run builder with diff and queue).
 
 Stack: Vite 8 · React 19 · TypeScript (strict) · React Router 8 (data router, lazy routes) ·
 TanStack Query 5 · CSS Modules over custom-property tokens · uPlot (long time series) ·
@@ -14,22 +14,22 @@ Playwright + axe · ESLint (typescript-eslint strict, react-hooks, jsx-a11y) + P
 
 ## Scripts
 
-| Script                            | What it does                                                                                                                                                                                                                                                                                                                                                                                       |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `npm run dev`                     | Dev server on :5173 against the real API: `/api` is proxied to http://localhost:8000 (`QTS_API_PROXY` overrides).                                                                                                                                                                                                                                                                                  |
-| `npm run dev:mock`                | Dev server on the in-browser mock API (MSW fixtures; `VITE_USE_MOCKS=true`).                                                                                                                                                                                                                                                                                                                       |
-| `npm run build`                   | Typecheck (`tsc -b`) and production build to `dist/`.                                                                                                                                                                                                                                                                                                                                              |
-| `npm run build:analyze`           | Build plus `dist/bundle-report.html` (treemap, gzip sizes).                                                                                                                                                                                                                                                                                                                                        |
-| `npm run preview`                 | Serve `dist/`.                                                                                                                                                                                                                                                                                                                                                                                     |
-| `npm run typecheck`               | `tsc -b` over app, tests, configs and e2e.                                                                                                                                                                                                                                                                                                                                                         |
-| `npm run lint`                    | ESLint, zero warnings allowed.                                                                                                                                                                                                                                                                                                                                                                     |
-| `npm run format` / `format:check` | Prettier.                                                                                                                                                                                                                                                                                                                                                                                          |
-| `npm test`                        | Vitest: unit, component and integration tests (MSW in Node).                                                                                                                                                                                                                                                                                                                                       |
-| `npm run test:e2e`                | Playwright smoke tests and axe scans (starts the dev server with mocks).                                                                                                                                                                                                                                                                                                                           |
-| `npm run test:e2e:real`           | Build, then one Playwright smoke against the real API: `api/scripts/e2e_server.py` serves `dist/` and the API over a runs root holding a real pipeline run (built on first use, ~30 s).                                                                                                                                                                                                            |
-| `npm run api:types`               | Export the API's OpenAPI document (`api/openapi.json`) and regenerate `src/shared/api/generated.ts` (`openapi-typescript`).                                                                                                                                                                                                                                                                        |
-| `npm run contrast`                | WCAG contrast of every token pair in both themes; non-zero exit on failure.                                                                                                                                                                                                                                                                                                                        |
-| `npm run screenshots`             | Light/dark × 1440/390 px screenshots of every page into `docs/screenshots/` (Experiments with and without a selection, Compare, the three labs with the 24-year run (`signal-lab`, `portfolio-lab`, `costs-lab`), with three runs (`*-lab-3`) and the picker (`signal-lab-picker`), the dossier (`dossier-*`: top, Portfolio section, Config section, a suspicious run), builder, ledger, models). |
+| Script                            | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run dev`                     | Dev server on :5173 against the real API: `/api` is proxied to http://localhost:8000 (`QTS_API_PROXY` overrides).                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `npm run dev:mock`                | Dev server on the in-browser mock API (MSW fixtures; `VITE_USE_MOCKS=true`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `npm run build`                   | Typecheck (`tsc -b`) and production build to `dist/`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `npm run build:analyze`           | Build plus `dist/bundle-report.html` (treemap, gzip sizes).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `npm run preview`                 | Serve `dist/`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `npm run typecheck`               | `tsc -b` over app, tests, configs and e2e.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `npm run lint`                    | ESLint, zero warnings allowed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `npm run format` / `format:check` | Prettier.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `npm test`                        | Vitest: unit, component and integration tests (MSW in Node).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `npm run test:e2e`                | Playwright smoke tests and axe scans (starts the dev server with mocks).                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `npm run test:e2e:real`           | Build, then one Playwright smoke against the real API: `api/scripts/e2e_server.py` serves `dist/` and the API over a runs root holding a real pipeline run (built on first use, ~30 s).                                                                                                                                                                                                                                                                                                                                                           |
+| `npm run api:types`               | Export the API's OpenAPI document (`api/openapi.json`) and regenerate `src/shared/api/generated.ts` (`openapi-typescript`).                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `npm run contrast`                | WCAG contrast of every token pair in both themes; non-zero exit on failure.                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `npm run screenshots`             | Light/dark × 1440/390 px screenshots of every page into `docs/screenshots/` (Experiments with and without a selection, Compare, the three labs with the 24-year run (`signal-lab`, `portfolio-lab`, `costs-lab`), with three runs (`*-lab-3`) and the picker (`signal-lab-picker`), the dossier (`dossier-*`: top, Portfolio section, Config section, a suspicious run), the run builder (`run-builder`: defaults; `run-builder-diff`: cloned from a run with two edits; `run-builder-queue`: two variants queued, one running), ledger, models). |
 
 Playwright uses its own Chromium if present, otherwise the newest `chromium-*` under
 `PLAYWRIGHT_BROWSERS_PATH` (default `/opt/pw-browsers`), or `PW_CHROMIUM_PATH` if set
@@ -47,11 +47,13 @@ src/
               shaping with its tests; labs.test.tsx renders all three through the route tree),
               run-dossier (DossierHeader, SectionNav + useScrollSpy, DossierSection, sections/: Performance,
               Signal, Portfolio, Costs, Validation, Config, Artifacts; RunTabRedirect for the old tab paths),
-              new-run (Run builder), models, ledger, not-found
+              run-builder (RunBuilderPage: `?from=` / `?set=` → base, the builder, the queue), models, ledger, not-found
   widgets/    AppShell (sidebar + top bar + main + tray), SelectionTray, MetricTable
   features/   selection (store + URL sync), compare (ComparePanel), run-search (global combobox),
               lab-runs (LabPage frame: the tray's runs as lanes, RunPicker when the tray is empty, RunLanes),
-              launch-run (form, validation, schema-driven overrides, job progress), theme-toggle
+              run-builder (RunBuilder; StartFrom, RunSettingsPanel, CommonSettings + ConfigEditor, FieldControl,
+              LaunchSlip; lib/: fields (schema → form), draft (base, values, diff, request), cli, reducer, common,
+              trials), run-queue (QueuePanel, QueueIndicator, lib: queue reducer and wording), theme-toggle
   entities/   run (query hooks, query keys, selectors, families: clustering + config diff),
               metric (definitions + interpretations), gate (definitions, verdict)
   shared/     api (schema, client, endpoints, generated types, contract check),
@@ -77,7 +79,7 @@ scripts/      contrast check, screenshots, Chromium resolver
 | `/`                               | Experiments: runs grouped into families; inline side-by-side when ≥ 2 are selected                                                                      |
 | `/compare`                        | The selection as a full-page comparison (`?sel=a,b` seeds it)                                                                                           |
 | `/signal`, `/portfolio`, `/costs` | The labs, on the runs in the selection tray (one run: the deep view; 2–8: one lane per run, overlays on one chart); a run picker when the tray is empty |
-| `/builder`                        | Run builder (today: the launch form; diff and queue arrive in step 6)                                                                                   |
+| `/builder`                        | Run builder: `?from=<run_id>` starts from that run, `?set=key=value` (repeatable) seeds edits, `#queue` is the queue                                    |
 | `/runs/:id`                       | Run dossier: one page, sections `#performance` `#signal` `#portfolio` `#costs` `#validation` `#config` `#artifacts`                                     |
 | `/runs/:id/<tab>`                 | Old tab paths redirect to the section (`risk` → `#portfolio`, `alpha` → `#signal`, `execution` → `#costs`)                                              |
 | `/ledger`, `/models`              | Trial ledger, model explorer                                                                                                                            |
@@ -127,16 +129,20 @@ Conventions:
 
 ```
 component → entities/run/queries.ts hook → shared/api/endpoints.ts → shared/api/client.ts → fetch
-                         ↑ TanStack Query cache, keyed by runKeys / jobKeys
+                         ↑ TanStack Query cache, keyed by runKeys / queueKeys
 ```
 
 - **Query keys** are hierarchical (`entities/run/queries.ts`):
   `['runs','list']`, `['runs','detail',id]`, `['runs','detail',id,'series','nav,drawdown,net']`,
   `…,'costs'`, `…,'exposures'`, `…,'holdings',date`, `…,'ic'`, `…,'alpha','refits'`,
-  `…,'alpha','theme-weights'`, `…,'alpha','ic-by-year'`, `…,'constraints'`, `['jobs',jobId]`, `['ledger']`,
+  `…,'alpha','theme-weights'`, `…,'alpha','ic-by-year'`, `…,'constraints'`, `['jobs','list']`, `['jobs','log',jobId]`, `['config-validate', body]`, `['health']`, `['ledger']`,
   `['config-schema']`. Invalidating `['runs']` refreshes everything about runs.
 - A finished run never changes, so its series, costs, exposures and IC use `staleTime: Infinity`.
-- `useJob` polls `/api/jobs/{id}` every 750 ms until `done`/`failed`, then invalidates `['runs']`.
+- `useQueue` polls `/api/jobs` every second while a job runs or waits (every 15 s when idle) and
+  invalidates `['runs']` and `['ledger']` when a job changes state; `useJobLog` refreshes an open log every
+  2 s while its job runs. Cancel and move update the cached listing first (`queueReducer`), then refetch.
+- `useValidateConfig` / the builder's `useQueries` key `POST /api/config/validate` by the request body, so
+  each distinct edit is validated once (after a 300 ms debounce).
 - 4xx answers are not retried (missing run, run still running → 409); transport and 5xx errors
   are retried twice. `ErrorState` turns `ApiError`s into direction ("Check that the qts API is
   running and that VITE_API_URL points at it").
@@ -158,27 +164,31 @@ generated types because the UI narrows generic shapes such as `ColumnarSeries<N>
 `api.*` paths are relative to `API_BASE_URL` = `VITE_API_URL` or `/api` (same origin).
 Errors are RFC 7807 problem documents; `ApiError.detail` is their `detail` string.
 
-| Method | Path                                                                                                 | Returns                                                                                        |
-| ------ | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| GET    | `/api/runs`                                                                                          | `RunSummary[]` (headline `null` and `config_leaves` empty while running / failed)              |
-| GET    | `/api/runs/compare?ids=a,b,c`                                                                        | `RunCompare`: NAV on one date axis (≤ 2,000 points), folds, gates, flattened configs (1–8 ids) |
-| GET    | `/api/runs/{id}`                                                                                     | `RunDetail` (409 while running/failed, 404 if unknown)                                         |
-| GET    | `/api/runs/{id}/series?names=nav,gross,net,drawdown,turnover,exante_vol,gross_exposure,net_exposure` | columnar `{dates, series}` (`*_exposure`: Σ\|w\| and Σw of the post-trade book)                |
-| GET    | `/api/runs/{id}/files` · `/files/{name}`                                                             | the run directory's files with sizes and descriptions; `/files/{name}` downloads one           |
-| GET    | `/api/runs/{id}/costs`                                                                               | daily `spread/impact/fees/borrow` USD, daily NAV, `cost_sensitivity`                           |
-| GET    | `/api/runs/{id}/exposures`                                                                           | factor list, roles, columnar history, latest snapshot (or empty)                               |
-| GET    | `/api/runs/{id}/holdings?date=`                                                                      | positions on a month-end decision date + available dates                                       |
-| GET    | `/api/runs/{id}/ic`                                                                                  | per-date rank IC + decay curve                                                                 |
-| GET    | `/api/runs/{id}/alpha/refits`                                                                        | `AlphaRefits`: per-refit feature importance by sleeve (raw), refit windows, feature IC table   |
-| GET    | `/api/runs/{id}/alpha/theme-weights`                                                                 | `AlphaThemeWeights`: the composite's theme weights by date (≤ 2,000 points)                    |
-| GET    | `/api/runs/{id}/alpha/ic-by-year`                                                                    | `AlphaIcByYear`: mean rank IC and t per sleeve per calendar year                               |
-| GET    | `/api/runs/{id}/constraints`                                                                         | `RunConstraints`: per-rebalance binding counts, vol-target reason, transfer coefficient        |
-| POST   | `/api/runs`                                                                                          | `{job_id, run_id}` (202; 422 with per-field `errors`)                                          |
-| GET    | `/api/jobs/{job_id}`                                                                                 | `{status, progress 0..1, message}`                                                             |
-| DELETE | `/api/jobs/{job_id}`                                                                                 | cancel (best effort), returns the job                                                          |
-| GET    | `/api/ledger`                                                                                        | trials + per-family trial counts                                                               |
-| GET    | `/api/config/schema`                                                                                 | JSON Schema of `SystemConfig` (drives the override fields)                                     |
-| GET    | `/api/health`                                                                                        | liveness, runs root, job counts                                                                |
+| Method | Path                                                                                                 | Returns                                                                                                                                                                                                                                                                      |
+| ------ | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/runs`                                                                                          | `RunSummary[]` (headline `null` and `config_leaves` empty while running / failed)                                                                                                                                                                                            |
+| GET    | `/api/runs/compare?ids=a,b,c`                                                                        | `RunCompare`: NAV on one date axis (≤ 2,000 points), folds, gates, flattened configs (1–8 ids)                                                                                                                                                                               |
+| GET    | `/api/runs/{id}`                                                                                     | `RunDetail` (409 while running/failed, 404 if unknown)                                                                                                                                                                                                                       |
+| GET    | `/api/runs/{id}/series?names=nav,gross,net,drawdown,turnover,exante_vol,gross_exposure,net_exposure` | columnar `{dates, series}` (`*_exposure`: Σ\|w\| and Σw of the post-trade book)                                                                                                                                                                                              |
+| GET    | `/api/runs/{id}/files` · `/files/{name}`                                                             | the run directory's files with sizes and descriptions; `/files/{name}` downloads one                                                                                                                                                                                         |
+| GET    | `/api/runs/{id}/costs`                                                                               | daily `spread/impact/fees/borrow` USD, daily NAV, `cost_sensitivity`                                                                                                                                                                                                         |
+| GET    | `/api/runs/{id}/exposures`                                                                           | factor list, roles, columnar history, latest snapshot (or empty)                                                                                                                                                                                                             |
+| GET    | `/api/runs/{id}/holdings?date=`                                                                      | positions on a month-end decision date + available dates                                                                                                                                                                                                                     |
+| GET    | `/api/runs/{id}/ic`                                                                                  | per-date rank IC + decay curve                                                                                                                                                                                                                                               |
+| GET    | `/api/runs/{id}/alpha/refits`                                                                        | `AlphaRefits`: per-refit feature importance by sleeve (raw), refit windows, feature IC table                                                                                                                                                                                 |
+| GET    | `/api/runs/{id}/alpha/theme-weights`                                                                 | `AlphaThemeWeights`: the composite's theme weights by date (≤ 2,000 points)                                                                                                                                                                                                  |
+| GET    | `/api/runs/{id}/alpha/ic-by-year`                                                                    | `AlphaIcByYear`: mean rank IC and t per sleeve per calendar year                                                                                                                                                                                                             |
+| GET    | `/api/runs/{id}/constraints`                                                                         | `RunConstraints`: per-rebalance binding counts, vol-target reason, transfer coefficient                                                                                                                                                                                      |
+| POST   | `/api/runs`                                                                                          | adds the run to the queue: `{job_id, run_id}` (202; 422 with per-field `errors`; 429 when the queue is full). Body: data kind and size or store slice + prefilter, `ml`, `seed`, `signal_lag_days`, `config_overrides`, optional `base_run_id`, `label`, `max_days`, `cache` |
+| POST   | `/api/config/validate`                                                                               | `ConfigValidation`: the same body, nothing queued: `errors` (per key), `warnings`, the resulting `config_hash`, `warmup_days` / `min_days`                                                                                                                                   |
+| GET    | `/api/jobs`                                                                                          | `JobQueue`: running, then queued in order, then recent finished / failed / cancelled jobs (`?recent=`)                                                                                                                                                                       |
+| GET    | `/api/jobs/{job_id}`                                                                                 | `Job`: status (`queued`, `running`, `done`, `failed`, `cancelled`), progress 0..1, message, stage, queue position, last log line, ETA                                                                                                                                        |
+| GET    | `/api/jobs/{job_id}/log?tail=`                                                                       | `JobLog`: the last lines of the job's log                                                                                                                                                                                                                                    |
+| POST   | `/api/jobs/{job_id}/move`                                                                            | `{position}` → the moved `Job` (409 unless queued)                                                                                                                                                                                                                           |
+| DELETE | `/api/jobs/{job_id}`                                                                                 | cancel: a queued job leaves the queue, a running one is terminated; returns the job                                                                                                                                                                                          |
+| GET    | `/api/ledger`                                                                                        | trials + per-family trial counts                                                                                                                                                                                                                                             |
+| GET    | `/api/config/schema`                                                                                 | JSON Schema of `SystemConfig`, generated from the live dataclasses (type, default, bounds, enum, `nullable`, description per field): drives the builder's editor                                                                                                             |
+| GET    | `/api/health`                                                                                        | liveness, runs root, the configured store path, job counts                                                                                                                                                                                                                   |
 
 **Older runs.** Run directories written before the pipeline stored its extra artifacts have
 `null` for `execution_venue`, `config.stocks/days` (unless recoverable from the recorded CLI
@@ -186,10 +196,33 @@ command), per-holding `alpha/specific_vol/industry`, an all-`null` `exante_vol` 
 empty exposures payload (`latest: null`). The dossier's Portfolio section shows empty states or
 "not recorded" text for these.
 
-**Launch form.** The override fields are generated from `/api/config/schema`: every scalar of
-every section (nested sections such as `alpha.lgbm` included), one collapsible group per
-section, `enum` strings as selects, booleans as checkboxes, bounds validated client-side and
-again (strictly) by the API.
+**Run builder** (`/builder`, `features/run-builder`). _Start from_ the SystemConfig defaults or a finished
+run: a searchable picker, the deep link `/builder?from=<run_id>`, and "Clone & edit" on the dossier header
+and on every finished row of Experiments. A run base loads its config (`RunSummary.config_leaves`) and its
+recorded data source (`RunDetail.config.source`: synthetic size, or store path + date range + prefilter,
+ML, seed, lag, `--max-days`, `--cache`); a run that did not record its source says so. _Editor_: every
+field comes from `/api/config/schema` (`lib/fields.ts`), so a field added to `SystemConfig` appears with its
+type, default, bounds and description and no UI change: grouped by section, with search, a "changed only"
+filter, per-field reset, and an input per type (number with bounds, switch, enum select, text; a "No value"
+switch on nullable fields). `lib/common.ts` curates the _Common settings_ panel on top (plain-language
+labels and help; a path the schema lacks is skipped, e.g. `alpha.sample_weight_halflife_years` on an older
+config). _Data and model_ holds what is not a config key (market, date range, universe prefilter, ML, seed,
+signal lag, backtest days, stage cache, label). _Validation_: types and bounds are checked as you type
+(`parseRaw`), and the whole request is sent, debounced, to `POST /api/config/validate`, whose per-key errors
+land on their fields and whose warnings, config hash and warm-up go to the slip. _Before launch_ (the
+sticky slip): only the keys that differ from the base, one column per variant; the config hash; the
+equivalent `qts demo` / `qts run … --set k=v` command with a copy button (`lib/cli.ts`, the same text the
+API records in `launch.json`); a warning when more than three strategy keys differ ("a new strategy, not a
+variant"); and the trial line from `/api/ledger` ("This will be trial N+1 in family F", or why the family
+cannot be known before the data is loaded). _Variants_: "Add variant" duplicates the current edit; "Queue
+all N variants" posts them in order. State is one reducer (`lib/reducer.ts`): a base plus drafts that store
+only what differs from it.
+
+**Queue** (`features/run-queue`). `QueuePanel` (on the builder, under the slip) shows the running job
+(progress, the pipeline stage rail, the message, the last log line, time left from finished jobs of
+similar size, a log tail on demand), the waiting jobs in order (move up / down, cancel) and the recently
+finished ones (link to the dossier, "Add to tray"). `QueueIndicator` in the top bar of every page shows
+"1 running, 2 queued" with a small meter and links to `/builder#queue`.
 
 **Mocks.** `src/main.tsx` starts the MSW service worker only when `VITE_USE_MOCKS=true`
 (`npm run dev:mock`, the Vitest setup and the mock Playwright suite); in any other build the mock
@@ -206,7 +239,11 @@ ML store run (2001–2025) for the labs' by-year views, one running and one fail
 (`fixtures/labs.ts`) tell one story keyed on the calendar year, so every run agrees on the years it
 covers: value fades after 2010, quality rises from 2012, momentum crashes in 2009; refit importance follows
 the same drift; caps bind more in 2008–09 and 2020 and with trade aversion off. `/api/runs/compare` is served from the same fixtures.
-Launched runs complete after 4 s.
+The mock queue (`mocks/db.ts`) behaves like the API's: FIFO, one job at a time, each taking `jobDurationMs`
+(4 s; `localStorage['qts-mock-job-ms']` overrides it in the browser, which the screenshot script uses), with
+stage, message, log lines and ETA derived from the elapsed time; a finished job becomes a run built from its
+base run's fixture plus the overrides (so it joins the base's family in Experiments) and a ledger trial.
+`POST /api/config/validate` checks overrides against the mock schema and hashes the resulting config tree.
 
 **Full stack locally:** `make dev` from the repo root (API on :8000 with `--reload`, Vite on
 :5173), or the two halves: `uvicorn qts_api.main:app --reload` and `npm --prefix ui run dev`.
@@ -245,6 +282,12 @@ of the contract (`schemas.py`, `schema.ts`, the fixture generator) and run `npm 
 and `About` lines, and mount it in `RunDossierPage.tsx`. The side nav, scrollspy, `j`/`k` and
 `#anchor` handling pick it up from `SECTIONS`.
 
+**A common setting (run builder).** Add `{ path, label, help }` to `COMMON_SETTINGS` in
+`features/run-builder/lib/common.ts`. The control, its default, bounds and validation come from the
+schema; a path the schema does not have is skipped. A new `SystemConfig` field needs nothing here: it is in
+"All settings" as soon as the API serves it (regenerate the mock schema entry in
+`mocks/fixtures/configSchema.ts` if tests should cover it).
+
 **A chart.** Small, few-point charts: SVG with d3-scale in `shared/charts/`, sized with
 `useMeasure()`, colours from `var(--color-*)`, a hover readout, an `aria-label` summary.
 Long series (hundreds of points or more): build on `UplotChart` (see `TimeSeriesChart`) and
@@ -254,21 +297,27 @@ Wrap it in `ChartFrame` with a `table` (a function, so the data table is built o
 ## Quality gates (current)
 
 - `npm run typecheck`, `npm run lint`: clean (strict TS, no `any`, `strictTypeChecked` rules).
-- `npm test`: 123 tests (format, stats/DSR, metric interpretations, verdict generation,
-  selectors, family clustering + config diff, selection store, primitives, form validation,
-  API client, MetricTable with MSW, Experiments, Run-builder and the dossier through the real
+- `npm test`: 166 tests (format, stats/DSR, metric interpretations, verdict generation,
+  selectors, family clustering + config diff, selection store, primitives,
+  API client, MetricTable with MSW, Experiments and the dossier through the real
   route tree: header facts and gates, seven sections, section nav + scrollspy, `j`/`k`, add to
-  tray, config search + diff, artifacts, old-tab redirects; the labs' data shaping (IC-by-year
-  binning, per-refit normalisation, industry stacking, rolling vol / holding period, binding-share
-  grids, vol-reason shares, cost-per-side bins) and all three labs through the route tree with the
-  picker, one run and three runs).
+  tray, config search + diff, artifacts, old-tab redirects; the labs' data shaping and all three labs
+  through the route tree with the picker, one run and three runs; the run builder's library: schema → form
+  mapping (types, bounds, nullable, a field the schema gains, the curated common settings), the validation
+  states of an input and of the launch settings, base / diff / request, the CLI command builder, the builder
+  reducer (variants), the trial forecast; the queue reducer and the mock queue progressing over time; and the
+  builder through the route tree: defaults, inline validation and reset, search / changed-only / nullable,
+  clone → two edits → diff → add variant → queue both → running + queued → finished, the new-strategy
+  warning, switching the base, an unusable base).
 - `npm run test:e2e`: smoke (Experiments → dossier: header, every section, section nav click +
   `j`/`k`, data-table toggle; old tab redirects, add to tray → Compare, config search/diff,
-  artifact download link; suspicious run,
-  launch → progress → run, skip link, theme toggle + persistence), shell (sidebar to every
+  artifact download link; suspicious run, skip link, theme toggle + persistence), shell (sidebar to every
   workspace and the old redirects, `/` search → Enter opens the run, tray fill / URL / reload /
   `c` → compare page / chip removal / clear, `?sel=` seeding), labs (each with one and three
   selected runs: picker → deep view, sleeve switch + heatmap readout, holdings scrubber, data
-  tables, dossier "Open in" links) and axe on 17 pages × 2 themes with zero serious or critical
-  violations.
-- `npm run contrast`: all 58 pairs pass (table in `DESIGN.md`).
+  tables, dossier "Open in" links), builder (dossier "Clone & edit" → two fields changed → the diff lists
+  them → add variant → queue both → one running, one queued, log tail, top-bar indicator → both finished →
+  add to tray → the runs in Experiments and their dossier; clone from an Experiments row, reorder and cancel
+  queued runs; inline validation) and axe on 18 pages × 2 themes plus the builder with a running and a
+  queued job in both themes, with zero serious or critical violations.
+- `npm run contrast`: all 70 pairs pass (table in `DESIGN.md`).

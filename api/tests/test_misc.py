@@ -9,19 +9,21 @@ from qts.core.config import SystemConfig
 
 from qts_api import schemas as S
 from qts_api.main import create_app
-from qts_api.services.config_schema import leaf_index, validate_overrides
+from qts_api.services.config_schema import RESERVED, leaf_index, validate_overrides
 from qts_api.settings import Settings
 
 LOCAL = "http://localhost"  # Host allow-list (see conftest.LOCAL)
 
 
-def test_ledger(client, fixture_root, summary):
+def test_ledger(client, fixture_root, summary, run_id):
     led = S.Ledger.model_validate(client.get("/api/ledger").json())
     recs = [json.loads(x) for x in (fixture_root / "trial_ledger.jsonl").read_text().splitlines() if x.strip()]
     assert len(led.trials) == len(recs) >= 1
     t = led.trials[-1]
-    # DSR family = phase + data hash (qts.pipeline.ResearchPipeline.ledger_family)
-    family = f"pipeline_phase1:{summary['data_hash'][:12]}"
+    # DSR family = the one the pipeline counted in (ResearchPipeline.ledger_family; keyed by the
+    # market hash), which the manifest records and the run detail serves
+    family = S.RunDetail.model_validate(client.get(f"/api/runs/{run_id}").json()).manifest.ledger_family
+    assert family and family.startswith("pipeline_phase1:")
     assert t.family == family and t.config_hash == summary["config_hash"]
     assert t.sharpe_annual == summary["backtest"]["sharpe_net"]
     fam = {f.family: f for f in led.families}[family]
@@ -40,7 +42,7 @@ def test_config_schema(client):
     body = r.json()
     schema = S.JsonSchemaObject.model_validate(body)
     assert schema.title == "SystemConfig"
-    assert "null" not in json.dumps(body)  # optional keys are omitted, never null
+    assert ": null" not in json.dumps(body)  # optional keys are omitted, never null
     port = body["properties"]["portfolio"]
     assert port["title"] == "Portfolio construction"
     ta = port["properties"]["trade_aversion"]
@@ -53,11 +55,7 @@ def test_config_schema(client):
     # descriptions come from the field comments in qts/core/config.py
     assert "signal" in body["properties"]["execution"]["properties"]["signal_lag_days"]["description"]
     # every scalar default round-trips through the strict validator
-    defaults = {
-        k: v["default"]
-        for k, v in leaf_index().items()
-        if "default" in v and k not in ("seed", "execution.signal_lag_days")
-    }
+    defaults = {k: v["default"] for k, v in leaf_index().items() if "default" in v and k not in RESERVED}
     assert validate_overrides(defaults).hash() == SystemConfig().hash()
     assert "styles" not in body["properties"]["risk"]["properties"]  # lists are not form fields
 

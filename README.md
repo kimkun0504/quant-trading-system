@@ -90,7 +90,8 @@ w  = SinglePeriodOptimizer(SystemConfig().portfolio, tc).solve(ao.expected_retur
   date and applies an embargo ≥ horizon; the trailing validation block is purged the same way.
 * The trial ledger is append-only; the deflated Sharpe ratio is computed from its trial count,
   the cross-trial Sharpe variance and Nyholt effective trials of the pipeline's family
-  (`pipeline_phase{p}:{data_hash[:12]}`). Nothing is rewritten: identical re-runs (same config
+  (`pipeline_phase{p}:{market_hash[:12]}`, keyed on the adjusted-close panel so that adding an
+  auxiliary table does not reset the trial count; `qts ledger list | rekey | merge-families | restate`). Nothing is rewritten: identical re-runs (same config
   hash, data hash, run settings and a clean code version) are collapsed into one trial when the
   ledger is read. `qts ledger migrate` renames pre-November bare `pipeline_phaseN` families once.
 

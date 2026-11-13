@@ -39,8 +39,8 @@ export const routes: RouteObject[] = [
           {
             path: 'builder',
             lazy: () =>
-              import('@/pages/new-run/NewRunPage').then((m) => ({
-                Component: m.NewRunPage,
+              import('@/pages/run-builder/RunBuilderPage').then((m) => ({
+                Component: m.RunBuilderPage,
               })),
           },
           {

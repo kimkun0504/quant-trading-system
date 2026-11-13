@@ -136,6 +136,18 @@ function RunRow({
           </span>
           <span className={styles.descriptor}>
             {runDescriptor(run)}. {dateTime(run.created_at)}
+            {run.status === 'done' ? (
+              <>
+                {'. '}
+                <Link
+                  to={`/builder?from=${encodeURIComponent(run.id)}`}
+                  className={styles.clone}
+                  aria-label={`Clone and edit ${run.label}`}
+                >
+                  Clone &amp; edit
+                </Link>
+              </>
+            ) : null}
           </span>
         </span>
       </Th>

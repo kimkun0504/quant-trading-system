@@ -1,4 +1,4 @@
-import type { ApiErrorBody } from './schema';
+import type { ApiErrorBody, ValidationIssue } from './schema';
 
 /**
  * Root URL of the API, `/api` included. Default `/api` (same origin: the Vite dev server
@@ -10,12 +10,15 @@ export const API_BASE_URL: string = (import.meta.env.VITE_API_URL || '/api').rep
 export class ApiError extends Error {
   readonly status: number;
   readonly detail: string;
+  /** Per-field issues of a 422 problem document (empty otherwise). */
+  readonly errors: readonly ValidationIssue[];
 
-  constructor(status: number, detail: string) {
+  constructor(status: number, detail: string, errors: readonly ValidationIssue[] = []) {
     super(`API ${status}: ${detail}`);
     this.name = 'ApiError';
     this.status = status;
     this.detail = detail;
+    this.errors = errors;
   }
 }
 
@@ -41,13 +44,17 @@ function isErrorBody(x: unknown): x is ApiErrorBody {
 async function parse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let detail = res.statusText || 'request failed';
+    let errors: readonly ValidationIssue[] = [];
     try {
       const body: unknown = await res.json();
-      if (isErrorBody(body)) detail = body.detail;
+      if (isErrorBody(body)) {
+        detail = body.detail;
+        if (Array.isArray(body.errors)) errors = body.errors;
+      }
     } catch {
       /* non-JSON error body: keep statusText */
     }
-    throw new ApiError(res.status, detail);
+    throw new ApiError(res.status, detail, errors);
   }
   const type = res.headers.get('content-type') ?? '';
   if (!type.includes('json')) {

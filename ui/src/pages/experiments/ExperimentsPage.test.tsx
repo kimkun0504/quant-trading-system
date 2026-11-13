@@ -61,7 +61,7 @@ describe('Experiments page (integration, MSW)', () => {
     expect(tray).toHaveTextContent('2 of 8 selected');
     expect(screen.getByRole('heading', { name: 'Comparing 2 runs' })).toBeInTheDocument();
     const diff = await screen.findByRole('region', { name: 'Config diff' });
-    expect(diff).toHaveTextContent('1 of 29 keys differ');
+    expect(diff).toHaveTextContent('1 of 35 keys differ');
     expect(within(diff).getByRole('rowheader', { name: 'portfolio.trade_aversion' })).toBeVisible();
     await user.click(
       within(tray).getByRole('button', { name: /Remove Composite baseline from the selection/ }),

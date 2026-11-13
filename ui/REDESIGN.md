@@ -60,7 +60,15 @@ real or noise?"), not the single run.
 3. Dossier replacing the tabbed run page; delete the tabs.
 4. Signal lab + refit-importance API.
 5. Portfolio anatomy + cost/constraint lab (+ binding-constraint recording).
-6. Run builder with diff and queue.
+6. Run builder with diff and queue. **Done (2026-11-12):** start from defaults or a run (picker,
+   `/builder?from=`, "Clone & edit" on the dossier and in Experiments), schema-driven editor with a
+   curated Common settings panel and inline validation (`POST /api/config/validate`), the launch slip
+   (diff from the base per variant, config hash, equivalent `qts` command, new-strategy warning, trial
+   line), variants queued together, and the persisted FIFO queue (`GET /api/jobs`, log tail, cancel,
+   reorder, restart recovery) with a panel on the builder and an indicator in the top bar. Details:
+   `ui/README.md` (Run builder, Queue), `api/README.md` (Jobs).
+
+All six steps are shipped.
 
 ## Out of scope (for now)
 

@@ -19,12 +19,23 @@ Protocol
   same purge is applied between the fit rows and the validation rows.
 * Models are re-created from ``model_factory()`` at every refit (no parameter
   carry-over between windows).
+* **Recency weighting** (``cfg.sample_weight_halflife_years > 0``; handbook 04):
+  in a refit whose last training date is ``T`` the row at date ``s`` gets
+  ``0.5 ** ((pos(T) - pos(s)) / (halflife_years * 252))`` (:func:`recency_weights`;
+  positions are trading days of the feature panel), passed to the model as
+  ``fit(..., sample_weight=...)`` normalised to mean 1 over the refit's rows.
+  The validation block is part of the same rows, so early stopping is weighted
+  the same way.  The weights are a function of the dates ``<= T`` only.  At 0
+  (default) ``fit`` is called without the argument: the unweighted code path,
+  bitwise the earlier behaviour.  Each :class:`FoldInfo` records the half-life
+  and the effective sample size ``(sum w)^2 / sum w^2`` in ``extra``.
 * Only out-of-sample predictions are returned; dates before the first fit are
   NaN.
 """
 
 from __future__ import annotations
 
+import inspect
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -50,6 +61,40 @@ class FoldInfo:
     n_train_rows: int
     n_valid_rows: int
     extra: dict = field(default_factory=dict)
+
+
+#: Trading days per year used to convert the recency half-life from years.
+TRADING_DAYS_PER_YEAR = 252
+
+
+def recency_weights(
+    age_days: np.ndarray, halflife_years: float, trading_days_per_year: int = TRADING_DAYS_PER_YEAR
+) -> np.ndarray:
+    """``0.5 ** (age / (halflife_years * trading_days_per_year))`` for row ages
+    ``age = pos(T) - pos(s) >= 0`` in trading days (``T`` = the refit's last
+    training date).  Not normalised: the newest row has weight 1."""
+    if not halflife_years > 0:
+        raise ValueError(f"halflife_years must be > 0, got {halflife_years!r}")
+    age = np.asarray(age_days, dtype=float)
+    if len(age) and age.min() < 0:
+        raise ValueError("recency_weights: negative age (a row dated after the refit's last training date)")
+    return np.power(0.5, age / (float(halflife_years) * trading_days_per_year))
+
+
+def effective_sample_size(w: np.ndarray) -> float:
+    """Kish effective sample size ``(sum w)^2 / sum w^2`` (= n for equal weights)."""
+    w = np.asarray(w, dtype=float)
+    s2 = float((w * w).sum())
+    return float(w.sum() ** 2 / s2) if s2 > 0 else 0.0
+
+
+def accepts_sample_weight(model: object) -> bool:
+    """True when ``model.fit`` has a ``sample_weight`` parameter (or ``**kwargs``)."""
+    try:
+        params = inspect.signature(model.fit).parameters  # type: ignore[attr-defined]
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return "sample_weight" in params or any(p.kind is p.VAR_KEYWORD for p in params.values())
 
 
 def embargoed_train_mask(label_pos: np.ndarray, pred_start_pos: int, horizon: int) -> np.ndarray:
@@ -125,6 +170,7 @@ class WalkForwardTrainer:
             ready_row = rpos[row_pos]
         else:
             ready_row = np.full(len(row_pos), -np.inf)
+        hl = float(self.cfg.sample_weight_halflife_years)
         preds: list[pd.Series] = []
         self.folds_, self.models_ = [], []
         sched = self.schedule(uniq)
@@ -147,7 +193,19 @@ class WalkForwardTrainer:
             Xtr, ytr = X[use], y[use]
             vmask = pd.Series(valid_mask_arr[use], index=Xtr.index)
             model = model_factory()
-            model.fit(Xtr, ytr, vmask)
+            n_rows = int(use.sum())
+            if hl > 0:
+                if not accepts_sample_weight(model):
+                    raise TypeError(
+                        f"alpha.sample_weight_halflife_years={hl:g} but {type(model).__name__}.fit "
+                        "has no sample_weight parameter (the weights would be silently ignored)"
+                    )
+                w = recency_weights(last_train_pos - row_pos[use], hl)
+                ess = effective_sample_size(w)
+                model.fit(Xtr, ytr, vmask, sample_weight=pd.Series(w / w.mean(), index=Xtr.index))
+            else:
+                ess = float(n_rows)
+                model.fit(Xtr, ytr, vmask)
             self.models_.append(model)
             pred_rows = (row_pos >= p0) & (row_pos < p1)
             if dates is not None:
@@ -163,7 +221,12 @@ class WalkForwardTrainer:
                     valid_start=uniq[valid_start_pos] if valid_mask_arr.any() else None,
                     n_train_rows=int(fit_ok.sum() if valid_mask_arr.any() else train_rows.sum()),
                     n_valid_rows=int(valid_mask_arr.sum()),
-                    extra={"feature_hash": feature_signature(X.columns)},
+                    extra={
+                        "feature_hash": feature_signature(X.columns),
+                        "sample_weight_halflife_years": hl,
+                        "n_rows": n_rows,
+                        "effective_sample_size": ess,
+                    },
                 )
             )
             f = self.folds_[-1]

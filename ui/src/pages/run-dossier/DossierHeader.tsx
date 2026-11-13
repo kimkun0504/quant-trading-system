@@ -159,6 +159,13 @@ export function DossierHeader({ run, animate }: { run: RunDetail; animate: boole
             {inTray ? 'Remove from tray' : 'Add to tray'}
           </Button>
           <LinkButton
+            to={`/builder?from=${encodeURIComponent(run.id)}`}
+            variant="secondary"
+            className={styles.clone}
+          >
+            <Icons.Clone /> Clone &amp; edit
+          </LinkButton>
+          <LinkButton
             to="/compare"
             variant="secondary"
             className={cx(styles.compare, selection.length < 2 && styles.disabled)}

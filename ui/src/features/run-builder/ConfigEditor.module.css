@@ -1,0 +1,134 @@
+.common {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: var(--space-5) var(--space-4);
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-3) var(--space-4);
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1 1 16rem;
+  max-width: 26rem;
+  height: 2rem;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-fg-muted);
+}
+
+.search:focus-within {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-fg);
+  font-size: var(--text-md);
+}
+
+.filter {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+  white-space: nowrap;
+}
+
+.count {
+  margin-left: auto;
+  color: var(--color-fg-muted);
+  font-size: var(--text-sm);
+}
+
+.none {
+  padding: var(--space-4);
+  border-top: var(--hairline);
+  color: var(--color-fg-muted);
+  font-size: var(--text-md);
+}
+
+.section {
+  border-top: var(--hairline);
+}
+
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  min-height: 2.25rem;
+  cursor: pointer;
+  list-style: none;
+  background: var(--color-surface-2);
+  font-size: var(--text-md);
+}
+
+.summary::-webkit-details-marker {
+  display: none;
+}
+
+.summary:focus-visible {
+  outline-offset: -2px;
+}
+
+.chevron {
+  color: var(--color-fg-muted);
+  transition: transform var(--motion-fast);
+  flex: none;
+}
+
+.section[open] > .summary .chevron {
+  transform: rotate(90deg);
+}
+
+.sectionTitle {
+  font-weight: 600;
+}
+
+.sectionPath {
+  background: none;
+  padding: 0;
+  color: var(--color-fg-muted);
+  font-size: var(--text-xs);
+}
+
+.sectionMeta {
+  margin-left: auto;
+  display: inline-flex;
+  gap: var(--space-3);
+  color: var(--color-fg-muted);
+  font-size: var(--text-sm);
+}
+
+.changedCount {
+  color: var(--color-accent);
+  font-weight: 500;
+}
+
+.errorCount {
+  color: var(--color-loss);
+  font-weight: 500;
+}
+
+.sectionDescription {
+  padding: var(--space-3) var(--space-4) 0;
+  color: var(--color-fg-muted);
+  font-size: var(--text-sm);
+  max-width: none;
+}

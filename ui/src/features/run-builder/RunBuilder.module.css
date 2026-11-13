@@ -1,0 +1,103 @@
+.builder {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.top {
+  min-width: 0;
+}
+
+/* the variants: a bench of labelled chips; the current one is filled */
+.variants {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.variant {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.current {
+  border-color: var(--color-accent);
+  background: var(--color-accent-wash);
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+
+.variantButton {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-height: 2rem;
+  padding: 0 var(--space-3);
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font-size: var(--text-md);
+}
+
+.variantButton:focus-visible {
+  outline-offset: -2px;
+}
+
+.letter {
+  font-weight: 600;
+}
+
+.variantMeta {
+  color: var(--color-fg-muted);
+  font-size: var(--text-sm);
+}
+
+.variantsHint {
+  flex: 1 1 100%;
+  color: var(--color-fg-muted);
+  font-size: var(--text-sm);
+  max-width: none;
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(21rem, 26rem);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.editor {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+/* the slip stays in view while the editor scrolls; it scrolls itself when it is taller
+   than the space between the top bar and the tray */
+.side {
+  position: sticky;
+  top: calc(var(--topbar-height) + var(--space-4));
+  max-height: calc(100vh - var(--topbar-height) - var(--tray-height) - var(--space-6));
+  overflow-y: auto;
+  min-width: 0;
+  display: grid;
+  gap: var(--space-4);
+  scrollbar-width: thin;
+}
+
+@media (max-width: 1099px) {
+  .columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* one column: the slip comes first so the diff is read before the long editor */
+  .side {
+    position: static;
+    max-height: none;
+    overflow: visible;
+    order: -1;
+  }
+}

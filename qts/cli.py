@@ -26,6 +26,15 @@ Commands
 ``ledger show``      trial ledger table (``--path``, ``--family``)
 ``ledger migrate``   one-off rename of pre-Nov-2026 bare ``pipeline_phaseN`` families
                      (``--dry-run``; see ``qts.validation.ledger``)
+``ledger list``      every family with record / trial counts, Nyholt N_eff and hashes
+``ledger rekey``     move records filed under ``pipeline_phaseN:<data_hash>`` to the
+                     research family ``pipeline_phaseN:<market_hash>`` wherever the market
+                     hash is known: from other records, from run manifests (``--runs-root``)
+                     and, with ``--store`` (+ the ``run`` loader flags), recomputed from the
+                     data; ``--dry-run``; backup first
+``ledger merge-families --into F A B ...``  declare families one search (backup first)
+``ledger restate RUN``  recompute a finished run's DSR at its family's current trial
+                     count (no backtest); writes ``extras.json["dsr_restated"]``
 
 Every pipeline command writes a run directory (``--runs-root``, default
 ``runs``; ``--no-save`` disables) and logs to the trial ledger (``--ledger``).
@@ -235,6 +244,93 @@ def cmd_demo(a: argparse.Namespace) -> int:
     return _run_pipeline(md, cfg, a)
 
 
+def _load_store(a: argparse.Namespace):
+    """``MarketData`` from ``--store`` with the ``--start`` / ``--end`` /
+    ``--min-mcap-ever`` / ``--max-names`` prefilter (``qts run`` and ``qts ledger
+    rekey --store`` load the same way, so their hashes agree); ``None`` when the
+    prefilter leaves nothing."""
+    from qts.data.store import ParquetStore
+
+    store = ParquetStore(a.store)
+    tickers = None
+    if a.min_mcap_ever is not None or a.max_names is not None:
+        # pre-filter by peak market cap (reads only the long market_cap table), so a
+        # ten-thousand-name store is never pivoted whole; the pipeline's own PIT
+        # universe rules (top_n_by_mcap, min price, ADV) still apply on top
+        tickers = store.tickers_by_market_cap(
+            a.start, a.end, min_mcap_ever=a.min_mcap_ever, max_names=a.max_names
+        )
+        print(f"prefilter: {len(tickers)} candidate ids by peak market cap")
+        if not tickers:
+            print("error: the prefilter left no ids", file=sys.stderr)
+            return None
+    md = store.as_market_data(universe_tickers=tickers, start=a.start, end=a.end)
+    print(
+        f"store: {md.close.shape[1]} ids x {md.close.shape[0]} days ({md.dates[0].date()}..{md.dates[-1].date()})"
+    )
+    return md
+
+
+def _add_store_args(ap: argparse.ArgumentParser) -> None:
+    ap.add_argument("--start", default=None)
+    ap.add_argument("--end", default=None)
+    ap.add_argument(
+        "--min-mcap-ever",
+        type=float,
+        default=None,
+        help="store prefilter: load only ids whose peak market cap in [start, end] is >= this (USD)",
+    )
+    ap.add_argument(
+        "--max-names",
+        type=int,
+        default=None,
+        help="store prefilter: load only the N ids with the largest peak market cap in [start, end]",
+    )
+
+
+def data_hash_aliases(md) -> dict[str, str]:
+    """``data_hash -> market_hash`` for the data hashes ``md`` has, and had before
+    its optional reference tables existed.
+
+    The data hash of a run covers every panel; the tables in
+    :data:`qts.core.manifest._SKIP_IF_NONE` (``delisting_dates``,
+    ``delisting_reasons``) contribute nothing when absent, so the hash of the
+    *same* panels loaded before such a table was added to the store is the hash
+    with that field left out.  All of them describe the same price history
+    (``hash_market(md)``).  Used by ``qts ledger rekey --store``."""
+    from itertools import combinations
+
+    from qts.core.manifest import _SKIP_IF_NONE, hash_market, hash_market_data
+
+    market = hash_market(md)
+    present = sorted(n for n in _SKIP_IF_NONE if getattr(md, n, None) is not None)
+    out: dict[str, str] = {}
+    for k in range(len(present) + 1):
+        for drop in combinations(present, k):
+            out[hash_market_data(md, exclude=frozenset(drop))] = market
+    return out
+
+
+def manifest_market_hashes(runs_root: str | Path) -> dict[str, str]:
+    """``data_hash -> market_hash`` from the run manifests under ``runs_root``
+    (runs written since 2026-11-12 record both)."""
+    out: dict[str, str] = {}
+    root = Path(runs_root)
+    if not root.exists():
+        return out
+    for d in sorted(root.iterdir()):
+        f = d / "manifest.json"
+        if not f.exists():
+            continue
+        try:
+            m = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if m.get("data_hash") and m.get("market_hash"):
+            out[str(m["data_hash"])] = str(m["market_hash"])
+    return out
+
+
 def cmd_run(a: argparse.Namespace) -> int:
     try:  # fail before any data is loaded
         cfg = _apply_set_overrides(_load_config(a.config), a.set_overrides)
@@ -242,25 +338,9 @@ def cmd_run(a: argparse.Namespace) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
     if a.store:
-        from qts.data.store import ParquetStore
-
-        store = ParquetStore(a.store)
-        tickers = None
-        if a.min_mcap_ever is not None or a.max_names is not None:
-            # pre-filter by peak market cap (reads only the long market_cap table), so a
-            # ten-thousand-name store is never pivoted whole; the pipeline's own PIT
-            # universe rules (top_n_by_mcap, min price, ADV) still apply on top
-            tickers = store.tickers_by_market_cap(
-                a.start, a.end, min_mcap_ever=a.min_mcap_ever, max_names=a.max_names
-            )
-            print(f"prefilter: {len(tickers)} candidate ids by peak market cap")
-            if not tickers:
-                print("error: the prefilter left no ids", file=sys.stderr)
-                return 2
-        md = store.as_market_data(universe_tickers=tickers, start=a.start, end=a.end)
-        print(
-            f"store: {md.close.shape[1]} ids x {md.close.shape[0]} days ({md.dates[0].date()}..{md.dates[-1].date()})"
-        )
+        md = _load_store(a)
+        if md is None:
+            return 2
     elif a.yfinance:
         from qts.data.loaders import yfinance_to_market_data
 
@@ -408,7 +488,9 @@ def cmd_ledger(a: argparse.Namespace) -> int:
 
     if not Path(a.path).exists():
         print(f"(no ledger at {a.path})")
-        return 0
+        return 0 if a.ledger_cmd in ("show", "list") else 1
+    if a.ledger_cmd in ("list", "rekey", "merge-families", "restate"):
+        return _cmd_ledger_families(a)
     if a.ledger_cmd == "migrate":
         changes = TrialLedger(a.path).migrate_family_names(dry_run=a.dry_run)
         if not changes:
@@ -447,6 +529,112 @@ def cmd_ledger(a: argparse.Namespace) -> int:
     return 0
 
 
+def _print_families(led, out=None) -> None:
+    out = out if out is not None else sys.stdout
+    rows = led.families()
+    if not rows:
+        print("(empty)", file=out)
+        return
+    print(
+        f"{'family':34s} {'records':>7s} {'trials':>6s} {'N_eff':>6s} {'best SR':>8s}  "
+        f"{'first':10s} {'last':10s}  market_hash / data_hash(es)",
+        file=out,
+    )
+    for r in rows:
+        sr = "" if r["best_sharpe"] is None else f"{r['best_sharpe']:.2f}"
+        mh = ",".join(r["market_hashes"]) or "-"
+        dh = ",".join(r["data_hashes"]) or "-"
+        print(
+            f"{r['family']:34s} {r['n_records']:7d} {r['n_trials']:6d} {r['n_effective']:6.1f} {sr:>8s}  "
+            f"{str(r['first_ts'])[:10]:10s} {str(r['last_ts'])[:10]:10s}  {mh} / {dh}",
+            file=out,
+        )
+
+
+def _cmd_ledger_families(a: argparse.Namespace) -> int:
+    from qts.validation import TrialLedger
+
+    led = TrialLedger(a.path)
+    if a.ledger_cmd == "list":
+        _print_families(led)
+        left = led.unkeyed_families()
+        if left:
+            print(
+                f"\n{sum(left.values())} record(s) in {len(left)} famil(ies) are keyed on a data hash with no "
+                "known market hash; `qts ledger rekey --store ...` or `qts ledger merge-families`"
+            )
+        return 0
+    if a.ledger_cmd == "rekey":
+        mapping = manifest_market_hashes(a.runs_root)
+        if a.store:
+            md = _load_store(a)
+            if md is None:
+                return 2
+            alias = data_hash_aliases(md)
+            print(f"store market hash {next(iter(alias.values()))}; data hashes it maps: {', '.join(alias)}")
+            mapping.update(alias)
+        changes = led.rekey_families(mapping, dry_run=a.dry_run)
+        _print_changes(changes, a.dry_run, a.path, "re-key")
+        left = led.unkeyed_families(mapping)
+        if a.dry_run:  # what would remain after the rekey
+            moved = {c["old"] for c in changes}
+            left = {f: n for f, n in left.items() if f not in moved}
+        if left:
+            print("\nnot re-keyed (market hash unknown; the record stores only its data hash):")
+            for fam, n in left.items():
+                print(f"  {fam}  {n} record(s)")
+            print(
+                "if these are trials on the same price history as another family, pool them with\n"
+                "  qts ledger merge-families --into <family> <family> ...   (see `qts ledger list`)"
+            )
+        if not a.dry_run:
+            print("")
+            _print_families(led)
+        return 0
+    if a.ledger_cmd == "merge-families":
+        try:
+            changes = led.merge_families(a.into, list(a.families), dry_run=a.dry_run)
+        except (KeyError, ValueError) as e:
+            print(f"error: {e.args[0] if e.args else e}", file=sys.stderr)
+            return 2
+        _print_changes(changes, a.dry_run, a.path, "merge")
+        if not a.dry_run:
+            print("")
+            _print_families(led)
+        return 0
+    if a.ledger_cmd == "restate":
+        from qts.runs.restate import format_restated, restate_dsr
+
+        p = Path(a.run)
+        if not p.exists():
+            p = Path(a.runs_root) / a.run
+        try:
+            r = restate_dsr(p, a.path, family=a.family, write=not a.dry_run)
+        except (FileNotFoundError, KeyError, ValueError) as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        print(format_restated(p.name, r))
+        print(
+            "(dry run: extras.json not written)"
+            if a.dry_run
+            else f"written: {p / 'extras.json'} [dsr_restated]"
+        )
+        return 0
+    return 2
+
+
+def _print_changes(changes: list[dict], dry_run: bool, path: str, verb: str) -> None:
+    if not changes:
+        print(f"nothing to {verb}")
+        return
+    for c in changes:
+        print(f"line {c['line']:>4d}  {str(c['ts'])[:19]}  {c['old']} -> {c['new']}")
+    print(
+        f"{'would ' if dry_run else ''}{verb} {len(changes)} record(s)"
+        + ("" if dry_run else f"; backup at {path}.bak-<timestamp>")
+    )
+
+
 # ----------------------------------------------------------------------------- parser
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="qts", description="Quant trading system research CLI")
@@ -462,20 +650,7 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("run", help="run on real data (ParquetStore or yfinance)")
     r.add_argument("--store", default=None, help="ParquetStore root")
     r.add_argument("--yfinance", nargs="*", default=None, help="tickers for a yfinance prototype run")
-    r.add_argument("--start", default=None)
-    r.add_argument("--end", default=None)
-    r.add_argument(
-        "--min-mcap-ever",
-        type=float,
-        default=None,
-        help="store prefilter: load only ids whose peak market cap in [start, end] is >= this (USD)",
-    )
-    r.add_argument(
-        "--max-names",
-        type=int,
-        default=None,
-        help="store prefilter: load only the N ids with the largest peak market cap in [start, end]",
-    )
+    _add_store_args(r)
     _add_pipeline_args(r)
     r.set_defaults(func=cmd_run)
 
@@ -553,6 +728,43 @@ def build_parser() -> argparse.ArgumentParser:
     )
     lm.add_argument("--path", default=DEFAULT_LEDGER)
     lm.add_argument("--dry-run", action="store_true", help="print the renames, change nothing")
+    ll = lsub.add_parser("list", help="families with record / trial counts, Nyholt N_eff and hashes")
+    ll.add_argument("--path", default=DEFAULT_LEDGER)
+    lr = lsub.add_parser(
+        "rekey",
+        help="move records from 'pipeline_phaseN:<data_hash>' to the research family "
+        "'pipeline_phaseN:<market_hash>' where the market hash is known (other records, run "
+        "manifests, --store); writes a backup first",
+    )
+    lr.add_argument("--path", default=DEFAULT_LEDGER)
+    lr.add_argument("--runs-root", default=DEFAULT_RUNS_ROOT, help="run directories whose manifests are read")
+    lr.add_argument(
+        "--store",
+        default=None,
+        help="ParquetStore root: load it exactly as `qts run` did (same --start/--end/--max-names/"
+        "--min-mcap-ever) and map its data hashes (with and without the optional reference tables) "
+        "to its market hash",
+    )
+    _add_store_args(lr)
+    lr.add_argument("--dry-run", action="store_true", help="print the moves, change nothing")
+    lmf = lsub.add_parser(
+        "merge-families",
+        help="rename every record of the listed families to --into (they are one search); backup first",
+    )
+    lmf.add_argument("--path", default=DEFAULT_LEDGER)
+    lmf.add_argument("--into", required=True, help="target family (see `qts ledger list`)")
+    lmf.add_argument("families", nargs="+", help="families to merge into the target")
+    lmf.add_argument("--dry-run", action="store_true", help="print the moves, change nothing")
+    lrs = lsub.add_parser(
+        "restate",
+        help="recompute a finished run's DSR at its family's current trial count (no backtest) and "
+        "write extras.json['dsr_restated']",
+    )
+    lrs.add_argument("run", help="run id (under --runs-root) or a path to a run directory")
+    lrs.add_argument("--path", default=DEFAULT_LEDGER)
+    lrs.add_argument("--runs-root", default=DEFAULT_RUNS_ROOT)
+    lrs.add_argument("--family", default=None, help="override the family (default: the run's ledger record)")
+    lrs.add_argument("--dry-run", action="store_true", help="print only, do not write extras.json")
     lg.set_defaults(func=cmd_ledger)
     return ap
 

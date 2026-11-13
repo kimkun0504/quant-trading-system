@@ -44,7 +44,7 @@ GateName = Literal[
 RunSeriesName = Literal["nav", "gross", "net", "drawdown", "turnover", "exante_vol", "gross_exposure", "net_exposure"]
 CostComponent = Literal["spread", "impact", "fees", "borrow"]
 ExposureRole = Literal["alpha_theme", "risk_only", "market"]
-JobStatus = Literal["queued", "running", "done", "failed"]
+JobStatus = Literal["queued", "running", "done", "failed", "cancelled"]
 Venue = Literal["routed", "auction", "continuous"]
 #: A scalar leaf of a flattened ``SystemConfig`` (dotted path -> value); lists and
 #: nested structures that are not sections are serialised as JSON strings.
@@ -90,6 +90,9 @@ class RunSummary(_Model):
     use_ml: bool
     config_hash: str
     data_hash: str
+    ledger_family: str | None = Field(
+        description="trial family the run's DSR counted in (the manifest's); null for older or unfinished runs"
+    )
     git_sha: str
     status: RunStatus
     headline: RunHeadline | None = Field(description="null while running or after a failure")
@@ -156,6 +159,9 @@ class RunManifest(_Model):
     git_dirty: bool | None = Field(description="null when git was unavailable")
     config_hash: str
     data_hash: str
+    ledger_family: str | None = Field(
+        description="trial family the run's DSR counted in, as the manifest records it; null for older runs"
+    )
     python: str
     platform: str
     versions: dict[str, str]
@@ -216,6 +222,32 @@ class FoldSharpe(_Model):
     sharpe_net: float
 
 
+class RunSource(_Model):
+    """Where a run's market data came from and how the run was invoked: what the run
+    builder needs to start a new run "from" this one.  Read from ``launch.json`` (runs
+    launched through the API), else from the CLI command recorded in the manifest
+    (``qts demo --stocks/--days/--seed``, ``qts run --store/--start/--end/--max-names/
+    --min-mcap-ever``, ``--ml``, ``--cache``, ``--max-days``); ``recorded`` is false when
+    neither says (older runs): the fields are then null and the builder asks."""
+
+    recorded: bool
+    origin: Literal["api", "cli", "unknown"]
+    kind: RunKind
+    stocks: int | None = Field(description="synthetic market: number of stocks")
+    days: int | None = Field(description="synthetic market: number of days")
+    store_path: str | None = Field(
+        description="ParquetStore root as recorded (CLI --store or the API's QTS_STORE_PATH)"
+    )
+    start: str | None = Field(description="store slice start, YYYY-MM-DD")
+    end: str | None = Field(description="store slice end, YYYY-MM-DD")
+    max_names: int | None = Field(description="store prefilter: the N ids with the largest peak market cap")
+    min_mcap_ever: float | None = Field(description="store prefilter: peak market cap floor, USD")
+    max_days: int | None = Field(description="backtest only the last N out-of-sample days")
+    cache: bool = Field(description="stage cache on")
+    venue: Venue | None
+    command: str = Field(description="the recorded command line ('' when none)")
+
+
 class RunConfig(_Model):
     """Subset of ``SystemConfig`` the UI reads directly; the full YAML is in ``config_yaml``."""
 
@@ -227,6 +259,7 @@ class RunConfig(_Model):
     seed: int
     signal_lag_days: int = Field(description="ExecutionConfig.signal_lag_days (the launch form offers 0 or 1)")
     config_yaml: str
+    source: RunSource
 
 
 class RunDetail(_Model):
@@ -484,9 +517,26 @@ class LaunchRunRequest(_Model):
     )
     seed: int = Field(ge=0, le=2**31 - 1)
     signal_lag_days: SignalLag
-    config_overrides: dict[str, Union[bool, int, float, str]] = Field(  # noqa: UP007
-        description='dotted-path overrides of SystemConfig, e.g. {"portfolio.trade_aversion": 2}'
+    config_overrides: dict[str, Union[bool, int, float, str, None]] = Field(  # noqa: UP007
+        description=(
+            'dotted-path overrides, e.g. {"portfolio.trade_aversion": 2}; applied on top of the '
+            "config of `base_run_id` when given, else of the SystemConfig defaults; null only for nullable fields"
+        )
     )
+    base_run_id: str | None = Field(
+        default=None,
+        max_length=128,
+        description="start from this run's config.yaml (run builder: clone and edit); default: SystemConfig()",
+    )
+    start: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="store slice start")
+    end: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="store slice end")
+    max_names: int | None = Field(
+        default=None, ge=10, le=20_000, description="store prefilter: the N ids with the largest peak market cap"
+    )
+    min_mcap_ever: float | None = Field(
+        default=None, ge=0, strict=False, description="store prefilter: peak market cap floor in [start, end], USD"
+    )
+    cache: bool | None = Field(default=None, description="reuse fitted models from the stage cache (qts --cache)")
     label: str | None = Field(default=None, max_length=120, description="run label (default: derived)")
     max_days: int | None = Field(
         default=None, ge=20, description="backtest only the last N out-of-sample days (quick runs)"
@@ -522,12 +572,72 @@ class LaunchRunResponse(_Model):
     run_id: str
 
 
+class ValidationIssue(_Model):
+    loc: list[str | int]
+    msg: str
+    type: str
+
+
+class ConfigValidation(_Model):
+    """``POST /api/config/validate``: what a launch with this body would do, without
+    queueing anything.  ``errors`` are the same issues a launch answers with 422."""
+
+    valid: bool
+    errors: list[ValidationIssue]
+    warnings: list[ValidationIssue] = Field(description="launchable, but worth a look before spending a trial")
+    config_hash: str | None = Field(description="SystemConfig.hash() of the resulting config; null when invalid")
+    base_config_hash: str | None = Field(description="hash of the base (the run's config or the defaults)")
+    warmup_days: int | None = Field(description="estimated warm-up of the resulting config (trading days)")
+    min_days: int | None = Field(description="warm-up plus one year: the floor for a synthetic market's days")
+    overrides_applied: int = Field(description="number of override keys applied on the base")
+
+
 class Job(_Model):
     job_id: str
     run_id: str
     status: JobStatus
     progress: float
     message: str
+    label: str
+    kind: RunKind
+    ml: bool
+    phase: Phase
+    config_hash: str
+    base_run_id: str | None
+    n_overrides: int = Field(description="override keys of the request (0 for an unchanged base)")
+    created_at: str
+    started_at: str | None
+    finished_at: str | None
+    position: int | None = Field(description="0-based place in the queue; null unless queued")
+    stage: str = Field(description="pipeline stage of a running job (short name); '' otherwise")
+    last_log: str | None = Field(description="last line of the job's log; null before the first line")
+    eta_seconds: float | None = Field(
+        description="running: estimated seconds left, from finished jobs of similar size; null when there are none"
+    )
+    estimated_seconds: float | None = Field(description="estimated total duration from similar finished jobs")
+
+
+class JobQueue(_Model):
+    """``GET /api/jobs``: running first, then the queue in order, then the most recent
+    finished, failed and cancelled jobs."""
+
+    jobs: list[Job]
+    max_workers: int
+    max_queued: int
+    counts: dict[str, int] = Field(description="jobs by status (all on disk, not only the listed ones)")
+
+
+class JobMove(_Model):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    position: int = Field(ge=0, description="new 0-based place in the queue (clamped to its end)")
+
+
+class JobLog(_Model):
+    job_id: str
+    lines: list[str] = Field(description="the last `tail` lines, oldest first")
+    total_lines: int
+    truncated: bool = Field(description="true when the log has more lines than returned")
 
 
 # ----------------------------------------------------------------------------- ledger
@@ -561,6 +671,7 @@ class JsonSchemaNumber(_Model):
     type: Literal["number", "integer"]
     title: str = None  # type: ignore[assignment]
     description: str = None  # type: ignore[assignment]
+    nullable: bool = None  # type: ignore[assignment]  # the field accepts null (Optional scalar)
     default: float = None  # type: ignore[assignment]
     minimum: float = None  # type: ignore[assignment]
     maximum: float = None  # type: ignore[assignment]
@@ -572,6 +683,7 @@ class JsonSchemaBoolean(_Model):
     type: Literal["boolean"]
     title: str = None  # type: ignore[assignment]
     description: str = None  # type: ignore[assignment]
+    nullable: bool = None  # type: ignore[assignment]  # the field accepts null (Optional scalar)
     default: bool = None  # type: ignore[assignment]
 
 
@@ -579,6 +691,7 @@ class JsonSchemaString(_Model):
     type: Literal["string"]
     title: str = None  # type: ignore[assignment]
     description: str = None  # type: ignore[assignment]
+    nullable: bool = None  # type: ignore[assignment]  # the field accepts null (Optional scalar)
     default: str = None  # type: ignore[assignment]
     enum: list[str] = None  # type: ignore[assignment]
 
@@ -597,12 +710,6 @@ JsonSchemaObject.model_rebuild()
 
 
 # ----------------------------------------------------------------------------- errors / health
-class ValidationIssue(_Model):
-    loc: list[str | int]
-    msg: str
-    type: str
-
-
 class ApiErrorBody(_Model):
     """RFC 7807 problem details (``application/problem+json``); ``detail`` is always a string."""
 
@@ -639,6 +746,7 @@ class RunFiles(_Model):
 
 
 class Health(_Model):
+    store_path: str | None = Field(description="QTS_STORE_PATH: the ParquetStore store runs read; null when unset")
     status: Literal["ok"]
     version: str
     qts_version: str

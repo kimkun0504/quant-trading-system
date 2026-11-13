@@ -74,6 +74,13 @@ function pairs(t, wash) {
     ['loss marks on surface (chart bars, 3:1)', t.loss, t.surface, 3],
     ['caution marks on surface (drawdown line, 3:1)', t.caution, t.surface, 3],
     ['fg-muted input border on surface (UI, 3:1)', t['fg-muted'], t.surface, 3],
+    // run builder and queue
+    ['accent on surface-2 (changed count in a section header)', t.accent, t['surface-2'], 4.5],
+    ['loss on surface-2 (errors-to-fix count in a section header)', t.loss, t['surface-2'], 4.5],
+    ['fg-muted on accent-wash (current variant chip)', t['fg-muted'], wash.accent, 4.5],
+    ['fg-muted on caution-wash (discard-edits prompt)', t['fg-muted'], wash.caution, 4.5],
+    ['accent marks on surface-2 (queue progress, 3:1)', t.accent, t['surface-2'], 3],
+    ['caution marks on surface (launch-slip caution mark, 3:1)', t.caution, t.surface, 3],
   ];
 }
 

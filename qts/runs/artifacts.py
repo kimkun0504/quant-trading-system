@@ -26,7 +26,8 @@ memory; :func:`write_extra_artifacts` adds them next to the core files::
                          share for LightGBM, |coef| for ridge, member mean for the
                          ensemble; the UI normalises per refit)
     alpha_refits.json    the refits' windows (train_start, train_end, valid_start,
-                         pred_end, n_train, n_valid), blend weights and notes, plus
+                         pred_end, n_train, n_valid, sample_weight_halflife_years,
+                         effective_sample_size), blend weights and notes, plus
                          the full-sample feature IC table (feature, sign as used, theme,
                          mean rank IC, Newey-West t, n dates)
     theme_weights.parquet decision date x theme: the composite's theme weights
@@ -295,6 +296,8 @@ def alpha_refits_frames(pipeline: ResearchPipeline) -> tuple[pd.DataFrame, dict[
                 "n_train": int(r.n_train),
                 "n_valid": int(r.n_valid),
                 "blend_weights": {str(k): float(v) for k, v in r.blend_weights.items()},
+                "sample_weight_halflife_years": float(getattr(r, "sample_weight_halflife_years", 0.0)),
+                "effective_sample_size": _finite(getattr(r, "effective_sample_size", None)),
             }
         )
         for n in r.notes:
@@ -306,6 +309,7 @@ def alpha_refits_frames(pipeline: ResearchPipeline) -> tuple[pd.DataFrame, dict[
         "refits": meta,
         "embargo_days": embargo,
         "refit_frequency_days": int(pipeline.cfg.alpha.refit_frequency_days),
+        "sample_weight_halflife_years": float(pipeline.cfg.alpha.sample_weight_halflife_years),
         "notes": notes,
     }
     return long, payload

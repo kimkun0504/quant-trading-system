@@ -92,8 +92,9 @@ def test_launch_queues_a_job(client, fixture_root):
     assert runs[out.run_id]["status"] == "running" and runs[out.run_id]["label"] == "Composite, seed 9"
     # cancel before it starts
     c = S.Job.model_validate(client.delete(f"/api/jobs/{out.job_id}").json())
-    assert c.status == "failed" and "Cancelled" in c.message
+    assert c.status == "cancelled" and "Cancelled" in c.message
     assert client.get(f"/api/runs/{out.run_id}").status_code == 409
+    assert out.run_id not in {x["id"] for x in client.get("/api/runs").json()}  # a cancelled job is not a run
 
 
 def test_same_config_same_run_hash_suffix(client):
@@ -110,7 +111,8 @@ def test_unknown_job_404(client):
 
 
 def test_jobs_survive_restart(fixture_root):
-    """A queued job of a previous API process is reported as interrupted (failed)."""
+    """A queued job of a previous API process is still queued (see test_queue.py for the order
+    and for a job that was running)."""
     from fastapi.testclient import TestClient
 
     from qts_api.main import create_app
@@ -121,7 +123,8 @@ def test_jobs_survive_restart(fixture_root):
         out = c1.post("/api/runs", json=BASE).json()
     with TestClient(create_app(s, start_jobs=False), base_url=LOCAL) as c2:
         j = c2.get(f"/api/jobs/{out['job_id']}").json()
-        assert j["status"] == "failed" and "Interrupted" in j["message"]
+        assert j["status"] == "queued" and j["position"] == 0
+        assert c2.app.state.jobs.counts() == {"queued": 1, "running": 0}
     for f in (fixture_root / "_jobs").glob("*.json"):
         f.unlink()
 

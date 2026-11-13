@@ -54,7 +54,7 @@ def test_allowed_hosts_from_env():
     s = Settings.from_env({"QTS_ALLOWED_HOSTS": "qts.lan, *.corp.example ,localhost"})
     assert s.allowed_hosts == (*DEFAULT_ALLOWED_HOSTS, "qts.lan", "*.corp.example")
     assert Settings.from_env({}).allowed_hosts == DEFAULT_ALLOWED_HOSTS
-    assert Settings.from_env({}).max_queued == 4 and Settings.from_env({"QTS_MAX_QUEUED": "1"}).max_queued == 1
+    assert Settings.from_env({}).max_queued == 20 and Settings.from_env({"QTS_MAX_QUEUED": "1"}).max_queued == 1
 
 
 def test_extra_allowed_host(tmp_path):
@@ -74,7 +74,7 @@ def test_queued_jobs_are_capped(tmp_path):
         assert "QTS_MAX_QUEUED" in body.detail and body.type.endswith("queue-full")
         assert r.headers["retry-after"] == "60"
         assert c.app.state.jobs.counts() == {"queued": 2, "running": 0}
-        assert len(list((tmp_path / "_jobs").glob("*.json"))) == 2  # the refused job left no file
+        assert len(list((tmp_path / "_jobs").glob("job_*.json"))) == 2  # the refused job left no file
 
 
 # ----------------------------------------------------------------- #10 dispatcher

@@ -97,7 +97,8 @@ class RefitRecord:
     permutation importance would cost another full pass over the validation
     block, so it is omitted and ``notes`` says so).  ``refit_date`` is the first
     date the model predicts for; its training labels end at ``train_end``,
-    ``embargo`` days earlier (see :mod:`qts.alpha.trainer`)."""
+    ``embargo`` days earlier (see :mod:`qts.alpha.trainer`).  The record also
+    carries the recency-weighting half-life and the refit's effective sample size."""
 
     refit_date: pd.Timestamp
     train_start: pd.Timestamp
@@ -109,6 +110,12 @@ class RefitRecord:
     importance: dict[str, pd.Series] = field(default_factory=dict)
     blend_weights: dict[str, float] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    #: recency half-life of the training-row weights in years (0 = equal weights)
+    sample_weight_halflife_years: float = 0.0
+    #: Kish effective sample size ``(sum w)^2 / sum w^2`` over the refit's rows
+    #: (train + validation; equals the row count at equal weights); ``None`` for
+    #: records built without the trainer's fold information
+    effective_sample_size: float | None = None
 
 
 def _sleeve_name(model: object) -> str:
@@ -132,6 +139,7 @@ def refit_record(fold: FoldInfo, model: Any) -> RefitRecord:
         _add_importance(importance, notes, "ensemble", model)
     else:
         _add_importance(importance, notes, _sleeve_name(model), model)
+    ess = fold.extra.get("effective_sample_size")
     return RefitRecord(
         refit_date=pd.Timestamp(fold.pred_start),
         train_start=pd.Timestamp(fold.train_start),
@@ -143,6 +151,8 @@ def refit_record(fold: FoldInfo, model: Any) -> RefitRecord:
         importance=importance,
         blend_weights=blend,
         notes=notes,
+        sample_weight_halflife_years=float(fold.extra.get("sample_weight_halflife_years", 0.0)),
+        effective_sample_size=None if ess is None else float(ess),
     )
 
 

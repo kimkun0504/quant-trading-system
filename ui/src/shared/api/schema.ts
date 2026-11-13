@@ -66,6 +66,8 @@ export interface RunSummary {
   use_ml: boolean;
   config_hash: string;
   data_hash: string;
+  /** Trial family the run's DSR counted in (the manifest's); null for older or unfinished runs. */
+  ledger_family: string | null;
   git_sha: string;
   status: RunStatus;
   headline: RunHeadline | null;
@@ -125,6 +127,8 @@ export interface RunManifest {
   git_dirty: boolean | null;
   config_hash: string;
   data_hash: string;
+  /** Trial family the run's DSR counted in, as the manifest records it; null for older runs. */
+  ledger_family: string | null;
   python: string;
   platform: string;
   versions: Record<string, string>;
@@ -186,6 +190,36 @@ export interface FoldSharpe {
   sharpe_net: number;
 }
 
+/**
+ * Where a run's market data came from and how it was invoked: what the run builder needs
+ * to start a new run from this one. From `launch.json` (API jobs), else the CLI command in
+ * the manifest; `recorded: false` when neither says (the builder then asks).
+ */
+export interface RunSource {
+  recorded: boolean;
+  origin: 'api' | 'cli' | 'unknown';
+  kind: RunKind;
+  /** Synthetic market size. */
+  stocks: number | null;
+  days: number | null;
+  /** ParquetStore root as recorded (CLI `--store` or the API's QTS_STORE_PATH). */
+  store_path: string | null;
+  /** Store slice, YYYY-MM-DD. */
+  start: string | null;
+  end: string | null;
+  /** Store prefilter: the N ids with the largest peak market cap. */
+  max_names: number | null;
+  /** Store prefilter: peak market cap floor, USD. */
+  min_mcap_ever: number | null;
+  /** Backtest only the last N out-of-sample days. */
+  max_days: number | null;
+  /** Stage cache on. */
+  cache: boolean;
+  venue: Venue | null;
+  /** The recorded command line ('' when none). */
+  command: string;
+}
+
 /** Subset of `SystemConfig` the UI reads directly; the full YAML is in `config_yaml`. */
 export interface RunConfig {
   kind: RunKind;
@@ -198,6 +232,7 @@ export interface RunConfig {
   /** `ExecutionConfig.signal_lag_days` (the launch form offers 0 or 1). */
   signal_lag_days: number;
   config_yaml: string;
+  source: RunSource;
 }
 
 export interface RunDetail {
@@ -439,8 +474,22 @@ export interface LaunchRunRequest {
   days: number;
   seed: number;
   signal_lag_days: 0 | 1;
-  /** Dotted-path overrides of SystemConfig, e.g. {"portfolio.trade_aversion": 2}. */
-  config_overrides: Record<string, number | boolean | string>;
+  /**
+   * Dotted-path overrides, e.g. {"portfolio.trade_aversion": 2}, applied on top of the
+   * config of `base_run_id` when given, else of the SystemConfig defaults; null only for
+   * nullable fields.
+   */
+  config_overrides: Record<string, number | boolean | string | null>;
+  /** Start from this run's config.yaml (clone and edit). */
+  base_run_id?: string | null;
+  /** Store slice, YYYY-MM-DD. */
+  start?: string | null;
+  end?: string | null;
+  /** Store prefilter by peak market cap in [start, end]. */
+  max_names?: number | null;
+  min_mcap_ever?: number | null;
+  /** Reuse fitted models from the stage cache (`qts --cache`). */
+  cache?: boolean | null;
   /** Run label (default: derived from the model and seed). */
   label?: string | null;
   /** Backtest only the last N out-of-sample days (quick runs). */
@@ -470,7 +519,24 @@ export interface LaunchRunResponse {
   run_id: RunId;
 }
 
-export type JobStatus = 'queued' | 'running' | 'done' | 'failed';
+/** `POST /api/config/validate`: what a launch with this body would do, without queueing it. */
+export interface ConfigValidation {
+  valid: boolean;
+  /** The issues a launch would answer with 422. */
+  errors: ValidationIssue[];
+  /** Launchable, but worth a look before spending a trial. */
+  warnings: ValidationIssue[];
+  /** `SystemConfig.hash()` of the resulting config; null when invalid. */
+  config_hash: string | null;
+  base_config_hash: string | null;
+  /** Estimated warm-up of the resulting config, trading days. */
+  warmup_days: number | null;
+  /** Warm-up plus one year: the floor for a synthetic market's days. */
+  min_days: number | null;
+  overrides_applied: number;
+}
+
+export type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 
 export interface Job {
   job_id: string;
@@ -478,6 +544,50 @@ export interface Job {
   status: JobStatus;
   progress: number;
   message: string;
+  label: string;
+  kind: RunKind;
+  ml: boolean;
+  phase: Phase;
+  config_hash: string;
+  base_run_id: string | null;
+  /** Override keys of the request. */
+  n_overrides: number;
+  created_at: IsoDateTime;
+  started_at: IsoDateTime | null;
+  finished_at: IsoDateTime | null;
+  /** 0-based place in the queue; null unless queued. */
+  position: number | null;
+  /** Pipeline stage of a running job (data, universe, risk, alpha, backtest, evaluate, write). */
+  stage: string;
+  /** Last line of the job's log. */
+  last_log: string | null;
+  /** Running: estimated seconds left; null when there is nothing to estimate from. */
+  eta_seconds: number | null;
+  /** Estimated total duration from finished jobs of similar size. */
+  estimated_seconds: number | null;
+}
+
+/** `GET /api/jobs`: running first, then the queue in order, then recent terminal jobs. */
+export interface JobQueue {
+  jobs: Job[];
+  max_workers: number;
+  max_queued: number;
+  /** Jobs by status (all on disk). */
+  counts: Record<string, number>;
+}
+
+export interface JobMove {
+  /** New 0-based place in the queue. */
+  position: number;
+}
+
+/** `GET /api/jobs/{id}/log?tail=`. */
+export interface JobLog {
+  job_id: string;
+  /** The last `tail` lines, oldest first. */
+  lines: string[];
+  total_lines: number;
+  truncated: boolean;
 }
 
 export interface LedgerTrial {
@@ -510,6 +620,8 @@ export interface JsonSchemaNumber {
   type: 'number' | 'integer';
   title?: string;
   description?: string;
+  /** The field accepts null (an optional scalar). */
+  nullable?: boolean;
   default?: number;
   minimum?: number;
   maximum?: number;
@@ -522,6 +634,8 @@ export interface JsonSchemaBoolean {
   type: 'boolean';
   title?: string;
   description?: string;
+  /** The field accepts null (an optional scalar). */
+  nullable?: boolean;
   default?: boolean;
 }
 
@@ -529,6 +643,8 @@ export interface JsonSchemaString {
   type: 'string';
   title?: string;
   description?: string;
+  /** The field accepts null (an optional scalar). */
+  nullable?: boolean;
   default?: string;
   enum?: string[];
 }
@@ -581,6 +697,8 @@ export interface RunFiles {
 }
 
 export interface Health {
+  /** QTS_STORE_PATH: the ParquetStore store runs read; null when unset. */
+  store_path: string | null;
   status: 'ok';
   version: string;
   qts_version: string;

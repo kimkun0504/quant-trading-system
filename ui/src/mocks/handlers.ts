@@ -1,7 +1,11 @@
 import { delay, http, HttpResponse } from 'msw';
 import type {
   ApiErrorBody,
+  ConfigValidation,
   Health,
+  Job,
+  JobLog,
+  JobQueue,
   LaunchRunRequest,
   LaunchRunResponse,
   RunCompare,
@@ -9,8 +13,18 @@ import type {
   RunSeriesName,
 } from '@/shared/api';
 import { CONFIG_SCHEMA } from './fixtures/configSchema';
-import { cancelJob, db, launch, listSummaries, pollJob } from './db';
-import { mockWarmup, runFileBody, runFiles } from './fixtures/generate';
+import {
+  cancelJob,
+  db,
+  jobLog,
+  launch,
+  listJobs,
+  listSummaries,
+  moveJob,
+  pollJob,
+  validate,
+} from './db';
+import { MOCK_STORE_PATH, mockWarmup, runFileBody, runFiles } from './fixtures/generate';
 
 /**
  * MSW handlers implementing the API contract in shared/api/schema.ts.
@@ -206,11 +220,14 @@ export const handlers = [
   http.post('*/api/runs', async ({ request }) => {
     await delay();
     const body = (await request.json()) as LaunchRunRequest;
-    const wu = mockWarmup(body.ml, body.signal_lag_days);
-    if (body.stocks < 50 || body.days < wu.min_days)
+    const v = validate(body);
+    if (!v.valid)
       return HttpResponse.json<ApiErrorBody | LaunchRunResponse>(
         {
-          detail: `stocks must be ≥ 50 and days ≥ ${wu.min_days} (${wu.warmup_days} warm-up days + 1 year)`,
+          title: 'Invalid run request',
+          status: 422,
+          detail: v.errors.map((e) => `${e.loc.slice(1).join('.')}: ${e.msg}`).join('; '),
+          errors: v.errors,
         },
         { status: 422 },
       );
@@ -221,14 +238,45 @@ export const handlers = [
     );
   }),
 
+  http.post('*/api/config/validate', async ({ request }) => {
+    await delay(60);
+    const body = (await request.json()) as LaunchRunRequest;
+    return HttpResponse.json<ConfigValidation>(validate(body));
+  }),
+
+  http.get('*/api/jobs', async () => {
+    await delay(60);
+    return HttpResponse.json<JobQueue>(listJobs());
+  }),
+
   http.get<{ jobId: string }>('*/api/jobs/:jobId', async ({ params }) => {
-    await delay(80);
+    await delay(60);
     const job = pollJob(params.jobId);
     return job ? HttpResponse.json(job) : notFound(`No job with id ${params.jobId}`);
   }),
 
+  http.get<{ jobId: string }>('*/api/jobs/:jobId/log', async ({ params, request }) => {
+    await delay(60);
+    const tail = Number(new URL(request.url).searchParams.get('tail') ?? '200');
+    const log = jobLog(params.jobId, Number.isFinite(tail) && tail > 0 ? tail : 200);
+    return log ? HttpResponse.json<JobLog>(log) : notFound(`No job with id ${params.jobId}`);
+  }),
+
+  http.post<{ jobId: string }>('*/api/jobs/:jobId/move', async ({ params, request }) => {
+    await delay(60);
+    const { position } = (await request.json()) as { position: number };
+    const out = moveJob(params.jobId, position);
+    if (out === 'missing') return notFound(`No job with id ${params.jobId}`);
+    if (out === 'not-queued')
+      return HttpResponse.json<ApiErrorBody | Job>(
+        { detail: 'Only a queued job can be moved; this one has started or finished.' },
+        { status: 409 },
+      );
+    return HttpResponse.json<ApiErrorBody | Job>(out);
+  }),
+
   http.delete<{ jobId: string }>('*/api/jobs/:jobId', async ({ params }) => {
-    await delay(80);
+    await delay(60);
     const job = cancelJob(params.jobId);
     return job ? HttpResponse.json(job) : notFound(`No job with id ${params.jobId}`);
   }),
@@ -242,6 +290,7 @@ export const handlers = [
 
   http.get('*/api/health', () =>
     HttpResponse.json<Health>({
+      store_path: MOCK_STORE_PATH,
       status: 'ok',
       version: 'mock',
       qts_version: 'mock',
@@ -249,7 +298,7 @@ export const handlers = [
       runs_root_exists: true,
       n_runs: db.runs.size,
       jobs: {
-        queued: 0,
+        queued: db.queue.length,
         running: [...db.jobs.values()].filter((j) => j.job.status === 'running').length,
       },
     }),

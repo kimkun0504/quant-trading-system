@@ -1,0 +1,113 @@
+.panel {
+  position: relative;
+  z-index: 3; /* the run list opens over the panels below */
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3) var(--space-4);
+}
+
+.combo {
+  position: relative;
+  flex: 1 1 18rem;
+  max-width: 32rem;
+  min-width: 0;
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 2rem;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-fg-muted);
+}
+
+.search:focus-within {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-fg);
+  font-size: var(--text-md);
+}
+
+.list {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  right: 0;
+  z-index: 20;
+  max-height: 20rem;
+  overflow-y: auto;
+  background: var(--color-surface);
+  border: var(--hairline);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-1);
+  padding: var(--space-1);
+}
+
+.option {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.option[aria-selected='true'] {
+  background: var(--color-accent-wash);
+}
+
+.optionLabel {
+  font-weight: 500;
+  font-size: var(--text-md);
+}
+
+.optionMeta,
+.empty {
+  color: var(--color-fg-muted);
+  font-size: var(--text-sm);
+}
+
+.empty {
+  padding: var(--space-2);
+}
+
+.base {
+  margin-top: var(--space-3);
+  color: var(--color-fg-muted);
+  font-size: var(--text-md);
+  max-width: none;
+}
+
+.confirm {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--color-caution-wash);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  font-size: var(--text-md);
+}
+
+.confirmActions {
+  display: flex;
+  gap: var(--space-2);
+}

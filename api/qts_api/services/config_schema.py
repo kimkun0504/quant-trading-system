@@ -14,7 +14,9 @@ for open ends).  The ``cost`` and ``execution`` bounds are the ones
 (``qts.core.config.COST_CONFIG_BOUNDS`` / ``EXECUTION_CONFIG_BOUNDS``); every other
 section's bounds are enforced here only (API layer), e.g. ``alpha.lgbm.n_estimators
 <= 10000``.  Optional scalars (``float | None``) are typed by their scalar type and
-have no ``default`` when the default is ``None``.  Lists, tuples and dicts (style
+have no ``default`` when the default is ``None``; they carry ``nullable: true`` and
+accept ``null`` as an override.  A field without comments falls back to its
+````field``: text`` entry in the class docstring, when there is one.  Lists, tuples and dicts (style
 lists, theme weights, the PBO grid) are not form-editable and are left out; they
 are still settable through a config file.
 
@@ -133,6 +135,13 @@ BOUNDS: dict[str, tuple[float | None, float | None]] = {
     "risk.statistical_refit_every": (1, 2520),
     "portfolio.exit_ineligible_days": (1, 252),
     "portfolio.effective_holding_days_target": (1, 2520),
+    # floors the dataclasses enforce on construction (``__post_init__``), published so the
+    # run builder can say so before a launch; the ceilings are API-layer typo guards
+    "alpha.score_smoothing_halflife_days": (0, 252),
+    "alpha.sample_weight_halflife_years": (0, 50),
+    "portfolio.rebalance_every_days": (1, 252),
+    "portfolio.min_trade_weight": (0, 0.05),
+    "seed": (0, 2**31 - 1),
 }
 
 #: Open bounds (``exclusiveMinimum`` / ``exclusiveMaximum``) by path.
@@ -156,6 +165,8 @@ _semantic_bounds()
 RESERVED: dict[str, str] = {
     "seed": "use the request's `seed` field",
     "execution.signal_lag_days": "use the request's `signal_lag_days` field",
+    "cache.enabled": "use the request's `cache` field",
+    "cache.root": "the API keeps the stage cache under <runs root>/_cache",
 }
 
 MAX_DESCRIPTION = 320
@@ -177,6 +188,22 @@ DESCRIPTIONS: dict[str, str] = {
     "PortfolioConfig.target_vol_annual": "Annualised volatility target, as a fraction (0.10 = 10%).",
     "PortfolioConfig.max_position_weight": "Cap on |weight| per name, as a fraction of NAV.",
     "PortfolioConfig.beta_neutral": "Constrain the book's beta exposure to the band around zero.",
+    "AlphaConfig.horizon_days": "Label horizon in trading days: the forward return the alpha "
+    "is scored and trained against. Shorter horizons trade faster and cost more.",
+    "UniverseConfig.top_n_by_mcap": "Names kept by point-in-time market cap at each universe refresh.",
+    "UniverseConfig.min_price": "Minimum share price (USD) for universe membership.",
+    "UniverseConfig.min_adv_usd": "Minimum average daily dollar volume (USD) for universe membership.",
+    "UniverseConfig.adv_window": "Trading days in the average-daily-volume window.",
+    "PortfolioConfig.net_exposure_target": "Target net exposure (long minus short), as a fraction of NAV.",
+    "PortfolioConfig.net_exposure_band": "Allowed distance of net exposure from its target.",
+    "PortfolioConfig.solver": "Convex solver used for the portfolio optimisation.",
+    "ValidationConfig.dsr_threshold": "Deflated Sharpe ratio a run must reach to pass the DSR gate.",
+    "ValidationConfig.pbo_threshold": "Probability of backtest overfitting above which the PBO gate fails.",
+    "SystemConfig.seed": "Seed of every random stream of the run (set by the launch request).",
+    "SystemConfig.trading_days_per_year": "Annualisation constant.",
+    "CacheConfig.enabled": "Reuse fitted risk and alpha models from the stage cache. Changes no result "
+    "and no config hash.",
+    "CacheConfig.root": "Stage cache directory; empty means <runs root>/_cache.",
     "ValidationConfig.n_splits": "Purged walk-forward test blocks for the fold-Sharpe gate.",
     "ValidationConfig.embargo_days": "Days dropped after each test block; at least the label horizon.",
 }
@@ -264,6 +291,29 @@ def field_comments(cls: type) -> dict[str, str]:
     return out
 
 
+_DOC_FIELD_RE = re.compile(r"``(\w+)``\s*(?::|--|—)\s*")
+
+
+@cache
+def docstring_fields(cls: type) -> dict[str, str]:
+    """``{field: text}`` from ````field``: text`` entries of the class docstring (the
+    convention of the config dataclasses that document fields there rather than in
+    comments, e.g. ``CacheConfig``).  The text runs to the next entry or paragraph."""
+    doc = inspect.getdoc(cls) if cls.__doc__ else None
+    if not doc:
+        return {}
+    names = {f.name for f in fields(cls)}
+    out: dict[str, str] = {}
+    for para in doc.split("\n\n"):
+        marks = [m for m in _DOC_FIELD_RE.finditer(para) if m.group(1) in names]
+        for i, m in enumerate(marks):
+            end = marks[i + 1].start() if i + 1 < len(marks) else len(para)
+            text = _clean_comment(para[m.end() : end].splitlines()).rstrip(";, ")
+            if text and m.group(1) not in out:
+                out[m.group(1)] = text[:1].upper() + text[1:]
+    return out
+
+
 def _doc_summary(cls: type) -> str | None:
     doc = inspect.getdoc(cls)
     if not doc or cls.__doc__ is None:
@@ -302,10 +352,12 @@ def _default(f: Any) -> Any:
     return None
 
 
-def _leaf(path: str, kind: str, default: Any, description: str | None) -> dict[str, Any]:
+def _leaf(path: str, kind: str, default: Any, description: str | None, nullable: bool = False) -> dict[str, Any]:
     leaf: dict[str, Any] = {"type": kind, "title": _title(path.rsplit(".", 1)[-1])}
     if description:
         leaf["description"] = description
+    if nullable:
+        leaf["nullable"] = True
     if default is not None:
         leaf["default"] = float(default) if kind == "number" else default
     if path in ENUMS:
@@ -323,6 +375,7 @@ def _leaf(path: str, kind: str, default: Any, description: str | None) -> dict[s
 def _object_schema(cls: type, prefix: str) -> dict[str, Any]:
     hints = get_type_hints(cls, vars(C))
     comments = field_comments(cls)
+    documented = docstring_fields(cls)
     props: dict[str, Any] = {}
     for f in fields(cls):
         path = f"{prefix}{f.name}"
@@ -333,7 +386,9 @@ def _object_schema(cls: type, prefix: str) -> dict[str, Any]:
         kind = _scalar_kind(hints.get(f.name, Any))
         if kind is None:
             continue
-        props[f.name] = _leaf(path, kind, default, comments.get(f.name))
+        description = comments.get(f.name) or DESCRIPTIONS.get(f"{cls.__name__}.{f.name}") or documented.get(f.name)
+        nullable = _unwrap_optional(hints.get(f.name, Any))[1]
+        props[f.name] = _leaf(path, kind, default, description, nullable)
     obj: dict[str, Any] = {"type": "object", "properties": props}
     key = prefix.rstrip(".")
     title = SECTION_TITLES.get(key) or (cls.__name__ if not key else _title(key.rsplit(".", 1)[-1]))
@@ -386,6 +441,8 @@ def _all_fields() -> list[Any]:
 
 def _check_value(path: str, leaf: dict[str, Any], v: Any) -> tuple[Any, str | None]:
     kind = leaf["type"]
+    if v is None:
+        return (None, None) if leaf.get("nullable") else (v, "cannot be empty (null)")
     if kind == "boolean":
         return (v, None) if isinstance(v, bool) else (v, "must be true or false")
     if kind == "string":
@@ -447,14 +504,17 @@ def validate_overrides(overrides: typing.Mapping[str, Any], base: C.SystemConfig
         clean[key] = val
     if issues:
         raise ConfigError(issues)
-    d = (base or C.SystemConfig()).to_dict()
+    # one key at a time through ``SystemConfig.with_overrides`` (each rebuilds its section,
+    # so the section's own ``__post_init__`` validation names the offending key)
+    cfg = base or C.SystemConfig()
     for key, val in clean.items():
-        parts = key.split(".")
-        node = d
-        for p in parts[:-1]:
-            node = node[p]
-        node[parts[-1]] = val
+        try:
+            cfg = cfg.with_overrides({key: val})
+        except (KeyError, TypeError, ValueError) as e:
+            issues.append((["body", "config_overrides", key], str(e.args[0] if e.args else e), "value_error.config"))
+    if issues:
+        raise ConfigError(issues)
     try:
-        return C.SystemConfig.from_dict(d).validate()
+        return C.SystemConfig.from_dict(cfg.to_dict()).validate()
     except (KeyError, TypeError, ValueError) as e:
         raise ConfigError([(["body", "config_overrides"], str(e), "value_error.config")]) from e

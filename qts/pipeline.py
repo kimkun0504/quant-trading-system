@@ -69,9 +69,12 @@ Hurdle inputs (BUILD_PLAN §2.4)
   than ``cfg.validation.min_fold_days`` are avoided by reducing the number of
   splits (none -> gate skipped).
 * ``dsr``: ``n_trials`` and the cross-trial SR variance come from the trial
-  ledger family ``pipeline_phase{p}:{data_hash[:12]}`` (``effective_trials_for``
-  when >= 3 trials, used unrounded; single-trial PSR when the ledger is empty /
-  absent).  A re-run is de-duplicated (counted once) only when name, config
+  ledger family ``pipeline_phase{p}:{market_hash[:12]}`` (the *research family*:
+  ``market_hash`` = :func:`qts.core.manifest.hash_market`, the adjusted-close
+  panel only, so auxiliary tables do not start a new family; the full
+  ``data_hash`` stays on the record and in the manifest;
+  ``effective_trials_for`` when >= 3 trials, used unrounded; single-trial PSR
+  when the ledger is empty / absent).  A re-run is de-duplicated (counted once) only when name, config
   hash, data hash, a *clean* code version (git sha; ``+dirty`` / ``unknown``
   never de-duplicate) and the hash of :meth:`ResearchPipeline.run_spec`
   (``use_ml``, ``ml_factory`` identity, ``composite_weight``,
@@ -108,7 +111,8 @@ With ``runs_root`` set, :meth:`ResearchPipeline.run` writes
 ``<runs_root>/<run_id>/`` (``run_id = <UTC timestamp>_<config_hash[:8]>``)::
 
     manifest.json     RunManifest: run_id, created_at, git sha/dirty, config_hash,
-                      data_hash, library versions, python, platform, timings, seeds
+                      data_hash, market_hash, ledger_family, library versions, python,
+                      platform, timings, seeds
     config.yaml       SystemConfig.to_yaml() (reload: SystemConfig.from_yaml)
     summary.json      backtest summary + IC scalars + decile + DSR/PBO + fold Sharpes
                       + IC decay + notes + flags (use_ml, phase, signal_lag_days)
@@ -170,7 +174,13 @@ from qts.backtest import BacktestResult, BacktestSpec, BacktestSummary, DailyBar
 from qts.backtest import metrics as M
 from qts.backtest.result import INVESTED_GROSS_EPS, MIN_INVESTED_DAYS_FOR_VOL_RATIO
 from qts.core.config import SystemConfig
-from qts.core.manifest import RunManifest, chain_reference_hash, hash_market_data, reference_hash
+from qts.core.manifest import (
+    RunManifest,
+    chain_reference_hash,
+    hash_market,
+    hash_market_data,
+    reference_hash,
+)
 from qts.core.roles import ALPHA_THEME_STYLES, RISK_ONLY_STYLES
 from qts.core.types import AlphaOutput, MarketData, RiskModelOutput
 from qts.data.universe import apply_mask, build_universe_mask, masked_levels
@@ -199,7 +209,7 @@ from qts.validation import (
     TrialLedger,
     deflated_sharpe_ratio_annual,
 )
-from qts.validation.ledger import callable_identity
+from qts.validation.ledger import callable_identity, research_family
 from qts.validation.pbo import probability_of_backtest_overfitting
 
 log = logging.getLogger(__name__)
@@ -234,6 +244,10 @@ class PipelineResult:
     breakeven_cost_bps: float = float("nan")
     config_hash: str = ""
     data_hash: str = ""
+    #: price-history identity (:func:`qts.core.manifest.hash_market`) and the trial
+    #: family the DSR counted in (``pipeline_phase{p}:{market_hash[:12]}``)
+    market_hash: str = ""
+    ledger_family: str = ""
     git_sha: str = "unknown"
     use_ml: bool = False
     phase: int = 1
@@ -394,6 +408,7 @@ class ResearchPipeline:
         self.timings_: dict[str, float] = {}
         self.cache_info_: dict[str, str] = {}
         self.data_hash_: str = ""
+        self._market_hash: tuple[int, str] | None = None  # (id of the input md, hash)
         self._md_input: MarketData | None = None
         self._risk_first_date: pd.Timestamp | None = None
         self._warned_warmup = False
@@ -739,7 +754,12 @@ class ResearchPipeline:
         res = self.evaluate(bt, timings, dates=dates, signal_lag_days=lag)
         res.timings["total_run"] = time.perf_counter() - t_run
         res.manifest = RunManifest.create(
-            config_hash=res.config_hash, data_hash=res.data_hash, timings=res.timings, seeds=self._seeds()
+            config_hash=res.config_hash,
+            data_hash=res.data_hash,
+            timings=res.timings,
+            seeds=self._seeds(),
+            market_hash=res.market_hash,
+            ledger_family=res.ledger_family,
         )
         res.git_sha = res.manifest.git_sha
         if self.runs_root:
@@ -769,10 +789,22 @@ class ResearchPipeline:
             to = pd.Series(bt.turnover.to_numpy()[:n], index=bt.returns.index[:n], name="turnover")
         return to.reindex(ret_index).fillna(0.0)
 
+    def market_hash(self) -> str:
+        """:func:`qts.core.manifest.hash_market` of the fitted input (the adjusted-close
+        panel: values, dates, ids); ``""`` before :meth:`fit`.  Computed once per input."""
+        md = self._md_input
+        if md is None:
+            return ""
+        if self._market_hash is None or self._market_hash[0] != id(md):
+            self._market_hash = (id(md), hash_market(md))
+        return self._market_hash[1]
+
     def ledger_family(self) -> str:
-        """DSR trial family: ``pipeline_phase{p}:{data_hash[:12]}`` (one search per
-        phase *and* data set; signal-lag and config variants pool within it)."""
-        return f"pipeline_phase{self.phase}:{(self.data_hash_ or 'nodata')[:12]}"
+        """DSR trial family (the *research family*): ``pipeline_phase{p}:{market_hash[:12]}``
+        -- one search per phase and price history.  Config, signal-lag and
+        auxiliary-data variants (delisting reasons, fundamentals, industries, the
+        universe rules) all pool within it; see :mod:`qts.validation.ledger`."""
+        return research_family(self.phase, self.market_hash())
 
     def run_spec(self, dates: pd.Index | None, signal_lag_days: int) -> dict[str, Any]:
         """Everything that changes a run's numbers but is not in ``SystemConfig``
@@ -815,6 +847,7 @@ class ResearchPipeline:
             config=self.cfg.to_dict(),
             config_hash=config_hash,
             data_hash=self.data_hash_,
+            market_hash=self.market_hash(),
             code_version=code_version(),
             metrics={
                 "sharpe_annual": summ["sharpe_net"],
@@ -846,25 +879,12 @@ class ResearchPipeline:
         return pd.Series(out, dtype=float, name="mean_ic")
 
     def _dsr_inputs(self, family: str, n_obs: int) -> dict[str, float]:
-        """``n_trials`` / cross-trial SR variance for the DSR from the ledger family.
-
-        * no ledger or a single trial -> ``n_trials=1``, variance 0 (PSR against 0);
-        * 2 trials -> raw count and their sample variance;
-        * >= 3 trials -> Nyholt ``effective_trials_for`` (correlation of the
-          stored monthly return streams) and the family's annual SR variance.
-        The variance is floored at the pure sampling-noise variance of an annual
-        SR over ``n_obs`` days (``252 / n_obs``) whenever more than one trial exists.
-        """
-        ppy = self.cfg.trading_days_per_year
+        """``n_trials`` / cross-trial SR variance for the DSR from the ledger family
+        (:meth:`qts.validation.ledger.TrialLedger.dsr_inputs`; no ledger ->
+        ``n_trials=1``, variance 0, i.e. the PSR against 0)."""
         if self.ledger is None:
             return {"n_trials": 1.0, "var_trials_sr_annual": 0.0, "n_trials_raw": 1.0}
-        n_raw = self.ledger.n_trials(family)
-        if n_raw <= 1:
-            return {"n_trials": 1.0, "var_trials_sr_annual": 0.0, "n_trials_raw": float(n_raw)}
-        n_eff = self.ledger.effective_trials_for(family) if n_raw >= 3 else float(n_raw)
-        var = self.ledger.family_sharpe_variance(family, annual=True, periods_per_year=ppy)
-        var = max(var, ppy / max(n_obs, 2))
-        return {"n_trials": float(n_eff), "var_trials_sr_annual": float(var), "n_trials_raw": float(n_raw)}
+        return self.ledger.dsr_inputs(family, n_obs, self.cfg.trading_days_per_year)
 
     def _pbo_from_grid(self, dates: pd.DatetimeIndex, base_net: pd.Series) -> float | None:
         """CSCV PBO over ``cfg.pipeline_pbo_configs`` (list of ``{"section.field": value}``
@@ -966,6 +986,7 @@ class ResearchPipeline:
             exante_vol_alert_frac=bt.exante_vol_alert_fraction(),
         )
         notes = self._notes(summ, pbo, blocks, len(net))
+        notes += self._ledger_notes()
         timings = dict(timings or {})
         timings["evaluate"] = time.perf_counter() - t0
         return PipelineResult(
@@ -985,6 +1006,8 @@ class ResearchPipeline:
             breakeven_cost_bps=float(breakeven),
             config_hash=config_hash,
             data_hash=self.data_hash_,
+            market_hash=self.market_hash(),
+            ledger_family=self.ledger_family(),
             use_ml=self.use_ml,
             phase=self.phase,
             signal_lag_days=int(signal_lag_days),
@@ -1100,8 +1123,9 @@ class ResearchPipeline:
     ) -> tuple[float, dict[str, float], float | None]:
         """Trial ledger: log this run first, then the PBO grid's configurations (each
         a trial of the same search, audit 2 #11), then read the family statistics
-        for the deflated Sharpe.  Family = phase + data hash: trials on other data
-        (seeds, real data) are a different search (audit 2 #17).  Returns
+        for the deflated Sharpe.  Family = phase + market hash (the price history):
+        trials on another market (seeds, real data) are a different search (audit 2
+        #17), trials on the same prices with other auxiliary data are not.  Returns
         ``(dsr, dsr_inputs, pbo)``."""
         cfg = self.cfg
         family = self.ledger_family()
@@ -1122,6 +1146,25 @@ class ResearchPipeline:
             periods_per_year=cfg.trading_days_per_year,
         )
         return dsr, dsr_in, pbo
+
+    def _ledger_notes(self) -> list[str]:
+        """Warn when the ledger holds records of this run's price history that are
+        still filed under a data-hash family (written before 2026-11-12) and were
+        therefore not counted in this run's DSR."""
+        if self.ledger is None:
+            return []
+        from qts.validation.ledger import rekeyed_family
+
+        family = self.ledger_family()
+        mapping = {**self.ledger.known_market_hashes(), self.data_hash_: self.market_hash()}
+        n = sum(1 for r in self.ledger.raw_records() if (rekeyed_family(r, mapping) or ("",))[0] == family)
+        if not n:
+            return []
+        return [
+            f"trial ledger: {n} earlier record(s) on this price history are filed under a data-hash "
+            f"family and were NOT counted in this DSR; run `qts ledger rekey --path {self.ledger_path}` "
+            "and then `qts ledger restate <run_dir>`"
+        ]
 
     def _notes(
         self, summ: BacktestSummary, pbo: float | None, blocks: list[pd.DatetimeIndex], n_days: int

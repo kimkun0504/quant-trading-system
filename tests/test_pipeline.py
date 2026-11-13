@@ -341,7 +341,7 @@ def test_pipeline_ledger_key_and_family(md, cfg, tmp_path, monkeypatch):
     monkeypatch.setattr(manifest, "code_version", lambda info=None: "sha_A")
     p1 = ResearchPipeline(cfg, use_ml=False, ledger_path=path)
     r1 = p1.run(md, max_days=40)
-    assert p1.ledger_family() == f"pipeline_phase1:{r1.data_hash[:12]}"
+    assert p1.ledger_family() == f"pipeline_phase1:{r1.market_hash[:12]}" == r1.ledger_family
     # a knob outside SystemConfig (rebalance_every) is a new trial
     ResearchPipeline(cfg, use_ml=False, ledger_path=path, rebalance_every=2).run(md, max_days=40)
     # new code version with everything else identical: new trial

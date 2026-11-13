@@ -20,7 +20,9 @@ router = APIRouter(prefix="/api", tags=["health"])
 def health(
     registry: Annotated[RunRegistry, Depends(get_registry)], jobs: Annotated[JobManager, Depends(get_jobs)]
 ) -> dict[str, Any]:
+    store = jobs.settings.store_path
     return {
+        "store_path": str(store) if store else None,
         "status": "ok",
         "version": __version__,
         "qts_version": str(getattr(qts, "__version__", "unknown")),

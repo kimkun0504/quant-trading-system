@@ -12,9 +12,8 @@ from qts_api import schemas as S
 from qts_api.deps import get_jobs, get_registry, get_settings
 from qts_api.problems import Problem, summarize
 from qts_api.routers._common import problems
-from qts_api.routers.config import warmup_info
-from qts_api.services.config_schema import ConfigError, validate_overrides
 from qts_api.services.jobs import JobManager, QueueFull, default_label
+from qts_api.services.launch import prepare_launch
 from qts_api.services.registry import (
     COMPARE_MAX_RUNS,
     RUN_ID_MAX_LEN,
@@ -31,6 +30,8 @@ Registry = Annotated[RunRegistry, Depends(get_registry)]
 Jobs = Annotated[JobManager, Depends(get_jobs)]
 
 RUNNING_DETAIL = "This run is still running; its results appear when the backtest finishes."
+QUEUED_DETAIL = "This run is waiting in the queue; its results appear when its backtest finishes."
+CANCELLED_DETAIL = "This run was cancelled before it finished; no results were written."
 FAILED_DETAIL = "This run failed before evaluation; no results were written."
 
 
@@ -49,6 +50,7 @@ def _pending_summary(j: dict[str, Any]) -> dict[str, Any]:
         "use_ml": bool(j.get("use_ml", False)),
         "config_hash": str(j.get("config_hash", "")),
         "data_hash": "",
+        "ledger_family": None,
         "git_sha": str(j.get("git_sha", "unknown")),
         "status": "failed" if j.get("status") == "failed" else "running",
         "headline": None,
@@ -76,8 +78,11 @@ def resolve(registry: RunRegistry, jobs: JobManager, run_id: str) -> str:
         pass
     j = _job_for_run(jobs, run_id)
     if j is not None and j.get("status") != "done":
-        failed = j.get("status") == "failed"
-        detail = FAILED_DETAIL if failed else RUNNING_DETAIL
+        status = j.get("status")
+        if status == "cancelled":
+            raise Problem(409, CANCELLED_DETAIL, type_="run-cancelled", title="Run cancelled")
+        failed = status == "failed"
+        detail = FAILED_DETAIL if failed else QUEUED_DETAIL if status == "queued" else RUNNING_DETAIL
         if failed and j.get("message"):
             detail = f"{detail} {j['message']}"
         raise Problem(
@@ -93,7 +98,13 @@ def resolve(registry: RunRegistry, jobs: JobManager, run_id: str) -> str:
 def list_runs(registry: Registry, jobs: Jobs) -> list[dict[str, Any]]:
     done = registry.list_summaries()
     have = {r["id"] for r in done}
-    pending = [_pending_summary(j) for j in jobs.all() if j.get("status") != "done" and j.get("run_id") not in have]
+    # queued and running jobs are listed as running, failed ones as failed; a cancelled job
+    # never was a run (it stays in the queue panel's history)
+    pending = [
+        _pending_summary(j)
+        for j in jobs.all()
+        if j.get("status") not in ("done", "cancelled") and j.get("run_id") not in have
+    ]
     return sorted(done + pending, key=lambda r: r["created_at"], reverse=True)
 
 
@@ -282,46 +293,15 @@ def launch_run(
     body: S.LaunchRunRequest,
     response: Response,
     jobs: Jobs,
+    registry: Registry,
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> dict[str, Any]:
-    issues: list[dict[str, Any]] = []
-    if body.phase == 2 and not body.ml:
-        issues.append(
-            {"loc": ["body", "ml"], "msg": "phase 2 tests the ML sleeve: set ml=true or phase=1", "type": "value_error"}
-        )
-    if body.kind == "store" and settings.store_path is None:
-        issues.append(
-            {
-                "loc": ["body", "kind"],
-                "msg": "store runs need QTS_STORE_PATH set on the API server",
-                "type": "value_error",
-            }
-        )
-    try:
-        cfg = validate_overrides(body.config_overrides)
-    except ConfigError as e:
-        issues += [{"loc": loc, "msg": msg, "type": t} for loc, msg, t in e.issues]
-        cfg = None
-    if issues or cfg is None:
-        raise Problem(422, summarize(issues), type_="validation-error", title="Invalid run request", errors=issues)
-    cfg = cfg.with_overrides({"seed": body.seed, "execution.signal_lag_days": body.signal_lag_days})
-    if body.kind == "synthetic":
-        cfg = cfg.with_overrides({"universe.top_n_by_mcap": min(cfg.universe.top_n_by_mcap, body.stocks)})
-        # P7: the floor is the run's own effective warm-up plus one year
-        wu = warmup_info(cfg, body.ml)
-        if body.days < wu["min_days"]:
-            issue = {
-                "loc": ["body", "days"],
-                "msg": (
-                    f"days must be at least {wu['min_days']} ({wu['warmup_days']} warm-up days "
-                    f"for this configuration plus one year)"
-                ),
-                "type": "value_error",
-            }
-            raise Problem(
-                422, summarize([issue]), type_="validation-error", title="Invalid run request", errors=[issue]
-            )
-    cfg.validate()
+    """Adds the run to the FIFO queue (one job runs at a time by default).  The request is
+    prepared exactly as ``POST /api/config/validate`` reports it."""
+    p = prepare_launch(body, settings, registry)
+    if p.errors or p.cfg is None:
+        raise Problem(422, summarize(p.errors), type_="validation-error", title="Invalid run request", errors=p.errors)
+    cfg = p.cfg
     config_hash = cfg.hash()
     run_id = new_run_id(config_hash)
     label = body.label or default_label(body.ml, body.seed, body.signal_lag_days)

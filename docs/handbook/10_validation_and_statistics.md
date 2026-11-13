@@ -520,7 +520,7 @@ def _closed_form_unit(n_trials: float) -> float:   # eq. 8 with V = 1, N >= 2
 
 Other functions: `probabilistic_sharpe(sr, sr_benchmark, n, skew, kurt)`, `deflated_sharpe_ratio(sr_observed, n_trials, var_trials_sr, n_obs, skew, kurt)` (per-observation inputs), `deflated_sharpe_ratio_annual(..., periods_per_year=252)` (annual Sharpe and annual variance, divides the variance by 252), `min_track_record_length(sr, sr_benchmark, skew, kurt, prob=0.95)`, `min_backtest_length(n_trials, target_sr_annual)` and `..._years`, and `dsr_from_trial_returns(T×N matrix)` which picks the best column and uses the empirical cross-trial variance.
 
-How the pipeline feeds it (`qts/pipeline.py::ResearchPipeline._dsr_inputs`), reading the ledger family `pipeline_phase{p}:{data_hash[:12]}` (section 13):
+How the pipeline feeds it (`qts/pipeline.py::ResearchPipeline._dsr_inputs`), reading the ledger family `pipeline_phase{p}:{market_hash[:12]}` (the research family, section 13) through `TrialLedger.dsr_inputs`:
 - no ledger, or one trial in the family → $N = 1$, $V = 0$ (plain PSR vs 0);
 - two trials → raw count and their sample variance;
 - three or more → `effective_trials_for(family)` (Nyholt, unrounded) and `family_sharpe_variance(family)`;
@@ -798,10 +798,64 @@ When the ledger is read, records sharing a `dedup_key` collapse into the latest 
 
 **3. When in doubt, count.** A record gets no key, and is therefore always its own trial, when `replace_identical` is False, the data hash is empty, or the code version is empty, `unknown` or dirty. A dirty tree may differ from the last run in ways nobody recorded, so two runs from dirty trees are two trials even if every hash matches. `tests/test_pipeline.py::test_pipeline_ledger_key_and_family` runs five pipelines (a changed `rebalance_every`, a new code version, two dirty-tree runs) and requires five trials.
 
-**4. One family per phase and data set.** The pipeline logs under `pipeline_phase{p}:{data_hash[:12]}`. Trials on another data set (another synthetic seed, real data) are a different search and do not pool into the variance $V$; signal-lag and configuration variants on the same data do pool. (Before: one family per phase across all data, finding 17.)
+**4. One family per phase and price history (the research family).** The pipeline logs under `pipeline_phase{p}:{market_hash[:12]}`, where `market_hash` is `qts.core.manifest.hash_market`: a SHA-256 of the adjusted-close panel only (values, dates, ids). Trials on another market (another synthetic seed, real data) are a different search and do not pool into the variance $V$. Every configuration tried on the same prices does pool, whatever else changed. The subsection "Research family" below gives the reasoning and the repair tools. (Before 2026-11-05: one family per phase across all data, finding 17. Between then and 2026-11-12: `data_hash[:12]`, which reset the count whenever any input table changed.)
 
-- `log(name, config, metrics, data_hash="", code_version="", notes="", family=None, config_hash=None, returns_monthly=None, replace_identical=False, run_spec=None)`. `family` defaults to `name.split(":")[0]`, so `"mom:lb=12"` and `"mom:lb=6"` share family `mom`. The pipeline logs `sharpe_annual`, `n_obs`, skew, raw kurtosis, mean IC, decile t, `use_ml`, `phase`, `signal_lag_days` and the monthly net returns.
-- **Queries** (all on the de-duplicated view): `n_trials(family)`, `records(family)`, `trial_sharpes_daily/annual`, `family_sharpe_variance` (the $V$ of the expected maximum), `returns_matrix`, `effective_trials_for` (Nyholt, fractional), `dsr_for(name, family, n_trials)`, `report()`.
+- `log(name, config, metrics, data_hash="", code_version="", notes="", family=None, config_hash=None, returns_monthly=None, replace_identical=False, run_spec=None, market_hash="")`. `family` defaults to `name.split(":")[0]`, so `"mom:lb=12"` and `"mom:lb=6"` share family `mom`. The pipeline logs `sharpe_annual`, `n_obs`, skew, raw kurtosis, mean IC, decile t, `use_ml`, `phase`, `signal_lag_days` and the monthly net returns.
+- **Queries** (all on the de-duplicated view): `n_trials(family)`, `records(family)`, `trial_sharpes_daily/annual`, `family_sharpe_variance` (the $V$ of the expected maximum), `returns_matrix`, `effective_trials_for` (Nyholt, fractional), `dsr_for(name, family, n_trials)`, `report()`, `families()` (one summary row per family) and `dsr_inputs(family, n_obs)` (the $N$ and $V$ the pipeline and `qts ledger restate` both use).
+
+### Research family: what the trial count is keyed on
+<callout icon="💡" color="blue_bg">
+The DSR asks "how many strategies were tried on this market before this one looked good?". The honest unit of counting is therefore the price history being mined, not the exact set of input files.
+</callout>
+
+**The failure this fixes.** The real-data run `20261112T223938591050Z_bd1b6463` printed `DSR 0.997 (n_trials 1.0)`. The run before it had printed `n_trials 2.8`, with about eight earlier trials in its family. Nothing had been forgotten on purpose: between the two runs a `delisting_reasons` table was added to the store. The family was then keyed on the data hash, which covers every input panel, so the new table produced a new hash, a new family and a trial count of one. The same prices, the same universe and the same researcher's eighth-plus-one attempt were deflated as if it were the first.
+
+**Two hashes, two questions.**
+
+| Hash | Covers | Question it answers | Used for |
+|---|---|---|---|
+| `data_hash` (`hash_market_data`) | every `MarketData` panel, `extra`, industries, reference tables, the eligibility panel | "Is this input identical, bit for bit?" | reproducibility (manifest, ledger record), the stage cache, de-duplicating identical re-runs |
+| `market_hash` (`hash_market`) | the adjusted-close panel: values, date index, id columns | "Is this the same price history being mined?" | the ledger family, hence the DSR's $N$ and $V$ |
+
+Both are stored on every ledger record and in every run manifest (`market_hash`, `ledger_family`), so nothing is lost for reproducibility.
+
+**Why the adjusted close and nothing else.** The returns a strategy is fitted to and scored on are a function of the adjusted-close panel alone. If two runs share it, the same realised returns decide both, and the second is another draw from the same search. Everything else is either configuration or an input that can be revised without the market changing:
+
+- *Reference tables* (delisting reasons and dates, industries): re-derived from vendor tables, as on 2026-11-12. A new table is a modelling change, which is exactly what a trial is.
+- *Fundamentals*: vendors restate them. A restatement changes features, not the returns being predicted; treating it as a new search would hand every data refresh a free reset.
+- *Volume and market cap*: inputs to the universe rules, the cost model and some features. They cannot change without the prices being the same prices. Including them could only split a family, never separate two genuinely different markets (those already differ in the close panel).
+- *The eligibility mask*: it is computed from the universe rules in the config. Changing the minimum price or the top-N cut is a configuration tried on the same market, so it must count. The *candidate* universe is still part of the identity, because the id columns of the close panel are hashed.
+
+<callout icon="🤔" color="purple_bg">
+Why not hash less, for example only the date range and the id list? Because two different price sources (or a synthetic seed and its neighbour) with the same shape would then pool, and the variance of unrelated Sharpe ratios would enter $V$. Why not a free-text family name chosen by the researcher? Because a new name is a reset button. A content hash can only be changed by changing the data.
+</callout>
+
+**What still starts a new family, and what to do about it.** Any change to the close panel: a different `--start`, `--max-names` or `--min-mcap-ever`, one more day of data, or a vendor back-adjustment (a data refresh rescales the adjusted history of every stock that paid a dividend since). Statistically, most of these are still the same search. The hash cannot know that, so the owner says so explicitly with `merge-families`, which is logged on every record it touches. Rule of thumb: after every data refresh, run `qts ledger list` and merge the previous real-data family into the new one before reading any DSR.
+
+**The tools** (`qts ledger …`, all on `--path`, default `runs/trial_ledger.jsonl`):
+
+| Command | What it does |
+|---|---|
+| `list` | Every family with raw records, trials after de-duplication, Nyholt $N_{\text{eff}}$, best Sharpe, first and last date, market and data hashes. Says how many records are still keyed on a data hash. |
+| `rekey [--dry-run]` | Moves records from `pipeline_phase{p}:{data_hash[:12]}` to `pipeline_phase{p}:{market_hash[:12]}` wherever the market hash is *known*: from another record with the same data hash, from a run manifest under `--runs-root`, or, with `--store` and the loader flags of the original `qts run`, recomputed from the data. |
+| `merge-families --into F A B …` | Renames every record of families `A`, `B`, … to `F`. The explicit statement "these are one search". |
+| `restate RUN` | Recomputes a finished run's DSR at its family's current trial count and writes it to the run's `extras.json` under `dsr_restated`. No data is loaded and nothing is re-run. |
+
+A ledger record stores hashes, not data, so `rekey` cannot compute a market hash from a record alone. With `--store` it loads the panels the way `qts run` did and hashes them four ways: as they are, and with each optional reference table (`delisting_dates`, `delisting_reasons`) left out. Those tables contribute nothing to the data hash when absent, so "the current panels without `delisting_reasons`" hashes to exactly what a run recorded before the table existed. A record whose data hash matches any of these is on this price history, proven by content. A record that matches none (the store itself changed since) stays where it is, is listed, and is left to `merge-families`.
+
+Both rewrites keep every line and every other field, write `<path>.bak-<UTC timestamp>` first, replace the file atomically under the exclusive lock, record the previous family on the record (`family_rekeyed_from`, `family_merged_from`) and are idempotent. They can only pool trials. No command deletes a trial or splits a family, because under-counting is the only direction that flatters a result.
+
+**Restating.** `summary.json` keeps the DSR the run reported at the time; it is never edited. `restate` reads the run's net Sharpe from `summary.json`, the length, skew and kurtosis from `returns.parquet`, finds the run's own ledger record (same config hash and data hash, closest in time) to learn its *current* family, and applies `TrialLedger.dsr_inputs`: the same rule as the pipeline, so restating a run whose family has not changed reproduces its DSR exactly (`tests/test_research_family.py::test_restating_an_up_to_date_run_reproduces_its_dsr`). It prints the reported and restated values side by side with $N_{\text{eff}}$, the raw count, $V$ and the expected maximum Sharpe.
+
+```bash
+qts ledger list
+qts ledger rekey --dry-run --store data/store --start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8
+qts ledger rekey           --store data/store --start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8
+qts ledger merge-families --into pipeline_phase2:<new> pipeline_phase2:<old>   # only if rekey left some behind
+qts ledger restate runs/20261112T223938591050Z_bd1b6463
+```
+
+The pipeline also defends itself: when the ledger holds records with this run's data hash under the old family name, the run's notes say how many were not counted and name the two commands (`ResearchPipeline._ledger_notes`).
 
 ### Why this choice
 JSONL is human-readable, diff-able and appendable with one system call; an advisory file lock is enough for one machine. Read-time de-duplication keeps the file a faithful log (nothing is ever lost or overwritten) while the DSR still sees "an identical re-run is not a new trial". Keying on code version and run spec closes the failure the second audit demonstrated: three runs with different code versions collapsed to $n_{\text{trials}} = 1$, keeping only the last Sharpe. Iterating on code with a fixed config is the most common research loop, so that bug hid exactly the trials that matter most.
@@ -811,6 +865,7 @@ JSONL is human-readable, diff-able and appendable with one system call; an advis
 - `flock` is local and advisory: it does not protect a ledger on NFS or one edited by hand.
 - Records without `data_hash` (pre-audit) cannot be de-duplicated; they stay, and they count.
 - Commit before a run you want de-duplicated. Runs from a dirty tree always add a trial, which is conservative but makes the DSR depend on how often you run uncommitted code.
+- A DSR is only as honest as its family. After adding or re-deriving any input table, and after every data refresh, run `qts ledger list` before trusting `n_trials`; a count of 1.0 on a market you have worked on for a week is a bookkeeping error, not a result.
 - The family change means records logged under the old family name `pipeline_phase1` are not read by new runs. They are still in the file (and still in `raw_records()`), but they no longer deflate anything. For the synthetic demo this is harmless; for real research, never change the family convention mid-search.
 
 ### Worked example
@@ -820,7 +875,7 @@ When the lag-0 demo computed its DSR, its family had $N_{\text{raw}} = 5$ (the f
 $$
 V = \operatorname{var}(-0.006,\ -0.466,\ 0.135,\ 0.742,\ 0.956) = 0.332
 $$
-above the floor $252/1005 = 0.251$, so $V = 0.332$ (the demo prints "n_trials 5.0, var SR 0.332"). Under the current family rule a new run on the same data would start the family `pipeline_phase1:acc387f0eca5`, which none of the legacy records belong to, so its first DSR would be a plain PSR ($N = 1$); the lag-1 companion logged after it would see $N = 2$. Runs from a dirty tree, like both demo runs, are never de-duplicated. The pre-audit runs were buggy, but they were trials: the researcher saw their numbers before changing code.
+above the floor $252/1005 = 0.251$, so $V = 0.332$ (the demo prints "n_trials 5.0, var SR 0.332"). Under the family rule of that week a new run on the same data started the family `pipeline_phase1:acc387f0eca5` (data hash; today it would be the market-hash family, and `qts ledger rekey` moves the old records once a new run has recorded both hashes), which none of the legacy records belong to, so its first DSR would be a plain PSR ($N = 1$); the lag-1 companion logged after it would see $N = 2$. Runs from a dirty tree, like both demo runs, are never de-duplicated. The pre-audit runs were buggy, but they were trials: the researcher saw their numbers before changing code.
 
 ## 14. The hurdle gates
 

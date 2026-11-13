@@ -14,7 +14,11 @@ export interface paths {
     /** All runs, newest first */
     get: operations['list_runs_api_runs_get'];
     put?: never;
-    /** Launch a pipeline run as a background job */
+    /**
+     * Launch a pipeline run as a background job
+     * @description Adds the run to the FIFO queue (one job runs at a time by default).  The request is
+     *     prepared exactly as ``POST /api/config/validate`` reports it.
+     */
     post: operations['launch_run_api_runs_post'];
     delete?: never;
     options?: never;
@@ -243,6 +247,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/jobs': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** The queue: running, queued (in order), recently finished */
+    get: operations['list_jobs_api_jobs_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/jobs/{job_id}': {
     parameters: {
       query?: never;
@@ -254,8 +275,42 @@ export interface paths {
     get: operations['get_job_api_jobs__job_id__get'];
     put?: never;
     post?: never;
-    /** Cancel (best effort) */
+    /** Cancel: a queued job leaves the queue, a running one is terminated (best effort) */
     delete: operations['cancel_job_api_jobs__job_id__delete'];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/jobs/{job_id}/log': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Tail of the job's log (stage lines and the pipeline's INFO log) */
+    get: operations['get_job_log_api_jobs__job_id__log_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/jobs/{job_id}/move': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Move a queued job to a new place in the queue */
+    post: operations['move_job_api_jobs__job_id__move_post'];
+    delete?: never;
     options?: never;
     head?: never;
     patch?: never;
@@ -311,6 +366,29 @@ export interface paths {
     get: operations['get_warmup_api_config_warmup_get'];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/config/validate': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Dry run of a launch: errors, warnings, the resulting config hash and warm-up
+     * @description Takes the body of ``POST /api/runs`` and prepares it the same way (base config of
+     *     ``base_run_id`` or the defaults, overrides through ``SystemConfig.with_overrides``,
+     *     seed, signal lag), without queueing anything.  Config problems come back as
+     *     ``errors`` with a 200 (``valid: false``); only a malformed body is a 422.
+     */
+    post: operations['validate_config_api_config_validate_post'];
     delete?: never;
     options?: never;
     head?: never;
@@ -583,6 +661,47 @@ export interface components {
         [key: string]: (number | null)[];
       };
     };
+    /**
+     * ConfigValidation
+     * @description ``POST /api/config/validate``: what a launch with this body would do, without
+     *     queueing anything.  ``errors`` are the same issues a launch answers with 422.
+     */
+    ConfigValidation: {
+      /** Valid */
+      valid: boolean;
+      /** Errors */
+      errors: components['schemas']['ValidationIssue'][];
+      /**
+       * Warnings
+       * @description launchable, but worth a look before spending a trial
+       */
+      warnings: components['schemas']['ValidationIssue'][];
+      /**
+       * Config Hash
+       * @description SystemConfig.hash() of the resulting config; null when invalid
+       */
+      config_hash: string | null;
+      /**
+       * Base Config Hash
+       * @description hash of the base (the run's config or the defaults)
+       */
+      base_config_hash: string | null;
+      /**
+       * Warmup Days
+       * @description estimated warm-up of the resulting config (trading days)
+       */
+      warmup_days: number | null;
+      /**
+       * Min Days
+       * @description warm-up plus one year: the floor for a synthetic market's days
+       */
+      min_days: number | null;
+      /**
+       * Overrides Applied
+       * @description number of override keys applied on the base
+       */
+      overrides_applied: number;
+    };
     /** CostSensitivityRow */
     CostSensitivityRow: {
       /** Multiplier */
@@ -703,6 +822,11 @@ export interface components {
     };
     /** Health */
     Health: {
+      /**
+       * Store Path
+       * @description QTS_STORE_PATH: the ParquetStore store runs read; null when unset
+       */
+      store_path: string | null;
       /**
        * Status
        * @constant
@@ -833,11 +957,65 @@ export interface components {
        * Status
        * @enum {string}
        */
-      status: 'queued' | 'running' | 'done' | 'failed';
+      status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
       /** Progress */
       progress: number;
       /** Message */
       message: string;
+      /** Label */
+      label: string;
+      /**
+       * Kind
+       * @enum {string}
+       */
+      kind: 'synthetic' | 'store';
+      /** Ml */
+      ml: boolean;
+      /**
+       * Phase
+       * @enum {integer}
+       */
+      phase: 1 | 2;
+      /** Config Hash */
+      config_hash: string;
+      /** Base Run Id */
+      base_run_id: string | null;
+      /**
+       * N Overrides
+       * @description override keys of the request (0 for an unchanged base)
+       */
+      n_overrides: number;
+      /** Created At */
+      created_at: string;
+      /** Started At */
+      started_at: string | null;
+      /** Finished At */
+      finished_at: string | null;
+      /**
+       * Position
+       * @description 0-based place in the queue; null unless queued
+       */
+      position: number | null;
+      /**
+       * Stage
+       * @description pipeline stage of a running job (short name); '' otherwise
+       */
+      stage: string;
+      /**
+       * Last Log
+       * @description last line of the job's log; null before the first line
+       */
+      last_log: string | null;
+      /**
+       * Eta Seconds
+       * @description running: estimated seconds left, from finished jobs of similar size; null when there are none
+       */
+      eta_seconds: number | null;
+      /**
+       * Estimated Seconds
+       * @description estimated total duration from similar finished jobs
+       */
+      estimated_seconds: number | null;
     };
     /** JobCounts */
     JobCounts: {
@@ -845,6 +1023,51 @@ export interface components {
       queued: number;
       /** Running */
       running: number;
+    };
+    /** JobLog */
+    JobLog: {
+      /** Job Id */
+      job_id: string;
+      /**
+       * Lines
+       * @description the last `tail` lines, oldest first
+       */
+      lines: string[];
+      /** Total Lines */
+      total_lines: number;
+      /**
+       * Truncated
+       * @description true when the log has more lines than returned
+       */
+      truncated: boolean;
+    };
+    /** JobMove */
+    JobMove: {
+      /**
+       * Position
+       * @description new 0-based place in the queue (clamped to its end)
+       */
+      position: number;
+    };
+    /**
+     * JobQueue
+     * @description ``GET /api/jobs``: running first, then the queue in order, then the most recent
+     *     finished, failed and cancelled jobs.
+     */
+    JobQueue: {
+      /** Jobs */
+      jobs: components['schemas']['Job'][];
+      /** Max Workers */
+      max_workers: number;
+      /** Max Queued */
+      max_queued: number;
+      /**
+       * Counts
+       * @description jobs by status (all on disk, not only the listed ones)
+       */
+      counts: {
+        [key: string]: number;
+      };
     };
     /** JsonSchemaBoolean */
     JsonSchemaBoolean: {
@@ -857,6 +1080,8 @@ export interface components {
       title?: string;
       /** Description */
       description?: string;
+      /** Nullable */
+      nullable?: boolean;
       /** Default */
       default?: boolean;
     };
@@ -871,6 +1096,8 @@ export interface components {
       title?: string;
       /** Description */
       description?: string;
+      /** Nullable */
+      nullable?: boolean;
       /** Default */
       default?: number;
       /** Minimum */
@@ -913,6 +1140,8 @@ export interface components {
       title?: string;
       /** Description */
       description?: string;
+      /** Nullable */
+      nullable?: boolean;
       /** Default */
       default?: string;
       /** Enum */
@@ -952,11 +1181,41 @@ export interface components {
       signal_lag_days: 0 | 1;
       /**
        * Config Overrides
-       * @description dotted-path overrides of SystemConfig, e.g. {"portfolio.trade_aversion": 2}
+       * @description dotted-path overrides, e.g. {"portfolio.trade_aversion": 2}; applied on top of the config of `base_run_id` when given, else of the SystemConfig defaults; null only for nullable fields
        */
       config_overrides: {
-        [key: string]: boolean | number | string;
+        [key: string]: boolean | number | string | null;
       };
+      /**
+       * Base Run Id
+       * @description start from this run's config.yaml (run builder: clone and edit); default: SystemConfig()
+       */
+      base_run_id?: string | null;
+      /**
+       * Start
+       * @description store slice start
+       */
+      start?: string | null;
+      /**
+       * End
+       * @description store slice end
+       */
+      end?: string | null;
+      /**
+       * Max Names
+       * @description store prefilter: the N ids with the largest peak market cap
+       */
+      max_names?: number | null;
+      /**
+       * Min Mcap Ever
+       * @description store prefilter: peak market cap floor in [start, end], USD
+       */
+      min_mcap_ever?: number | null;
+      /**
+       * Cache
+       * @description reuse fitted models from the stage cache (qts --cache)
+       */
+      cache?: boolean | null;
       /**
        * Label
        * @description run label (default: derived)
@@ -1129,6 +1388,7 @@ export interface components {
       signal_lag_days: number;
       /** Config Yaml */
       config_yaml: string;
+      source: components['schemas']['RunSource'];
     };
     /**
      * RunConstraints
@@ -1334,6 +1594,11 @@ export interface components {
       config_hash: string;
       /** Data Hash */
       data_hash: string;
+      /**
+       * Ledger Family
+       * @description trial family the run's DSR counted in, as the manifest records it; null for older runs
+       */
+      ledger_family: string | null;
       /** Python */
       python: string;
       /** Platform */
@@ -1350,6 +1615,81 @@ export interface components {
       seeds: {
         [key: string]: number;
       };
+    };
+    /**
+     * RunSource
+     * @description Where a run's market data came from and how the run was invoked: what the run
+     *     builder needs to start a new run "from" this one.  Read from ``launch.json`` (runs
+     *     launched through the API), else from the CLI command recorded in the manifest
+     *     (``qts demo --stocks/--days/--seed``, ``qts run --store/--start/--end/--max-names/
+     *     --min-mcap-ever``, ``--ml``, ``--cache``, ``--max-days``); ``recorded`` is false when
+     *     neither says (older runs): the fields are then null and the builder asks.
+     */
+    RunSource: {
+      /** Recorded */
+      recorded: boolean;
+      /**
+       * Origin
+       * @enum {string}
+       */
+      origin: 'api' | 'cli' | 'unknown';
+      /**
+       * Kind
+       * @enum {string}
+       */
+      kind: 'synthetic' | 'store';
+      /**
+       * Stocks
+       * @description synthetic market: number of stocks
+       */
+      stocks: number | null;
+      /**
+       * Days
+       * @description synthetic market: number of days
+       */
+      days: number | null;
+      /**
+       * Store Path
+       * @description ParquetStore root as recorded (CLI --store or the API's QTS_STORE_PATH)
+       */
+      store_path: string | null;
+      /**
+       * Start
+       * @description store slice start, YYYY-MM-DD
+       */
+      start: string | null;
+      /**
+       * End
+       * @description store slice end, YYYY-MM-DD
+       */
+      end: string | null;
+      /**
+       * Max Names
+       * @description store prefilter: the N ids with the largest peak market cap
+       */
+      max_names: number | null;
+      /**
+       * Min Mcap Ever
+       * @description store prefilter: peak market cap floor, USD
+       */
+      min_mcap_ever: number | null;
+      /**
+       * Max Days
+       * @description backtest only the last N out-of-sample days
+       */
+      max_days: number | null;
+      /**
+       * Cache
+       * @description stage cache on
+       */
+      cache: boolean;
+      /** Venue */
+      venue: ('routed' | 'auction' | 'continuous') | null;
+      /**
+       * Command
+       * @description the recorded command line ('' when none)
+       */
+      command: string;
     };
     /** RunSummary */
     RunSummary: {
@@ -1375,6 +1715,11 @@ export interface components {
       config_hash: string;
       /** Data Hash */
       data_hash: string;
+      /**
+       * Ledger Family
+       * @description trial family the run's DSR counted in (the manifest's); null for older or unfinished runs
+       */
+      ledger_family: string | null;
       /** Git Sha */
       git_sha: string;
       /**
@@ -1404,6 +1749,15 @@ export interface components {
       input?: unknown;
       /** Context */
       ctx?: Record<string, never>;
+    };
+    /** ValidationIssue */
+    ValidationIssue: {
+      /** Loc */
+      loc: (string | number)[];
+      /** Msg */
+      msg: string;
+      /** Type */
+      type: string;
     };
     /**
      * Warmup
@@ -1442,15 +1796,6 @@ export interface components {
       exact: boolean;
       /** Trading Days Per Year */
       trading_days_per_year: number;
-    };
-    /** ValidationIssue */
-    ValidationIssue: {
-      /** Loc */
-      loc: (string | number)[];
-      /** Msg */
-      msg: string;
-      /** Type */
-      type: string;
     };
     /**
      * ApiErrorBody
@@ -2184,6 +2529,38 @@ export interface operations {
       };
     };
   };
+  list_jobs_api_jobs_get: {
+    parameters: {
+      query?: {
+        /** @description how many finished / failed / cancelled jobs to include */
+        recent?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['JobQueue'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
   get_job_api_jobs__job_id__get: {
     parameters: {
       query?: never;
@@ -2264,6 +2641,102 @@ export interface operations {
       };
     };
   };
+  get_job_log_api_jobs__job_id__log_get: {
+    parameters: {
+      query?: {
+        /** @description number of lines from the end */
+        tail?: number;
+      };
+      header?: never;
+      path: {
+        job_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['JobLog'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  move_job_api_jobs__job_id__move_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        job_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['JobMove'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['Job'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description The run is still running or failed before writing results */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Invalid request */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+    };
+  };
   get_ledger__api_ledger_get: {
     parameters: {
       query?: never;
@@ -2334,6 +2807,39 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  validate_config_api_config_validate_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['LaunchRunRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ConfigValidation'];
+        };
+      };
+      /** @description Invalid request */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
         };
       };
     };

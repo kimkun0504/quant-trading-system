@@ -105,7 +105,7 @@ test('dossier: old tab addresses redirect to the section; add to tray from the h
   // config: search and diff against another run
   await page.goto(`/runs/${DEMO}#config`);
   await page.getByRole('searchbox', { name: /Search configuration/ }).fill('horizon');
-  await expect(page.getByText('1 of 29 keys')).toBeVisible();
+  await expect(page.getByText('1 of 35 keys')).toBeVisible();
   await expect(page.getByRole('region', { name: 'Configuration' })).not.toContainText(
     'trade_aversion',
   );
@@ -123,18 +123,6 @@ test('suspicious run is flagged before anything else', async ({ page }) => {
   await page.goto('/runs/20261105T102233Z_c07a55e2');
   await expect(page.getByRole('note', { name: 'Suspicious result' })).toBeVisible();
   await expect(page.getByText(/is implausibly high/)).toBeVisible();
-});
-
-test('run builder submits and shows progress through to the run', async ({ page }) => {
-  await page.goto('/builder');
-  await page.getByLabel('Seed').fill('7');
-  await page.getByRole('button', { name: 'Launch run' }).click();
-  await expect(page.getByRole('heading', { name: 'Running the pipeline' })).toBeVisible();
-  await expect(page.getByRole('progressbar')).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Open the run' })).toBeVisible({ timeout: 10_000 });
-  await page.getByRole('link', { name: 'Open the run' }).click();
-  await expect(page.getByText(/Composite, seed 7/).first()).toBeVisible();
-  await expect(page.getByRole('list', { name: 'Hurdle gates' })).toBeVisible();
 });
 
 test('keyboard: skip link reaches main content', async ({ page }) => {

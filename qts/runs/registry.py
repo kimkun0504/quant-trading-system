@@ -94,6 +94,8 @@ def run_summary_dict(res: PipelineResult) -> dict[str, Any]:
             "signal_lag_days": res.signal_lag_days,
             "config_hash": res.config_hash,
             "data_hash": res.data_hash,
+            "market_hash": res.market_hash,
+            "ledger_family": res.ledger_family,
             "git_sha": res.git_sha,
             "timings": res.timings,
             "notes": res.notes,
@@ -111,7 +113,11 @@ def save_run(res: PipelineResult, cfg: SystemConfig, runs_root: str | Path) -> P
     """Write ``res`` to ``<runs_root>/<run_id>/`` (layout: module docstring)."""
     if res.manifest is None:
         res.manifest = RunManifest.create(
-            config_hash=res.config_hash, data_hash=res.data_hash, timings=res.timings
+            config_hash=res.config_hash,
+            data_hash=res.data_hash,
+            timings=res.timings,
+            market_hash=res.market_hash,
+            ledger_family=res.ledger_family,
         )
     run_dir = Path(runs_root) / res.manifest.run_id
     run_dir.mkdir(parents=True, exist_ok=False)

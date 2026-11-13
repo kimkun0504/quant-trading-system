@@ -195,16 +195,21 @@ def test_pending_and_failed_runs_409(client):
         git_sha="x",
     )
     r = client.get(f"/api/runs/{q['run_id']}")
-    assert r.status_code == 409 and "still running" in r.json()["detail"]
+    assert r.status_code == 409 and "waiting in the queue" in r.json()["detail"]
     for suffix in ("/series", "/costs", "/ic"):
         assert client.get(f"/api/runs/{q['run_id']}{suffix}").status_code == 409
     listed = {x["id"]: x for x in client.get("/api/runs").json()}
     assert listed[q["run_id"]]["status"] == "running" and listed[q["run_id"]]["headline"] is None
-    jobs.cancel(q["job_id"])
+    jobs._mark(q["job_id"], status="failed", message="Failed: boom")
     r = client.get(f"/api/runs/{q['run_id']}")
     assert r.status_code == 409 and "failed before evaluation" in r.json()["detail"]
     listed = {x["id"]: x for x in client.get("/api/runs").json()}
     assert listed[q["run_id"]]["status"] == "failed"
+    jobs._mark(q["job_id"], status="queued")
+    jobs.cancel(q["job_id"])
+    r = client.get(f"/api/runs/{q['run_id']}")
+    assert r.status_code == 409 and "cancelled" in r.json()["detail"]
+    assert q["run_id"] not in {x["id"] for x in client.get("/api/runs").json()}
     TypeAdapter(list[S.RunSummary]).validate_python(list(listed.values()))
 
 

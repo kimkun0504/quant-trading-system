@@ -48,10 +48,41 @@ empty, ``"unknown"`` or dirty (``...+dirty``): a dirty tree or unknown code may
 differ from the last run in ways nobody recorded.  :meth:`raw_records` returns
 the undeduplicated lines.
 
+Research-family identity (2026-11-12)
+------------------------------------
+The DSR's ``N`` must count every strategy configuration tried on the same
+price history.  ``ResearchPipeline`` therefore logs under
+:func:`research_family` = ``pipeline_phase{p}:{market_hash[:12]}``, where
+``market_hash`` (:func:`qts.core.manifest.hash_market`) covers the
+adjusted-close panel only: values, dates, ids.  The record still stores the full
+``data_hash`` (every panel; reproducibility and the re-run de-duplication key)
+next to ``market_hash``.  Until 2026-11-12 the family was keyed on
+``data_hash[:12]``, so adding an auxiliary table (``delisting_reasons``) started
+a new family and reset ``N`` to 1 on the same market.  Three tools repair and
+maintain the families (handbook 10 "Research family"):
+
+* :meth:`TrialLedger.rekey_families` (``qts ledger rekey [--dry-run]``): moves
+  records from ``pipeline_phase{p}:{data_hash[:12]}`` to the market-hash family
+  wherever the record's market hash is *known*: stored on the record, or found
+  in a ``data_hash -> market_hash`` map built from other records, run manifests
+  and (``--store``) the hashes recomputed from the data.  A record stores only
+  hashes, so a data hash nobody can map stays where it is and is listed;
+* :meth:`TrialLedger.merge_families` (``qts ledger merge-families --into F A B``):
+  the owner's explicit statement that families are one search (the fallback
+  for unmappable records, and the tool after a data refresh, which changes the
+  adjusted closes and therefore the market hash);
+* :meth:`TrialLedger.families` (``qts ledger list``): every family with its
+  record / trial counts and hashes.
+
+Both rewrites keep every record and every other field, note the previous
+family on the record (``family_rekeyed_from`` / ``family_merged_from``), write a
+backup ``<path>.bak-<UTC timestamp>`` first and are idempotent.  They can only
+*pool* trials: nothing here deletes a trial or splits a family.
+
 Family names and the one-off migration
 --------------------------------------
-``ResearchPipeline`` logs under ``pipeline_phase{p}:{data_hash[:12]}`` (one DSR
-search per phase *and* data set).  Records written before 2026-11-05 carry the
+Between 2026-11-05 and 2026-11-12 ``ResearchPipeline`` logged under
+``pipeline_phase{p}:{data_hash[:12]}``.  Records written before 2026-11-05 carry the
 bare ``pipeline_phase{p}`` (and the earliest ones an empty ``data_hash``), so
 they pool runs on different data into one family.  :meth:`TrialLedger.migrate_family_names`
 (CLI: ``qts ledger migrate``) is the single sanctioned rewrite of the file: it
@@ -122,6 +153,34 @@ def migrated_family(rec: dict) -> str | None:
         return None
     dh = str(rec.get("data_hash") or "")
     return f"pipeline_phase{m.group(1)}:{dh[:12]}" if dh else LEGACY_FAMILY
+
+
+_PIPELINE_FAMILY = re.compile(r"^pipeline_phase(\d+):([0-9a-f]+)$")
+
+
+def research_family(phase: int, market_hash: str) -> str:
+    """Trial family of a pipeline run: ``pipeline_phase{p}:{market_hash[:12]}``
+    (module docstring "Research-family identity")."""
+    return f"pipeline_phase{int(phase)}:{(market_hash or 'nodata')[:12]}"
+
+
+def rekeyed_family(rec: dict, market_of: dict[str, str] | None = None) -> tuple[str, str] | None:
+    """``(new family, market_hash)`` of a record still keyed on its data hash,
+    or ``None`` when it needs no change or its market hash is unknown.
+
+    Only families of the form ``pipeline_phase{p}:{data_hash[:12]}`` are touched
+    (the suffix must be the record's own data hash; a hand-made or merged family
+    is left alone).  The market hash is the record's ``market_hash`` or
+    ``market_of[data_hash]``."""
+    m = _PIPELINE_FAMILY.match(str(rec.get("family") or ""))
+    dh = str(rec.get("data_hash") or "")
+    if not m or not dh or m.group(2) != dh[:12]:
+        return None
+    mh = str(rec.get("market_hash") or "") or str((market_of or {}).get(dh) or "")
+    if not mh:
+        return None
+    new = research_family(int(m.group(1)), mh)
+    return None if new == rec.get("family") else (new, mh)
 
 
 def _is_clean_code_version(code_version: str) -> bool:
@@ -203,8 +262,13 @@ class TrialLedger:
         returns_monthly: pd.Series | None = None,
         replace_identical: bool = False,
         run_spec: dict | None = None,
+        market_hash: str = "",
     ) -> dict:
         """Append one trial.
+
+        ``market_hash`` (:func:`qts.core.manifest.hash_market`): the price history
+        the trial was run on; stored next to ``data_hash`` so that
+        :meth:`rekey_families` can map the one to the other.
 
         With ``replace_identical=True`` (and a non-empty ``data_hash`` and a clean
         ``code_version``) the record carries a ``dedup_key`` so that an identical
@@ -234,6 +298,8 @@ class TrialLedger:
             "code_version": str(code_version),
             "notes": str(notes),
         }
+        if market_hash:
+            rec["market_hash"] = str(market_hash)
         if run_spec is not None:
             rec["run_spec"] = _jsonable_nested(run_spec)
         if returns_monthly is not None and len(returns_monthly):
@@ -254,13 +320,15 @@ class TrialLedger:
                 os.close(fd)
         return rec
 
-    def migrate_family_names(self, dry_run: bool = False) -> list[dict]:
-        """One-off rewrite of legacy family names (module docstring).
-
-        Returns one ``{"line", "ts", "old", "new"}`` per changed record.  Unless
-        ``dry_run``, copies the file to ``<path>.bak-<UTC timestamp>`` and replaces
-        it atomically (temp file + ``os.replace``) under the exclusive lock; the
-        record count and every other field are unchanged."""
+    def _rewrite_families(
+        self, new_family: Callable[[dict], tuple[str, dict[str, Any]] | None], dry_run: bool
+    ) -> list[dict]:
+        """Shared body of the sanctioned rewrites.  ``new_family(rec)`` returns
+        ``(family, extra fields)`` or ``None`` (unchanged).  Under the exclusive
+        lock: every line is kept, only ``family`` (and ``name`` when it equals the
+        old family), plus the extra fields, change; unless ``dry_run`` the file is
+        first copied to ``<path>.bak-<UTC timestamp>`` and then replaced atomically.
+        Returns one ``{"line", "ts", "old", "new"}`` per changed record."""
         changes: list[dict] = []
         with self._locked(exclusive=True):
             with open(self.path) as f:
@@ -271,20 +339,21 @@ class TrialLedger:
                     out.append(line)
                     continue
                 rec = json.loads(line)
-                new = migrated_family(rec)
-                if new is None:
+                res = new_family(rec)
+                if res is None or res[0] == rec.get("family"):
                     out.append(line)
                     continue
+                new, extra = res
                 old = rec.get("family")
                 changes.append({"line": i + 1, "ts": rec.get("ts"), "old": old, "new": new})
                 rec["family"] = new
                 if rec.get("name") == old:
                     rec["name"] = new
-                rec["family_migrated_from"] = old
+                rec.update(extra)
                 out.append(json.dumps(rec, default=str) + "\n")
             if dry_run or not changes:
                 return changes
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
             shutil.copy2(self.path, f"{self.path}.bak-{stamp}")
             tmp = f"{self.path}.tmp-{os.getpid()}"
             with open(tmp, "w") as f:
@@ -293,6 +362,142 @@ class TrialLedger:
                 os.fsync(f.fileno())
             os.replace(tmp, self.path)
         return changes
+
+    def migrate_family_names(self, dry_run: bool = False) -> list[dict]:
+        """One-off rewrite of legacy family names (module docstring).
+
+        Returns one ``{"line", "ts", "old", "new"}`` per changed record.  Unless
+        ``dry_run``, copies the file to ``<path>.bak-<UTC timestamp>`` and replaces
+        it atomically (temp file + ``os.replace``) under the exclusive lock; the
+        record count and every other field are unchanged."""
+
+        def new_family(rec: dict) -> tuple[str, dict[str, Any]] | None:
+            new = migrated_family(rec)
+            return None if new is None else (new, {"family_migrated_from": rec.get("family")})
+
+        return self._rewrite_families(new_family, dry_run)
+
+    def known_market_hashes(self) -> dict[str, str]:
+        """``data_hash -> market_hash`` from the records that carry both."""
+        out: dict[str, str] = {}
+        for r in self.raw_records():
+            dh, mh = str(r.get("data_hash") or ""), str(r.get("market_hash") or "")
+            if dh and mh:
+                out[dh] = mh
+        return out
+
+    def rekey_families(self, market_of: dict[str, str] | None = None, dry_run: bool = False) -> list[dict]:
+        """Move records keyed on their data hash to the research family of their
+        market hash (module docstring "Research-family identity").
+
+        ``market_of``: extra ``data_hash -> market_hash`` entries (run manifests,
+        hashes recomputed from the data); the ledger's own records that carry both
+        hashes are always used and win.  Records whose market hash is unknown are
+        left untouched (:meth:`unkeyed_families` lists them).  The record gains
+        ``market_hash`` and ``family_rekeyed_from``.  Backup + atomic replace as in
+        :meth:`migrate_family_names`; idempotent."""
+        mapping = {**(market_of or {}), **self.known_market_hashes()}
+
+        def new_family(rec: dict) -> tuple[str, dict[str, Any]] | None:
+            res = rekeyed_family(rec, mapping)
+            if res is None:
+                return None
+            return res[0], {"market_hash": res[1], "family_rekeyed_from": rec.get("family")}
+
+        return self._rewrite_families(new_family, dry_run)
+
+    def unkeyed_families(self, market_of: dict[str, str] | None = None) -> dict[str, int]:
+        """``family -> raw record count`` of pipeline families still keyed on a data
+        hash whose market hash is not known (neither on a record nor in ``market_of``):
+        what :meth:`rekey_families` cannot move and ``merge-families`` is for."""
+        mapping = {**(market_of or {}), **self.known_market_hashes()}
+        out: dict[str, int] = {}
+        for r in self.raw_records():
+            m = _PIPELINE_FAMILY.match(str(r.get("family") or ""))
+            dh = str(r.get("data_hash") or "")
+            if m and dh and m.group(2) == dh[:12] and not (r.get("market_hash") or mapping.get(dh)):
+                out[str(r["family"])] = out.get(str(r["family"]), 0) + 1
+        return out
+
+    def merge_families(self, into: str, sources: list[str], dry_run: bool = False) -> list[dict]:
+        """Rename every record of the ``sources`` families to ``into`` (the owner's
+        statement that they are one search; module docstring).  ``into`` need not
+        exist yet.  Unknown source names raise ``KeyError`` (a typo must not pass
+        silently).  The record keeps its hashes and gains ``family_merged_from``
+        (the family it had before its *first* merge is kept when merged again).
+        Backup + atomic replace as in :meth:`migrate_family_names`; idempotent."""
+        into = str(into)
+        if not into:
+            raise ValueError("merge_families: empty target family")
+        src = {str(x) for x in sources} - {into}
+        have = {str(r.get("family")) for r in self.raw_records()}
+        missing = sorted(src - have)
+        if missing:
+            raise KeyError(f"no such family in {self.path}: {missing}")
+
+        def new_family(rec: dict) -> tuple[str, dict[str, Any]] | None:
+            if str(rec.get("family")) not in src:
+                return None
+            return into, {"family_merged_from": rec.get("family_merged_from") or rec.get("family")}
+
+        return self._rewrite_families(new_family, dry_run)
+
+    def families(self) -> list[dict]:
+        """One summary row per family, in order of first appearance: ``family``,
+        ``n_records`` (raw lines), ``n_trials`` (identical re-runs collapsed: the
+        DSR's raw count), ``n_effective`` (Nyholt), ``data_hashes`` /
+        ``market_hashes`` (distinct, in order), ``first_ts`` / ``last_ts``,
+        ``best_sharpe`` (annual; ``None`` without a Sharpe)."""
+        raw: dict[str, int] = {}
+        for r in self.raw_records():
+            raw[str(r.get("family"))] = raw.get(str(r.get("family")), 0) + 1
+        rows: dict[str, dict[str, Any]] = {}
+        for r in self._records():
+            fam = str(r.get("family"))
+            row = rows.setdefault(
+                fam,
+                {
+                    "family": fam,
+                    "n_records": raw.get(fam, 0),
+                    "n_trials": 0,
+                    "data_hashes": [],
+                    "market_hashes": [],
+                    "first_ts": r.get("ts_first", r.get("ts")),
+                    "last_ts": r.get("ts"),
+                    "best_sharpe": None,
+                },
+            )
+            row["n_trials"] += 1
+            row["last_ts"] = max(str(row["last_ts"]), str(r.get("ts")))
+            for key, col in (("data_hash", "data_hashes"), ("market_hash", "market_hashes")):
+                v = str(r.get(key) or "")
+                if v and v not in row[col]:
+                    row[col].append(v)
+            sr = (r.get("metrics") or {}).get("sharpe_annual")
+            if isinstance(sr, (int, float)) and math.isfinite(sr):
+                row["best_sharpe"] = sr if row["best_sharpe"] is None else max(row["best_sharpe"], sr)
+        for fam, row in rows.items():
+            row["n_effective"] = self.effective_trials_for(fam)
+        return list(rows.values())
+
+    def dsr_inputs(self, family: str, n_obs: int, periods_per_year: int = 252) -> dict[str, float]:
+        """``n_trials`` / cross-trial SR variance for the DSR from a ledger family
+        (the pipeline's rule, shared with ``qts ledger restate``):
+
+        * a single trial (or none) -> ``n_trials=1``, variance 0 (PSR against 0);
+        * 2 trials -> raw count and their sample variance;
+        * >= 3 trials -> Nyholt :meth:`effective_trials_for` (correlation of the
+          stored monthly return streams) and the family's annual SR variance.
+        The variance is floored at the pure sampling-noise variance of an annual
+        SR over ``n_obs`` days (``periods_per_year / n_obs``) whenever more than
+        one trial exists.  ``n_trials_raw`` is the de-duplicated count."""
+        n_raw = self.n_trials(family)
+        if n_raw <= 1:
+            return {"n_trials": 1.0, "var_trials_sr_annual": 0.0, "n_trials_raw": float(n_raw)}
+        n_eff = self.effective_trials_for(family) if n_raw >= 3 else float(n_raw)
+        var = self.family_sharpe_variance(family, annual=True, periods_per_year=periods_per_year)
+        var = max(var, periods_per_year / max(n_obs, 2))
+        return {"n_trials": float(n_eff), "var_trials_sr_annual": float(var), "n_trials_raw": float(n_raw)}
 
     # ------------------------------------------------------------------ queries
     def n_trials(self, family: str | None = None) -> int:

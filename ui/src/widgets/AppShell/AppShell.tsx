@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router';
+import { QueueIndicator } from '@/features/run-queue';
 import { RunSearch } from '@/features/run-search';
 import { SelectionUrlSync } from '@/features/selection';
 import { ThemeToggle } from '@/features/theme-toggle';
@@ -97,6 +98,7 @@ export function AppShell() {
       <header className={styles.topbar}>
         <RunSearch ref={search} />
         <div className={styles.topbarEnd}>
+          <QueueIndicator />
           <ThemeToggle />
         </div>
       </header>

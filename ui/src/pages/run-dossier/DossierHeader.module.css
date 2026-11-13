@@ -234,3 +234,9 @@
     animation: none;
   }
 }
+
+.clone {
+  min-height: 1.5rem;
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
+}

@@ -16,6 +16,34 @@ validation block — always a *time-contiguous* block at the end of the window,
 never a random holdout (a random holdout of overlapping-label panel rows leaks
 the label of a neighbouring date into early stopping).
 
+Sample weights (``AlphaConfig.sample_weight_halflife_years``)
+-----------------------------------------------------------
+``fit`` takes an optional ``sample_weight`` Series aligned to ``X.index`` (the
+walk-forward trainer's recency weights; every row of a date carries the same
+weight).  ``None`` runs the exact unweighted code path.  With weights, each
+estimator fit gets them re-normalised to **mean 1 over the rows of that fit**
+(:func:`unit_mean`), so the penalties keep their meaning (ridge ``alpha``,
+LightGBM ``lambda_l2`` / ``min_sum_hessian_in_leaf``, MLP ``alpha`` are all
+relative to the sum of weights):
+
+* ``RidgeModel``  -- weighted least squares (``Ridge.fit(sample_weight=)``);
+* ``LGBMModel``   -- ``sample_weight`` scales every row's gradient and hessian.
+  ``min_data_in_leaf`` stays a row *count*.  LightGBM's bagging
+  (``bagging_fraction``) draws rows uniformly and then applies the weights:
+  sample uniformly, then weight, so the subsample does not undo the weighting;
+* ``MLPModel``    -- weighted squared loss (``partial_fit(sample_weight=)``,
+  scikit-learn >= 1.7: the weighted mean of the squared errors of each
+  mini-batch).  The ``max_train_rows`` cap keeps drawing rows **uniformly**
+  (the same rows as the unweighted fit) and the weights of the drawn rows are
+  applied to the loss -- an unbiased subsample of the weighted loss, never a
+  second weighting.  On scikit-learn < 1.7 (no ``sample_weight`` in the MLP) the
+  rows are instead drawn with probability proportional to the weight, with
+  replacement, once per seed (importance resampling; same expected loss) and
+  ``MLPModel.weighting_`` says which was used.  The input scaler is weighted too;
+* validation: the early-stopping / model-selection score is the mean per-date
+  rank IC; with weights it is the weighted mean over the validation dates
+  (weight of a date = the weight of its rows).
+
 Hyper-parameters live in ``AlphaConfig.lgbm`` (:class:`~qts.core.config.LGBMParams`)
 and ``AlphaConfig.mlp`` (:class:`~qts.core.config.MLPParams`); constructor
 keyword arguments override individual fields (e.g. ``LGBMModel(n_estimators=150)``).
@@ -57,6 +85,35 @@ def default_valid_mask(X: pd.DataFrame, frac: float = 0.2) -> pd.Series:
     uniq = d.unique().sort_values()
     cut = uniq[int(len(uniq) * (1 - frac))]
     return pd.Series(d >= cut, index=X.index)
+
+
+def unit_mean(w: np.ndarray) -> np.ndarray:
+    """Weights rescaled to mean 1 (so regularisation strengths keep their meaning)."""
+    w = np.asarray(w, dtype=float)
+    m = float(w.mean()) if len(w) else 0.0
+    if not (m > 0 and np.isfinite(m)):
+        raise ValueError("sample weights must be finite with a positive mean")
+    return w / m
+
+
+def _weights_array(sample_weight: pd.Series | None, X: pd.DataFrame) -> np.ndarray | None:
+    """``sample_weight`` aligned to ``X.index`` as a float array (``None`` stays ``None``)."""
+    if sample_weight is None:
+        return None
+    w = pd.Series(sample_weight).reindex(X.index).to_numpy(dtype=float)
+    if not np.isfinite(w).all() or (w < 0).any():
+        raise ValueError("sample_weight must be finite, non-negative and cover every row of X")
+    return w
+
+
+def weighted_mean_rank_ic(pred: pd.Series, y: pd.Series, w: pd.Series) -> float:
+    """Mean per-date Spearman correlation, dates weighted by their mean row weight."""
+    ic = rank_ic_by_date(pred, y)
+    dw = w.groupby(level="date").mean().reindex(ic.index)
+    ok = np.isfinite(ic.to_numpy()) & (dw.to_numpy() > 0)
+    if not ok.any():
+        return float("nan")
+    return float(np.average(ic.to_numpy()[ok], weights=dw.to_numpy()[ok]))
 
 
 def rank_by_date(s: pd.Series) -> pd.Series:
@@ -101,10 +158,18 @@ class DateGroupedRankIC:
 
     Padding uses ``+inf`` so that pads rank after every real value and never
     share a tie with one; pad cells are masked out of every sum.
+
+    ``weights`` (row weights in row order, optional): the mean becomes a weighted
+    mean over dates, each date weighted by the mean weight of its rows.  ``None``
+    is the plain mean (the unweighted code path).
     """
 
-    def __init__(self, dates, min_n: int = IC_MIN_OBS):
+    def __init__(self, dates, min_n: int = IC_MIN_OBS, weights: np.ndarray | None = None):
         codes, _ = pd.factorize(np.asarray(dates))
+        self._date_w: np.ndarray | None = None
+        if weights is not None and len(codes):
+            cnt = np.bincount(codes)
+            self._date_w = np.bincount(codes, weights=np.asarray(weights, dtype=float)) / np.maximum(cnt, 1)
         self.n_rows = len(codes)
         counts = np.bincount(codes) if len(codes) else np.zeros(0, int)
         order = np.argsort(codes, kind="stable")
@@ -147,15 +212,19 @@ class DateGroupedRankIC:
 
     def __call__(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
         ic = self.per_date(y_true, y_pred)
+        if self._date_w is not None:
+            ok = np.isfinite(ic) & (self._date_w > 0)
+            return float(np.average(ic[ok], weights=self._date_w[ok])) if ok.any() else 0.0
         ic = ic[np.isfinite(ic)]
         return float(ic.mean()) if len(ic) else 0.0
 
 
-def make_rank_ic_metric(dates):
+def make_rank_ic_metric(dates, weights: np.ndarray | None = None):
     """LightGBM sklearn-API eval metric: mean per-date Spearman IC (higher is better).
-    ``dates`` are the date labels of the validation rows, in row order.
+    ``dates`` are the date labels of the validation rows, in row order; ``weights``
+    (row weights, same order) make it the date-weighted mean.
     Vectorised (:class:`DateGroupedRankIC`); the label ranks are cached."""
-    scorer = DateGroupedRankIC(dates)
+    scorer = DateGroupedRankIC(dates, weights=weights)
 
     def metric(y_true, y_pred):
         return "rank_ic", scorer(y_true, y_pred), True
@@ -200,7 +269,8 @@ class RankCompositeModel(_Base):
         self.cfg = cfg or AlphaConfig()
         self.composite = ThemeComposite(self.cfg)
 
-    def fit(self, X, y=None, valid_mask=None):
+    def fit(self, X, y=None, valid_mask=None, sample_weight=None):
+        # nothing is fitted, so sample weights have nothing to act on
         self.feature_names_ = list(X.columns)
         return self
 
@@ -214,14 +284,15 @@ class RankCompositeModel(_Base):
 # ----------------------------------------------------------------------------- B: ridge
 class RidgeModel(_Base):
     """sklearn Ridge; alpha chosen on the trailing validation block by mean rank IC,
-    then refit on train + validation."""
+    then refit on train + validation.  With ``sample_weight``: weighted least
+    squares in both fits and a date-weighted validation IC (module docstring)."""
 
     def __init__(self, alphas: Sequence[float] = (1.0, 10.0, 100.0, 1_000.0, 10_000.0, 100_000.0)):
         self.alphas = list(alphas)
         self.model_ = None
         self.best_alpha_ = None
 
-    def fit(self, X, y, valid_mask=None):
+    def fit(self, X, y, valid_mask=None, sample_weight=None):
         from sklearn.linear_model import Ridge
 
         self.feature_names_ = list(X.columns)
@@ -229,15 +300,28 @@ class RidgeModel(_Base):
         keep = y.notna()
         Xt, yt = X[keep & ~vm], y[keep & ~vm]
         Xv, yv = X[keep & vm], y[keep & vm]
+        w = _weights_array(sample_weight, X)
+        tr, va, al = (keep & ~vm).to_numpy(), (keep & vm).to_numpy(), keep.to_numpy()
         best, best_ic = self.alphas[0], -np.inf
         if len(Xv) > 0:
             for a in self.alphas:
-                m = Ridge(alpha=a).fit(Xt.values, yt.values)
-                ic = mean_rank_ic(pd.Series(m.predict(Xv.values), index=Xv.index), yv)
+                if w is None:
+                    m = Ridge(alpha=a).fit(Xt.values, yt.values)
+                    ic = mean_rank_ic(pd.Series(m.predict(Xv.values), index=Xv.index), yv)
+                else:
+                    m = Ridge(alpha=a).fit(Xt.values, yt.values, sample_weight=unit_mean(w[tr]))
+                    ic = weighted_mean_rank_ic(
+                        pd.Series(m.predict(Xv.values), index=Xv.index), yv, pd.Series(w[va], index=Xv.index)
+                    )
                 if np.isfinite(ic) and ic > best_ic:
                     best, best_ic = a, ic
         self.best_alpha_, self.valid_ic_ = best, best_ic
-        self.model_ = Ridge(alpha=best).fit(X[keep].values, y[keep].values)
+        if w is None:
+            self.model_ = Ridge(alpha=best).fit(X[keep].values, y[keep].values)
+        else:
+            self.model_ = Ridge(alpha=best).fit(
+                X[keep].values, y[keep].values, sample_weight=unit_mean(w[al])
+            )
         return self
 
     def predict(self, X):
@@ -290,7 +374,7 @@ class LGBMModel(_Base):
         self.models_: list = []
         self.best_iterations_: list[int] = []
 
-    def fit(self, X, y, valid_mask=None):
+    def fit(self, X, y, valid_mask=None, sample_weight=None):
         import lightgbm as lgb
 
         self.feature_names_ = list(X.columns)
@@ -298,10 +382,18 @@ class LGBMModel(_Base):
         keep = y.notna()
         Xt, yt = X[keep & ~vm].values, y[keep & ~vm].values
         Xv, yv = X[keep & vm].values, y[keep & vm].values
+        w = _weights_array(sample_weight, X)
+        tr, va, al = (keep & ~vm).to_numpy(), (keep & vm).to_numpy(), keep.to_numpy()
+        # no weights -> no keyword at all (the unweighted call, bitwise as before)
+        kw_tr: dict[str, Any] = {} if w is None else {"sample_weight": unit_mean(w[tr])}
+        kw_all: dict[str, Any] = {} if w is None else {"sample_weight": unit_mean(w[al])}
         # Early stopping on per-date rank IC of the validation block: the l2 of a
         # z-scored, very noisy target keeps *rising* with boosting rounds (scale
         # miscalibration) even while the ranking improves, so l2 stops at ~0 trees.
-        ic_metric = make_rank_ic_metric(_dates(X[keep & vm]))
+        if w is None:
+            ic_metric = make_rank_ic_metric(_dates(X[keep & vm]))
+        else:
+            ic_metric = make_rank_ic_metric(_dates(X[keep & vm]), weights=w[va])
         self.models_, self.best_iterations_ = [], []
         for s in range(self.n_seeds):
             seed = self.base_seed + s
@@ -309,18 +401,18 @@ class LGBMModel(_Base):
             if len(Xv) > 0:
                 cb = [lgb.early_stopping(self.early_stopping_rounds, first_metric_only=True, verbose=False)]
                 if "eval_X" in inspect.signature(m.fit).parameters:  # lightgbm >= 4.7
-                    m.fit(Xt, yt, eval_X=Xv, eval_y=yv, eval_metric=ic_metric, callbacks=cb)
+                    m.fit(Xt, yt, eval_X=Xv, eval_y=yv, eval_metric=ic_metric, callbacks=cb, **kw_tr)
                 else:
-                    m.fit(Xt, yt, eval_set=[(Xv, yv)], eval_metric=ic_metric, callbacks=cb)
+                    m.fit(Xt, yt, eval_set=[(Xv, yv)], eval_metric=ic_metric, callbacks=cb, **kw_tr)
                 best = int(m.best_iteration_ or self.params["n_estimators"])
             else:
-                m.fit(Xt, yt)
+                m.fit(Xt, yt, **kw_tr)
                 best = self.params["n_estimators"]
             best = max(best, 10)
             self.best_iterations_.append(best)
             if self.refit_on_full and len(Xv) > 0:
                 p = dict(self.params, n_estimators=best)
-                m = lgb.LGBMRegressor(random_state=seed, **p).fit(X[keep].values, y[keep].values)
+                m = lgb.LGBMRegressor(random_state=seed, **p).fit(X[keep].values, y[keep].values, **kw_all)
             self.models_.append(m)
         return self
 
@@ -382,7 +474,14 @@ class MLPModel(_Base):
             random_state=seed,
         )
 
-    def fit(self, X, y, valid_mask=None):
+    @staticmethod
+    def _native_weights() -> bool:
+        """scikit-learn >= 1.7: ``MLPRegressor.partial_fit`` takes ``sample_weight``."""
+        from sklearn.neural_network import MLPRegressor
+
+        return "sample_weight" in inspect.signature(MLPRegressor.partial_fit).parameters
+
+    def fit(self, X, y, valid_mask=None, sample_weight=None):
         import warnings
 
         from sklearn.preprocessing import StandardScaler
@@ -406,12 +505,40 @@ class MLPModel(_Base):
             all_idx = np.sort(rs.choice(all_idx, cap, replace=False))
         Xv_all = X.to_numpy(dtype=float)
         yv_all = y.to_numpy(dtype=float)
-        self.scaler_ = StandardScaler().fit(Xv_all[tr_idx if len(tr_idx) else all_idx])
+        # Sample weights (module docstring).  The row cap above drew uniformly (the
+        # same rows as the unweighted fit); the weights of the drawn rows go into
+        # the loss.  ``w is None`` leaves every call below exactly as it was.
+        w = _weights_array(sample_weight, X)
+        self.weighting_ = "none" if w is None else ("loss" if self._native_weights() else "resample")
+        if w is not None and self.weighting_ == "resample":  # scikit-learn < 1.7
+            # importance resampling: rows drawn in proportion to their weight, with
+            # replacement, then fitted unweighted (same expected loss)
+            for_draw = w
+            tr_idx, all_idx = (
+                np.sort(rs.choice(idx, len(idx), replace=True, p=for_draw[idx] / for_draw[idx].sum()))
+                if len(idx)
+                else idx
+                for idx in (tr_idx, all_idx)
+            )
+        #: (n rows, sum of row positions) of the rows the nets are trained on; equal to
+        #: the unweighted fit's when the weights act on the loss (uniform row cap)
+        self.train_rows_signature_ = (len(tr_idx), int(tr_idx.sum()))
+        w_loss = w if self.weighting_ == "loss" else None
+        fit_idx = tr_idx if len(tr_idx) else all_idx
+        kw_tr: dict[str, Any] = {}
+        kw_all: dict[str, Any] = {}
+        if w_loss is not None:
+            if len(tr_idx):
+                kw_tr = {"sample_weight": unit_mean(w_loss[tr_idx])}
+            kw_all = {"sample_weight": unit_mean(w_loss[all_idx])}
+            self.scaler_ = StandardScaler().fit(Xv_all[fit_idx], sample_weight=unit_mean(w_loss[fit_idx]))
+        else:
+            self.scaler_ = StandardScaler().fit(Xv_all[fit_idx])
         Xt, yt = self.scaler_.transform(Xv_all[tr_idx]), yv_all[tr_idx]
         have_valid = len(va_idx) > 0 and len(tr_idx) > 0
         if have_valid:
             Xv, yv = self.scaler_.transform(Xv_all[va_idx]), yv_all[va_idx]
-            scorer = DateGroupedRankIC(_dates(X)[va_idx])
+            scorer = DateGroupedRankIC(_dates(X)[va_idx], weights=None if w is None else w[va_idx])
         self.models_, self.best_epochs_, self.valid_ic_ = [], [], []
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")  # ConvergenceWarning per partial_fit epoch
@@ -421,7 +548,7 @@ class MLPModel(_Base):
                     m = self._new_net(seed, len(all_idx))
                     Xa = self.scaler_.transform(Xv_all[all_idx])
                     for _ in range(hp.max_iter):
-                        m.partial_fit(Xa, yv_all[all_idx])
+                        m.partial_fit(Xa, yv_all[all_idx], **kw_all)
                     self.models_.append(m)
                     self.best_epochs_.append(hp.max_iter)
                     self.valid_ic_.append(float("nan"))
@@ -429,7 +556,7 @@ class MLPModel(_Base):
                 m = self._new_net(seed, len(tr_idx))
                 best_ic, best_ep, best_state, wait = -np.inf, 0, None, 0
                 for ep in range(1, hp.max_iter + 1):
-                    m.partial_fit(Xt, yt)
+                    m.partial_fit(Xt, yt, **kw_tr)
                     ic = scorer(yv, m.predict(Xv))
                     if ic > best_ic + 1e-6:
                         best_ic, best_ep, wait = ic, ep, 0
@@ -443,7 +570,7 @@ class MLPModel(_Base):
                     m = self._new_net(seed, len(all_idx))
                     Xa = self.scaler_.transform(Xv_all[all_idx])
                     for _ in range(best_ep):
-                        m.partial_fit(Xa, yv_all[all_idx])
+                        m.partial_fit(Xa, yv_all[all_idx], **kw_all)
                 elif best_state is not None:
                     m.coefs_, m.intercepts_ = best_state
                 self.models_.append(m)
@@ -468,10 +595,18 @@ class EnsembleModel(_Base):
         w = np.ones(len(self.models)) if weights is None else np.asarray(weights, float)
         self.weights = w / w.sum()
 
-    def fit(self, X, y, valid_mask=None):
+    def fit(self, X, y, valid_mask=None, sample_weight=None):
         self.feature_names_ = list(X.columns)
         for m in self.models:
-            m.fit(X, y, valid_mask)
+            if sample_weight is None:
+                m.fit(X, y, valid_mask)
+                continue
+            if "sample_weight" not in inspect.signature(m.fit).parameters:
+                raise TypeError(
+                    f"{type(m).__name__}.fit has no sample_weight parameter: the recency "
+                    "weights would be silently ignored for this member"
+                )
+            m.fit(X, y, valid_mask, sample_weight=sample_weight)
         return self
 
     def predict(self, X):

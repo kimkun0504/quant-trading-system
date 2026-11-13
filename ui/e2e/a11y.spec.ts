@@ -21,6 +21,7 @@ const PAGES = [
   '/runs/20261106T142207Z_9a7b3d44#portfolio',
   '/runs/20261105T102233Z_c07a55e2',
   '/builder',
+  `/builder?from=${DEMO}&set=alpha.sample_weight_halflife_years=8&set=alpha.horizon_days=900`,
   '/ledger',
   '/models',
 ];

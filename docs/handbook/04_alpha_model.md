@@ -806,6 +806,60 @@ This is the GKX protocol adopted by the plan. Annual refits keep trials few and 
 
 `trainer.py::train_live_parity_check(model, X_date)` hashes the live feature columns *and order* (`features.py::feature_signature`) and asserts it equals the hash recorded at fit time. Combined with the single `FeatureBuilder.process` code path for training and scoring, this is the defence against the Numerai-style preprocessing mismatch.
 
+### Recency weighting
+
+**What it is.** By default every training row counts the same: in an expanding window that reaches back to 2000, a day in 2003 moves the fit as much as a day last year. Recency weighting makes old rows count less. In a refit whose last training date is $T$, the row of stock $i$ at date $s$ gets the weight
+$$
+w_s = 0.5^{\,(T - s)/(252 \cdot H)}
+$$
+where:
+- $T - s$ is the row's age in trading days (positions in the feature panel's date index), so the newest training date has $w = 1$;
+- $H$ is `AlphaConfig.sample_weight_halflife_years`: a row $H$ years old counts half, $2H$ years old a quarter;
+- every stock on the same date gets the same weight (the weight is about *when*, not *who*).
+
+`0.0` (the default) means equal weights, and the trainer then calls `model.fit` without any weight argument: the unweighted code path, bitwise the previous behaviour (golden file unchanged; a walk-forward ML run was compared bit for bit against the previous commit).
+
+**Why it might help, and what it costs.** The relationship between features and future returns drifts: anomalies decay after publication, market structure changes, crowding rises. If the recent past resembles the near future more than the distant past does, down-weighting old rows reduces the bias from stale regimes. The price is variance. Weighted rows carry less information than the same number of equal rows; the standard measure is the Kish **effective sample size**
+$$
+n_{\text{eff}} = \frac{\left(\sum_j w_j\right)^2}{\sum_j w_j^2}
+$$
+which equals the row count for equal weights and falls as the weights become unequal. With a signal as weak as ours (IC around 0.03), sample size is the scarce resource, so a short half-life can easily cost more in noise than it gains in adaptation.
+
+| Training window | $n_{\text{eff}}$ / rows at $H = 8$ | Equivalent years of equal-weight data | Share of total weight on the last 5 years |
+|---|---|---|---|
+| 5 years | 0.99 | 4.9 | 1.00 |
+| 10 years | 0.94 | 9.4 | 0.61 |
+| 15 years | 0.88 | 13.2 | 0.48 |
+| 20 years | 0.81 | 16.1 | 0.43 |
+| 25 years | 0.73 | 18.3 | 0.40 |
+
+(Equal names per date assumed.) At eight years the cost is modest (a 25-year window still behaves like 18 equal years) while the last five years go from 20 % of the weight to 40 %.
+
+<callout icon="⚠️" color="yellow_bg">
+**Pre-registered: one value, one trial.** The owner's test value is $H = 8$ years, fixed before any result was seen. It is to be run **once**, as a single logged trial in the ledger, and compared with the equal-weight run. It must not be swept: trying 4, 6, 8 and 12 and keeping the best is four trials on the same price history, the deflated Sharpe ratio counts all four (→ see **Validation & statistics › Research family**), and a half-life chosen by backtest Sharpe is a parameter fitted to the test period.
+</callout>
+
+**How each sleeve uses the weights.** The trainer passes the weights, normalised to mean 1 over the refit's rows, as `fit(..., sample_weight=)`. Each estimator fit renormalises them to **mean 1 over the rows of that fit** (`models.py::unit_mean`), so the regularisation strengths keep their meaning (every penalty below is relative to the sum of the weights):
+
+- **Ridge**: weighted least squares, $\min_\beta \sum_j w_j (y_j - x_j^\top\beta)^2 + \alpha\lVert\beta\rVert^2$, in the $\alpha$-selection fits and in the final refit.
+- **LightGBM**: `sample_weight` multiplies each row's gradient and hessian, so split gains, leaf values and `lambda_l2` see weighted sums. `min_data_in_leaf` remains a row *count*. Row bagging (`bagging_fraction = 0.8`) draws rows uniformly and the weights then apply to the drawn rows: sample uniformly, then weight.
+- **MLP**: weighted squared loss through scikit-learn's `partial_fit(sample_weight=)` (version 1.7 or later): each mini-batch minimises the weighted mean of its squared errors. The input scaler is weighted too. On an older scikit-learn, which has no weights in the MLP, rows are instead drawn in proportion to their weight, with replacement (importance resampling, the same expected loss); `MLPModel.weighting_` records which of `"loss"` / `"resample"` was used.
+- **Validation and early stopping**: the validation block is the last `valid_days` of the same window, so its rows carry weights from the same formula. The stopping and selection score, the mean per-date rank IC, becomes the weighted mean over validation dates (`DateGroupedRankIC(weights=)`, `weighted_mean_rank_ic`).
+- **The rank composite** fits nothing, so it has nothing to weight.
+
+**Interaction with the row cap.** `MLPParams.max_train_rows` (400,000) subsamples rows for speed. (LightGBM has no such cap; its only subsampling is the bagging above.) Two things could go wrong: sampling in proportion to the weights *and* weighting the loss would apply the weights twice, and a cap that silently replaced the weighting would undo it. The cap therefore keeps drawing **uniformly**, with the same random stream and hence the same rows as the unweighted fit, and the weights of the drawn rows go into the loss. A uniform subsample of a weighted loss is an unbiased estimate of that loss. `tests/test_recency_weighting.py::test_mlp_row_cap_samples_uniformly_then_weights_the_loss` checks both halves.
+
+**Point-in-time.** A weight depends only on the row's own date and on $T$, the last training date of that refit, which is already at least $h + L + 1$ days before the first date the model predicts. Appending future data changes no weight of an earlier refit (`test_weights_do_not_depend_on_data_after_the_refit`).
+
+**In the code.** `trainer.py::recency_weights`, `effective_sample_size`, `WalkForwardTrainer.run`; `models.py` (each `fit`). A custom `ml_factory` whose model has no `sample_weight` parameter raises a `TypeError` when the half-life is positive, instead of training unweighted without saying so. The setting is part of `AlphaConfig`, so it changes the config hash and the stage-cache key of the alpha fit (not of the risk fit). Each refit records its half-life and $n_{\text{eff}}$ (over the refit's training plus validation rows) in `FoldInfo.extra`, in the `RefitRecord` and in `alpha_refits.json` (`sample_weight_halflife_years`, `effective_sample_size` per refit).
+
+**Worked example.** `test_regime_switch_weighted_fit_beats_equal_weights_out_of_sample` plants $y = +0.5\,x$ for the first 300 days and $y = -0.5\,x$ afterwards, and refits once when the old regime still supplies most of the rows. Equal weights average the two regimes and still lean to the old sign: the out-of-sample rank IC after the switch is negative. With a half-life of 0.15 years the old rows weigh almost nothing, the fit takes the new sign and the out-of-sample IC is positive, at an effective sample size under a third of the equal-weight one. That is the trade in miniature: the test is built so that adaptation wins; on real data, with slow drift and a weak signal, it may not, which is why the eight-year value is a hypothesis to test once.
+
+```bash
+qts run --store data/store --start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8 --cache -v --ml \
+  --set alpha.horizon_days=60 --set alpha.sample_weight_halflife_years=8
+```
+
 ### What each refit learned: the refit record
 
 Every walk-forward refit leaves a `RefitRecord` on the fitted model (`alpha_model.py::AlphaModel.refit_records_`, built by `refit_record(fold, model)` from the trainer's `FoldInfo` and the fitted estimator): the refit date (the first date the model predicts for), the training window (`train_start`, `train_end` — the last label date, which sits $h + L$ days before the refit date by the embargo — `valid_start`, `n_train`, `n_valid`), the ensemble's blend weights, and **per-sleeve feature importance**: LightGBM's mean gain share over its seed bag, ridge's $|\beta|$, and the ensemble's member mean (`models.py::*.feature_importance()`). The MLP has no cheap importance (a permutation importance would cost another full pass over the validation block per refit), so it is omitted and a note says so. Recording only: nothing reads the record back during scoring, and the golden file is unchanged.

@@ -1,0 +1,180 @@
+.slip {
+  min-width: 0;
+}
+
+.same {
+  padding: var(--space-3) var(--space-4);
+  color: var(--color-fg-muted);
+  font-size: var(--text-md);
+}
+
+.diff code {
+  background: none;
+  padding: 0;
+}
+
+.key {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+  min-width: 9rem;
+}
+
+.from {
+  color: var(--color-fg-muted);
+  white-space: nowrap;
+}
+
+.to {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.unchanged {
+  color: var(--color-fg-muted);
+}
+
+.activeCol {
+  box-shadow: inset 0 -2px 0 var(--color-accent);
+}
+
+.bad code {
+  text-decoration: line-through;
+}
+
+.badWord {
+  color: var(--color-loss);
+  font-weight: 500;
+  font-size: var(--text-sm);
+}
+
+.facts {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-top: var(--hairline);
+  display: grid;
+  gap: var(--space-1);
+  font-size: var(--text-md);
+}
+
+.facts > div {
+  display: grid;
+  grid-template-columns: 6.5rem minmax(0, 1fr);
+  gap: var(--space-2);
+}
+
+.facts dt {
+  color: var(--color-fg-muted);
+}
+
+.facts dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.muted {
+  color: var(--color-fg-muted);
+}
+
+.lines {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-top: var(--hairline);
+  display: grid;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+}
+
+.line {
+  display: grid;
+  grid-template-columns: 0.625rem minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.line code {
+  overflow-wrap: anywhere;
+}
+
+/* the mark's shape carries the tone as well as its colour: bar = problem, diamond =
+   caution, dot = note */
+.mark {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--color-border-strong);
+  transform: translateY(-1px);
+}
+
+.caution .mark {
+  border-radius: 1px;
+  transform: translateY(-1px) rotate(45deg);
+  background: var(--color-caution);
+}
+
+.error .mark {
+  border-radius: 1px;
+  width: 0.625rem;
+  height: 0.25rem;
+  transform: translateY(-3px);
+  background: var(--color-loss);
+}
+
+.error {
+  color: var(--color-loss);
+  font-weight: 500;
+}
+
+.info {
+  color: var(--color-fg-muted);
+}
+
+.cli {
+  border-top: var(--hairline);
+  padding: var(--space-3) var(--space-4);
+}
+
+.cliHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--color-fg-muted);
+  font-size: var(--text-sm);
+  margin-bottom: var(--space-1);
+}
+
+.pre {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface-2);
+  border-radius: var(--radius-sm);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre;
+  max-height: 14rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-top: var(--hairline);
+  background: var(--color-surface);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+}
+
+.status {
+  color: var(--color-fg-muted);
+  font-size: var(--text-sm);
+}
+
+.blocked {
+  padding: 0 var(--space-4) var(--space-3);
+  color: var(--color-fg-muted);
+  font-size: var(--text-sm);
+}

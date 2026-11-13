@@ -7,7 +7,15 @@ exactly produced these numbers?":
 * ``config_hash``  — ``SystemConfig.hash()`` (SHA-256 of the canonical JSON);
 * ``data_hash``    — :func:`hash_market_data`: every ``MarketData`` panel
   (required *and* optional, the ``extra`` dict, the industry map) plus the
-  eligibility panel — handbook fix #37 (the old hash covered ``close`` only);
+  eligibility panel — handbook fix #37 (the old hash covered ``close`` only).
+  It answers "is this bit for bit the same input?" (reproducibility, the stage
+  cache, de-duplication of identical re-runs);
+* ``market_hash``  — :func:`hash_market`: the adjusted-close panel only (values,
+  dates, ids).  It answers "is this the same price history being mined?" and
+  keys the trial-ledger family the deflated Sharpe ratio counts trials in
+  (:func:`qts.validation.ledger.research_family`; handbook 10): adding or
+  revising an auxiliary table (delisting reasons, industries, fundamentals,
+  market cap, volume) changes ``data_hash`` but not ``market_hash``;
 * ``git_sha`` / ``git_dirty`` — code version (``git rev-parse HEAD``;
   ``"unknown"`` outside a git checkout); a dirty tree (modified tracked files
   *or* untracked, non-ignored files) means the sha alone does not reproduce
@@ -92,6 +100,30 @@ def hash_market_data(md: MarketData, n_chars: int = 16, exclude: frozenset[str] 
     """
     base = _hash_panels(md, exclude | CHAINED_REFERENCE_FIELDS)
     return chain_reference_hash(base, md, exclude)[:n_chars]
+
+
+def hash_market(md: MarketData, n_chars: int = 16) -> str:
+    """Short SHA-256 of the **market being mined**: the adjusted-close panel
+    (``md.close``: values, date index, id columns) and nothing else.
+
+    This is the research-family identity of the trial ledger, not a
+    reproducibility hash (that is :func:`hash_market_data`).  The returns every
+    strategy configuration is fitted to and scored on are a function of this
+    panel alone, so two runs with the same ``hash_market`` are trials of one
+    search however their other inputs differ.  Left out on purpose: volume,
+    market cap, raw close, shares, spreads, short interest, fundamentals,
+    industries, delisting dates / reasons, ``extra`` and the eligibility mask
+    (the universe *rules* are configuration; the candidate universe is the id
+    columns, which are hashed).  Any of those can be added, re-derived or
+    restated by the vendor without the price history changing, and counting
+    such a refresh as a new search resets the deflated Sharpe ratio's trial
+    count to one.  A different date range, id set or any changed adjusted close
+    (including a vendor back-adjustment after a data refresh) is a different
+    hash: see handbook 10 for ``qts ledger merge-families``.
+    """
+    h = hashlib.sha256(b"qts-market-v1")
+    _hash_frame(h, "close", md.close)
+    return h.hexdigest()[:n_chars]
 
 
 #: Reference tables hashed *after* the panels, chained on the panel hash (when
@@ -223,6 +255,10 @@ class RunManifest:
     command: str = ""
     notes: str = ""
     manifest_version: int = MANIFEST_VERSION
+    #: :func:`hash_market` of the run's input (``""`` for runs written before 2026-11-12)
+    market_hash: str = ""
+    #: trial-ledger family the run was logged under (``""`` for older runs)
+    ledger_family: str = ""
 
     @classmethod
     def create(
@@ -234,6 +270,8 @@ class RunManifest:
         seeds: dict[str, int] | None = None,
         command: str | None = None,
         notes: str = "",
+        market_hash: str = "",
+        ledger_family: str = "",
     ) -> RunManifest:
         now = datetime.now(timezone.utc)
         g = git_info()
@@ -251,6 +289,8 @@ class RunManifest:
             seeds=dict(seeds or {}),
             command=command if command is not None else " ".join(sys.argv),
             notes=notes,
+            market_hash=market_hash,
+            ledger_family=ledger_family,
         )
 
     def to_dict(self) -> dict[str, Any]:

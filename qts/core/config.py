@@ -285,6 +285,15 @@ class AlphaConfig(_ConfigBase):
     refit_frequency_days: int = 252
     train_min_days: int = 756
     embargo_days: int | None = None  # defaults to horizon_days
+    # Recency weighting of the ML training rows (qts.alpha.trainer; handbook 04
+    # "Recency weighting").  In a refit whose last training date is T, a row at
+    # date s gets weight 0.5 ** ((T - s) / (halflife_years * 252)), ages in trading
+    # days, normalised to mean 1 over the rows of each estimator fit; the
+    # validation / early-stopping block is weighted the same way.  Depends on
+    # dates <= T only (PIT).  0 = equal weights (the code path without weights,
+    # bitwise the earlier behaviour).  Pre-registered test value: 8 years, to be
+    # run as ONE logged trial, not swept (every value tried is a trial in the DSR).
+    sample_weight_halflife_years: float = 0.0
     # Causal delisting rule for labels when ``MarketData.delisting_dates`` does not
     # cover a name: a price gap at the label's window end counts as a delisting
     # only once the name has had no close for this many trading days after its
@@ -301,6 +310,9 @@ class AlphaConfig(_ConfigBase):
         hl: Any = self.score_smoothing_halflife_days
         if isinstance(hl, bool) or not isinstance(hl, (int, float)) or not math.isfinite(hl) or hl < 0:
             raise ValueError(f"AlphaConfig: score_smoothing_halflife_days must be >= 0 (0 = off), got {hl!r}")
+        sw: Any = self.sample_weight_halflife_years
+        if isinstance(sw, bool) or not isinstance(sw, (int, float)) or not math.isfinite(sw) or sw < 0:
+            raise ValueError(f"AlphaConfig: sample_weight_halflife_years must be >= 0 (0 = off), got {sw!r}")
 
 
 @dataclass(frozen=True)

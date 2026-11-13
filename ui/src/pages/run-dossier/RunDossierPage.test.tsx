@@ -130,7 +130,7 @@ describe('Run dossier (integration, MSW)', () => {
         within(screen.getByRole('region', { name: 'Configuration' })).getAllByRole('row'),
       ).toHaveLength(3),
     );
-    expect(screen.getByText('1 of 29 keys')).toBeInTheDocument();
+    expect(screen.getByText('1 of 35 keys')).toBeInTheDocument();
 
     await user.selectOptions(screen.getByLabelText('Compare with'), TA0);
     const diff = await screen.findByRole('region', { name: 'Config diff' });
