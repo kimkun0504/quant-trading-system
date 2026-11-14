@@ -85,7 +85,7 @@ cd ui && npm ci && cd ..
 
 ## The `qts` command
 
-`qts` has six core subcommands (`demo`, `run`, `data`, `config`, `runs`, `ledger`) and seven research commands (`check`, `seal`, `signal`, `features`, `sweep`, `capacity`, `risk`; → see **Research tools** below). Every pipeline command (`demo`, `run`) fits the full pipeline, backtests, evaluates, prints the report card, writes a run directory under `--runs-root` (default `runs`) and appends a trial to the ledger at `--ledger` (default `runs/trial_ledger.jsonl`).
+`qts` has six core subcommands (`demo`, `run`, `data`, `config`, `runs`, `ledger`) and eight research commands (`check`, `seal`, `signal`, `features`, `sweep`, `capacity`, `risk`, `breakdown`; → see **Research tools** below). Every pipeline command (`demo`, `run`) fits the full pipeline, backtests, evaluates, prints the report card, writes a run directory under `--runs-root` (default `runs`) and appends a trial to the ledger at `--ledger` (default `runs/trial_ledger.jsonl`).
 
 ### Flags shared by `demo` and `run`
 
@@ -313,6 +313,36 @@ qts risk calibrate --store data/store --start 2000-01-01 --max-rank 1500 \
 ```
 
 One cached fit, one backtest per `risk.alignment_nu_scale` (the alignment variance is read by the risk model's `as_of` only, so nothing is refitted): realised / ex-ante vol and the bias statistic of the baseline book by year and overall, ex-ante and realised vol, net Sharpe, and the recommended value (closest whole-period ratio to 1 in log terms; ties to the smaller $\nu$). A report only: adopting the value is one logged trial (`qts run … --set risk.alignment_nu_scale=<value>`). Same runtime as the capacity curve. Writes `runs/_risk/<id>.json`. `scripts/calibrate_alignment_nu.py` stays the synthetic calibration.
+
+### `qts breakdown industries`: is the edge broad or concentrated?
+
+Added 2026-11-14 (`qts/research/industry_breakdown.py`, note `docs/notes/industry_breakdown_2026-11-14.md`). The strategy already treats industries specially: features are industry-demeaned, labels are residualised on industry dummies, the traded score is neutralised on industry, the optimizer keeps each industry's net weight inside a band, and the risk model has FF48 industries shrunk to their FF12 sector when thin. This command asks the next question: does the money come from many industries or from a few?
+
+```bash
+qts breakdown industries runs/<run_id>                       # store flags read from the run's manifest
+qts breakdown industries runs/<run_id> --store data/store --start 2000-01-01 --max-rank 1500
+qts breakdown industries <run_id> --no-ic                    # positioning and P&L only: no fit
+qts breakdown industries <run_id> --no-refit                 # refuse when the stage cache is cold
+```
+
+It is a diagnostic: nothing is re-optimised, nothing is logged to the trial ledger, no strategy number changes. It reads the run directory, reloads the run's market through the research loader (the run's own store flags, from `manifest.json`'s `command` unless you give them; the holdout seal; the load-coverage guard) and refuses when the loaded close panel does not hash to the run's `market_hash`. Industries are the risk model's point-in-time labels (`MarketData.industry_as_of(t)`: FF48 on the real store), rolled up to FF12 sectors. For each industry and sector it prints, sorted by P&L contribution:
+
+- **positioning**: mean long / short / net / gross weight, names held long and short, share of the book's gross;
+- **P&L**: $\sum_{i \in \text{industry}} w_{i,t}\, r_{i,t+1}$ with the run's own weights and the per-name returns the simulator booked (delistings from `delistings.parquet`); the reconciliation line checks that the industry contributions add up to the recorded gross return (residual about 1e-18 on the synthetic runs). Annualised P&L, share of the total, Sharpe and Newey–West t of the industry's daily P&L, monthly hit rate. Costs are recorded per day, not per name, so each day's trading cost is allocated pro rata to traded value and its borrow cost pro rata to short value: exact in total, approximate per industry;
+- **signal quality**: rank IC of the traded score against the residualised forward target *inside* the industry, on the run's own IC dates (industries with fewer than 5 scored names on a date are skipped; coverage reported). This needs the scores, so the pipeline is re-fitted through the stage cache exactly as `qts run` does. A warm cache loads the fits; a cold one is announced first (about 45 min on the reference load with ML), and `--no-refit` refuses it. The `score check` line confirms that the re-fitted scores reproduce the run's recorded `ic.parquet`.
+
+**Reading the breadth block and the verdict.** Only *active* industries count (at least 0.25 % of the book's gross). The block gives: how many made money, with a binomial p-value against a coin flip; the share of the gross P&L earned by the five best industries, and by the rest; the effective number of industries contributing ($1/\sum_k s_k^2$, with $s_k$ industry $k$'s share of the absolute P&L); how many clear |t| ≥ 2 against the 5 % × count expected by chance, with the industries that survive a Holm correction; and the book's P&L without its five best industries (a pessimistic check, because it removes the luckiest ones). The verdict uses thresholds fixed in the code before any real result was seen:
+
+| verdict | rule |
+|---|---|
+| undetermined | fewer than 5 active industries, or the book's gross P&L is not positive with Newey–West t ≥ 2 (not enough edge to locate) |
+| concentrated | less than 15 % of the gross P&L from outside the top 5, or effective number < max(2, 0.10 × active) |
+| broad | at least 40 % from outside the top 5, and at least 60 % of active industries positive, and effective number ≥ 0.25 × active |
+| moderately concentrated | anything else |
+
+Read "broad" as *the edge is a stock-selection skill that works in most industries*, and "concentrated" as *a few industries carry it*. The second is a fragility (one sector's regime can switch the strategy off), not proof of a bug. Every statistic has one sentence of help under the report. A sealed run is broken down on the sealed window only. With no seal in force it is refused before anything is loaded, and so is a seal whose holdout moved. A full-history run (from before the seal, `--unseal`, or the mid-cap check) loaded while the seal is in force is broken down on its pre-holdout dates only (`window: truncated`). The cache is then cold, because the sealed data is not the data the run was fitted on.
+
+Writes `<run_dir>/industry_breakdown.json` (shape `qts.industry_breakdown/1` in the module docstring, for the API and UI; `--json PATH` writes a copy). Expected on the owner's Mac with a warm cache: about 6–10 minutes, mostly the store load and reading the two cached fits. The breakdown itself takes about 10 s at 5,100 days × 2,500 names. `--no-ic` takes about 4–7 minutes.
 
 ## What a run leaves behind
 

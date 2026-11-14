@@ -10,6 +10,7 @@ Each command is a thin layer over a library entry point of :mod:`qts.research`:
 ``sweep``           :func:`qts.research.sweep.plan_sweep` / ``run_sweep``
 ``capacity``        :func:`qts.research.capacity.run_capacity`
 ``risk calibrate``  :func:`qts.research.risk_calibration.run_risk_calibration`
+``breakdown industries``  :func:`qts.research.industry_breakdown.run_industry_breakdown`
 """
 
 from __future__ import annotations
@@ -518,6 +519,9 @@ def register_research_commands(sub: Any) -> None:
     _add_features(sub)
     _add_sweep(sub)
     _add_capacity_and_risk(sub)
+    from qts.research.industry_breakdown import add_breakdown_parser
+
+    add_breakdown_parser(sub)
 
 
 __all__ = ["register_research_commands"]
