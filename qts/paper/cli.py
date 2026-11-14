@@ -59,13 +59,24 @@ def add_paper_parser(sub: Any) -> None:
         help="first data date loaded (fixes the refit anchor; as `qts run --start`)",
     )
     i.add_argument(
-        "--max-names", type=int, default=3000, help="store prefilter as `qts run --max-names` (default 3000)"
+        "--max-rank",
+        type=int,
+        default=None,
+        help="screened-rank store prefilter as `qts run --max-rank` (default 1500 unless --max-names / "
+        "--min-mcap-ever is given)",
+    )
+    i.add_argument(
+        "--max-names",
+        type=int,
+        default=None,
+        help="peak-cap store prefilter as `qts run --max-names` (can miss universe names: refused unless it "
+        "covers; prefer --max-rank)",
     )
     i.add_argument(
         "--min-mcap-ever",
         type=float,
-        default=3e8,
-        help="store prefilter as `qts run --min-mcap-ever` (default 3e8)",
+        default=None,
+        help="peak-cap store prefilter as `qts run --min-mcap-ever`",
     )
 
     r = ps.add_parser("run", help="the daily job: refresh data, fill yesterday's orders, generate today's")
@@ -156,12 +167,16 @@ def cmd_paper(a: argparse.Namespace) -> int:
 def _dispatch(a: argparse.Namespace, paper: Any, DataSpec: Any) -> int:
     c = a.paper_cmd
     if c == "init":
+        peak = a.max_names is not None or a.min_mcap_ever is not None
+        if peak and a.max_rank is not None:
+            raise paper.PaperError("--max-rank cannot be combined with --max-names / --min-mcap-ever")
         data = DataSpec(
             kind="store",
             store=a.store,
             start=a.data_start,
             max_names=a.max_names,
             min_mcap_ever=a.min_mcap_ever,
+            max_rank=None if peak else (a.max_rank if a.max_rank is not None else 1500),
         )
         out = paper.init_book(
             a.name,

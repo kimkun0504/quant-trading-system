@@ -36,6 +36,10 @@ def pytest_configure(config):
     import os
 
     os.environ["QTS_SEAL_FILE"] = "none"
+    # the store load-coverage guard (qts.research.coverage) measures every peak-cap
+    # prefilter with DuckDB and refuses small synthetic prefilters; off in tests unless a
+    # test turns it on (monkeypatch.setenv("QTS_LOAD_COVERAGE", "enforce")): tests/test_load_coverage.py
+    os.environ.setdefault("QTS_LOAD_COVERAGE", "off")
     # registered here because pyproject.toml is owned elsewhere
     config.addinivalue_line(
         "markers",

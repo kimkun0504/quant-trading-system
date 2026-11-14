@@ -115,7 +115,8 @@ class DataSource(Protocol):
 
 
 class StoreSource:
-    """A ParquetStore loaded like ``qts run --store --start --max-names --min-mcap-ever``."""
+    """A ParquetStore loaded like ``qts run --store --start --max-rank`` (or the peak-cap
+    ``--max-names --min-mcap-ever``, checked by the load-coverage guard)."""
 
     def __init__(self, spec: DataSpec):
         self.spec = spec
@@ -135,16 +136,43 @@ class StoreSource:
 
     def tickers(self) -> list[str] | None:
         s = self.spec
+        max_rank = getattr(s, "max_rank", None)
+        if max_rank is not None:
+            # every id that ranked <= max_rank by screened market cap on some date (qts run --max-rank)
+            return self._store().tickers_by_screened_rank(int(max_rank), s.start, None)
         if s.min_mcap_ever is None and s.max_names is None:
             return None
         return self._store().tickers_by_market_cap(
             s.start, None, min_mcap_ever=s.min_mcap_ever, max_names=s.max_names
         )
 
+    def check_coverage(self) -> Any:
+        """The load-coverage guard (:mod:`qts.research.coverage`) for this spec and the
+        default universe; raises ``PaperError`` when the prefilter misses universe names."""
+        from qts.research.coverage import LoadCoverageError, require_load_coverage
+        from qts.research.data import StoreSpec
+
+        s = self.spec
+        spec = StoreSpec(
+            store=s.store,
+            start=s.start,
+            max_names=s.max_names if getattr(s, "max_rank", None) is None else None,
+            min_mcap_ever=s.min_mcap_ever if getattr(s, "max_rank", None) is None else None,
+            max_rank=getattr(s, "max_rank", None),
+        )
+        try:
+            return require_load_coverage(spec)
+        except LoadCoverageError as e:
+            raise PaperError(str(e)) from e
+
     def load(self, end: Any = None) -> MarketData:
+        if getattr(self.spec, "max_rank", None) is None and (
+            self.spec.max_names is not None or self.spec.min_mcap_ever is not None
+        ):
+            self.check_coverage()  # a peak-cap prefilter must cover the universe (--max-rank does by construction)
         tick = self.tickers()
         if tick is not None and not tick:
-            raise PaperError("the store prefilter (max_names / min_mcap_ever) left no ids")
+            raise PaperError("the store prefilter (max_rank / max_names / min_mcap_ever) left no ids")
         md = self._store().as_market_data(universe_tickers=tick, start=self.spec.start, end=None)
         if end is not None and len(md.dates) and pd.Timestamp(end) < md.dates[-1]:
             md = md.slice_until(pd.Timestamp(end))
@@ -158,6 +186,7 @@ class StoreSource:
             "start": s.start,
             "max_names": s.max_names,
             "min_mcap_ever": s.min_mcap_ever,
+            "max_rank": getattr(s, "max_rank", None),
         }
 
 

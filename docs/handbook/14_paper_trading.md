@@ -157,7 +157,7 @@ A journal record holds: `date`, `data_asof`, `mode` (live / backfill), `nav`, `n
 
 | Command | What it does |
 |---|---|
-| `qts paper init --config configs/baseline.yaml --nav 5e6 --start D --name baseline [--reference-run runs/...] [--sizing moc\|replica]` | create the book; `D` is the first job day: its close produces the first orders, which fill at the next session's close |
+| `qts paper init --config configs/baseline.yaml --nav 5e6 --start D --name baseline [--reference-run runs/...] [--sizing moc\|replica] [--max-rank 1500]` | create the book; `D` is the first job day: its close produces the first orders, which fill at the next session's close. The store prefilter defaults to `--max-rank 1500` (covers the top-1,000 universe by construction); a peak-cap `--max-names` / `--min-mcap-ever` book is refused by the load-coverage guard unless it covers (handbook 12 "The prefilter must cover the universe"). A `book.json` written before 2026-11-14 keeps its peak-cap prefilter and is refused: re-init it |
 | `qts paper run [--name N] [--date D] [--until D] [--no-sync] [--dry-run] [--redo-last] [--signal-mode daily\|single]` | the daily job (§2); `--until` = backfill day by day without the freshness check |
 | `qts paper status [--json]` | status, every check, the latest day |
 | `qts paper history [--json] [--tail N]` | one line per day |

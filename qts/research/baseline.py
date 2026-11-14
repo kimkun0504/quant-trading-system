@@ -69,7 +69,10 @@ def fit_baseline(
         if spec is None:
             raise ValueError("fit_baseline: give a store spec or a MarketData")
         load = load_research_market(
-            spec, hash_cache_dir=f"{runs_root}/_cache/market_hash" if runs_root else None, log=log
+            spec,
+            hash_cache_dir=f"{runs_root}/_cache/market_hash" if runs_root else None,
+            log=log,
+            universe=base,
         )
         md = load.md
         mh = load.market_hash_full

@@ -267,14 +267,20 @@ class DataSpec:
     ``kind``: ``"store"`` (a :class:`~qts.data.store.ParquetStore` at ``store``) or
     ``"memory"`` (tests / benchmarks: the caller passes the data).  ``start`` is the
     first *data* date (the walk-forward refit schedule and the half-life blocks are
-    anchored on it, so it must never change for a book); ``max_names`` /
-    ``min_mcap_ever`` are the peak-market-cap prefilter of ``qts run``."""
+    anchored on it, so it must never change for a book); ``max_rank`` is the
+    screened-rank prefilter of ``qts run --max-rank`` (default 1,500: covers the
+    baseline's top-1,000 universe by construction); ``max_names`` / ``min_mcap_ever``
+    the peak-market-cap prefilter, which can miss universe names
+    (docs/notes/prefilter_lookahead_2026-11-14.md; refused by the load-coverage guard
+    unless it covers).  A ``book.json`` written before ``max_rank`` existed keeps its
+    peak-cap prefilter (``max_rank`` = ``None``)."""
 
     kind: str = "store"
     store: str = "data/store"
     start: str | None = "2000-01-01"
-    max_names: int | None = 3000
-    min_mcap_ever: float | None = 3e8
+    max_names: int | None = None
+    min_mcap_ever: float | None = None
+    max_rank: int | None = 1500
     raw_dir: str = "data/raw/sharadar"
     sync_tables: tuple[str, ...] = ("SEP", "TICKERS", "DAILY", "SF1", "ACTIONS", "SP500")
     #: the incremental sync downloads rows updated since (last data date - this many days)
@@ -323,7 +329,12 @@ class BookHeader:
         known = {f.name for f in dataclasses.fields(cls)}
         kw = {k: v for k, v in d.items() if k in known}
         dknown = {f.name for f in dataclasses.fields(DataSpec)}
-        return cls(data=DataSpec(**{k: v for k, v in data.items() if k in dknown}), **kw)
+        dd = {k: v for k, v in data.items() if k in dknown}
+        if "max_rank" not in dd:  # written before max_rank existed: its own (peak-cap) prefilter
+            dd["max_rank"] = None
+            dd.setdefault("max_names", 3000)
+            dd.setdefault("min_mcap_ever", 3e8)
+        return cls(data=DataSpec(**dd), **kw)
 
 
 # --------------------------------------------------------------------------- paths

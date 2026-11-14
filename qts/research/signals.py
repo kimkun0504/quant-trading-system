@@ -642,6 +642,7 @@ def run_signal_test(
             spec,
             hash_cache_dir=f"{runs_root}/_cache/market_hash" if runs_root else None,
             log=log,
+            universe=base_cfg,
         )
         md = load.md
         mh_family = load.market_hash_full

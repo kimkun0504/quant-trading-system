@@ -103,7 +103,7 @@ Phase 0 (in progress): the Sharadar Core US Equities Bundle loader is in the cod
 (`qts data sharadar sync` fills `data/store` with prices, as-traded prices, actual volume,
 market cap, shares, PIT fundamentals, industries, delisting dates, corporate actions and
 S&P 500 membership, keyed on permanent identifiers; `qts data sharadar validate` checks it;
-`qts run --store data/store --max-names 3000` runs on it — see
+`qts run --store data/store --max-rank 1500` runs on it — see
 `docs/handbook/12_operating_guide.md` "Loading Sharadar"). Still to do: the first real
 download and its validation report, the daily IBKR borrow-rate logger, the Ken French
 files, and re-running the hurdle gates on 2000–2025 data. Known deepening items are listed

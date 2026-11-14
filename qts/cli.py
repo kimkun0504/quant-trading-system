@@ -294,7 +294,18 @@ def _load_store(a: argparse.Namespace):
 
     store = ParquetStore(a.store)
     tickers = None
-    if a.min_mcap_ever is not None or a.max_names is not None:
+    max_rank = getattr(a, "max_rank", None)
+    if max_rank is not None:
+        if a.min_mcap_ever is not None or a.max_names is not None:
+            print("error: --max-rank cannot be combined with --max-names / --min-mcap-ever", file=sys.stderr)
+            return None
+        # screened-rank prefilter (qts.research.data.prefilter_ids with the default screens)
+        tickers = store.tickers_by_screened_rank(int(max_rank), a.start, a.end)
+        print(f"prefilter: {len(tickers)} candidate ids by screened market-cap rank <= {int(max_rank)}")
+        if not tickers:
+            print("error: the prefilter left no ids", file=sys.stderr)
+            return None
+    elif a.min_mcap_ever is not None or a.max_names is not None:
         # pre-filter by peak market cap (reads only the long market_cap table), so a
         # ten-thousand-name store is never pivoted whole; the pipeline's own PIT
         # universe rules (top_n_by_mcap, min price, ADV) still apply on top
@@ -325,7 +336,17 @@ def _add_store_args(ap: argparse.ArgumentParser) -> None:
         "--max-names",
         type=int,
         default=None,
-        help="store prefilter: load only the N ids with the largest peak market cap in [start, end]",
+        help="store prefilter: load only the N ids with the largest peak market cap in [start, end] "
+        "(can miss names the universe picks: check with scripts/check_load_coverage.py; prefer --max-rank)",
+    )
+    ap.add_argument(
+        "--max-rank",
+        type=int,
+        default=None,
+        help="store prefilter: load every id that ranked <= K by market cap among the names passing the "
+        "universe's price / ADV screens on at least one date in [start, end]; covers a top-N universe "
+        "when K >= N / (1 - exclude_bottom_size_quantile) (1,250 for the baseline; use 1500). "
+        "Not with --max-names / --min-mcap-ever",
     )
 
 
@@ -409,6 +430,7 @@ def cmd_run(a: argparse.Namespace) -> int:
                 force=a.force,
                 hash_cache_dir=f"{a.runs_root}/_cache/market_hash",
                 log=print,
+                allow_partial_coverage=bool(getattr(a, "allow_partial_coverage", False)),
             )
         except (SealError, StoreLoadError, ValueError) as e:
             print(f"error: {e}", file=sys.stderr)
@@ -758,6 +780,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="with --unseal: unseal a configuration whose holdout was already used (flagged)",
+    )
+    r.add_argument(
+        "--allow-partial-coverage",
+        action="store_true",
+        help="load although the store prefilter misses names the universe picks (look-ahead; flagged on "
+        "the ledger record).  Default: refused, see docs/notes/prefilter_lookahead_2026-11-14.md",
     )
     r.set_defaults(func=cmd_run)
 

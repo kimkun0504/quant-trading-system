@@ -359,8 +359,8 @@ The two-day wait for the announcement features exists because the time of day of
 
 ```bash
 qts data sharadar derive-earnings --store data/store
-python scripts/diagnose_signal.py --store data/store --start 2000-01-01 --max-names 3000 \
-    --min-mcap-ever 3e8 --set alpha.feature_set=v2 --coverage-only
+python scripts/diagnose_signal.py --store data/store --start 2000-01-01 --max-rank 1500 \
+    --set alpha.feature_set=v2 --coverage-only
 ```
 
 The second command prints, per year, the share of eligible names with a value for each feature, without fitting anything. The feature IC table, the refit importances (`alpha_refits.parquet`) and the Signal lab read the fitted feature list, so they show the new columns with no further change.
@@ -990,7 +990,7 @@ which equals the row count for equal weights and falls as the weights become une
 **Worked example.** `test_regime_switch_weighted_fit_beats_equal_weights_out_of_sample` plants $y = +0.5\,x$ for the first 300 days and $y = -0.5\,x$ afterwards, and refits once when the old regime still supplies most of the rows. Equal weights average the two regimes and still lean to the old sign: the out-of-sample rank IC after the switch is negative. With a half-life of 0.15 years the old rows weigh almost nothing, the fit takes the new sign and the out-of-sample IC is positive, at an effective sample size under a third of the equal-weight one. That is the trade in miniature: the test is built so that adaptation wins; on real data, with slow drift and a weak signal, it may not, which is why the eight-year value is a hypothesis to test once.
 
 ```bash
-qts run --store data/store --start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8 --cache -v --ml \
+qts run --store data/store --start 2000-01-01 --max-rank 1500 --cache -v --ml \
   --set alpha.horizon_days=60 --set alpha.sample_weight_halflife_years=8
 ```
 

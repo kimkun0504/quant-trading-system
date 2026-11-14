@@ -145,13 +145,15 @@ Both runs are full trials (two run directories, two ledger records), each refits
 ```bash
 qts run --store data/store --start 2006-01-01                # phase 1 on a ParquetStore
 qts run --store data/store --start 2006-01-01 --ml --config configs/real.yaml
-qts run --store data/store --start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8   # large (Sharadar) store
+qts run --store data/store --start 2000-01-01 --max-rank 1500   # large (Sharadar) store
 qts run --yfinance AAPL MSFT NVDA JPM XOM --start 2015-01-01  # plumbing only
 ```
 
 `--store` assembles `MarketData` with `ParquetStore(path).as_market_data(start, end)`; `--yfinance` downloads with `qts.data.loaders.yfinance_to_market_data` (default start 2015-01-01). Both then call `qts.data.universe.survivorship_check`, which warns when no ticker's prices end before the last date. yfinance data always triggers it: it has no delisted companies, so **never report a Sharpe from it**. `scripts/run_real.py` is a thin wrapper with the same flags.
 
 **Pre-filtering a large store.** `as_market_data` pivots every stored dataset into date × ticker panels; a full Sharadar store (8–10k names alive, ~20k over the history, ~7,000 dates) does not fit a laptop that way. `--max-names N` and `--min-mcap-ever USD` first read only the long `market_cap` table (through DuckDB, never pivoted) and keep the ids whose **peak** market cap in `[start, end]` is at least the threshold, then the `N` largest by that peak (`ParquetStore.tickers_by_market_cap`); only those ids are loaded, through the reader's ticker push-down. A name's peak is used so that a company that was large at any time in the window is loaded for its whole history, delisted names included. This is a loading convenience, not a universe rule: `build_universe_mask` still applies the point-in-time price, ADV, size-quantile and `top_n_by_mcap` screens on top, so set `--max-names` comfortably above `universe.top_n_by_mcap` (3,000 for the default 1,000-name universe) and keep `--min-mcap-ever` below the smallest cap that could ever enter it. The command prints how many ids survived the pre-filter and the loaded shape.
+
+**The prefilter must cover the universe (2026-11-14).** The peak-cap prefilter above picks names by how big they *became* over the whole window, so it can leave out names the point-in-time universe picks on a date — a name in the top 1,000 in 2005 that never grew enough to rank among the 3,000 largest peaks is not loaded at all — and the bottom-size cut, a quantile of the loaded cross-section, then moves into the top 1,000. On the Sharadar store `--max-names 3000` loaded the whole screened top 1,000 on only 23.7% of dates (worst date 82%) and was short of names on 1,080 dates; it also made the universe depend on the window's end, so a sealed re-run traded a different universe on the same dates (`docs/notes/prefilter_lookahead_2026-11-14.md`). Use **`--max-rank K`** instead: it loads every id that ranked ≤ K by market cap among the names passing the universe's price / ADV screens on at least one date of the window (`ParquetStore.tickers_by_screened_rank`), which covers a top-N universe by construction when K ≥ N / (1 − `exclude_bottom_size_quantile`) — 1,250 for the baseline; **1,500** leaves a margin (about 5,300–5,600 ids, ~7.5–8 GB before the fits). Every store load (`qts run`, signal tests, sweeps, capacity, risk calibration, the diagnostics loader, the API's store jobs, paper books) goes through a **load-coverage guard** (`qts/research/coverage.py`): `--max-rank` is checked without reading the store; a peak-cap prefilter is measured with DuckDB over the window actually loaded (a minute or two) and refused unless the store's screened top N is fully loaded on ≥ 99% of dates and enough names are loaded on every date. `qts run --allow-partial-coverage` loads anyway; the run's ledger record carries `load_coverage` either way. `scripts/check_load_coverage.py` prints the measurement for any prefilter and window. `$QTS_LOAD_COVERAGE=warn|off` relaxes the guard (the test suite runs with `off`).
 
 ### `qts config dump` and `qts config validate`
 
@@ -224,7 +226,7 @@ Never delete or edit `runs/trial_ledger.jsonl`. It is the input to the deflated 
 
 ## Research tools
 
-Added 2026-11-13 (`qts/research/`, implementation note `docs/notes/research_tools_2026-11-13.md`, statistics in handbook 10 §15). Every command below is a thin layer over a library function that returns a dataclass with a JSON-serialisable `to_dict()`; the JSON each writes is what the API serves. Runtimes are estimates for the owner's Mac (36 GB) on the reference load (`--start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8`), scaled from the last full run (about 50 minutes with the fits rebuilt, 25 minutes of backtest).
+Added 2026-11-13 (`qts/research/`, implementation note `docs/notes/research_tools_2026-11-13.md`, statistics in handbook 10 §15). Every command below is a thin layer over a library function that returns a dataclass with a JSON-serialisable `to_dict()`; the JSON each writes is what the API serves. Runtimes are estimates for the owner's Mac (36 GB) on the reference load (`--start 2000-01-01 --max-rank 1500`; the runs before 2026-11-14 used `--max-names 3000 --min-mcap-ever 3e8`, which misses universe names — see "The prefilter must cover the universe" above), scaled from the last full run (about 50 minutes with the fits rebuilt, 25 minutes of backtest).
 
 ### The holdout seal: `qts run` under `research/seal.yaml`
 
@@ -233,7 +235,7 @@ Added 2026-11-13 (`qts/research/`, implementation note `docs/notes/research_tool
 ```bash
 # the pre-seal benchmark: the frozen baseline once under the seal (about 45 min: the fits are
 # rebuilt once on the sealed data, then reused by every command below)
-qts run --store data/store --start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8 \
+qts run --store data/store --start 2000-01-01 --max-rank 1500 \
     --config configs/baseline.yaml --ml --cache -v 2>&1 | tee runs/baseline_sealed.log
 qts seal status                                   # the seal, every unseal, runs under the seal
 qts run … --unseal "final check of candidate X before paper trading"   # once per configuration
@@ -254,7 +256,7 @@ qts check midcap --store data/store --start 2000-01-01 --cache -v 2>&1 | tee run
 
 ```bash
 qts signal list                                    # the 26 v1 + v2 features and custom signals
-qts signal test high_52w --store data/store --start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8
+qts signal test high_52w --store data/store --start 2000-01-01 --max-rank 1500
 qts signal test strev_21 --horizons 5,20,60 … --json runs/strev.json
 qts signal test my_signal --signal-module research/my_signals.py …
 ```
@@ -287,7 +289,7 @@ A disabled feature is dropped before preprocessing: neither the composite nor th
 
 ```bash
 qts sweep --config configs/baseline.yaml --param portfolio.trade_aversion=0.5,1,2 \
-    --store data/store --start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8 --dry-run
+    --store data/store --start 2000-01-01 --max-rank 1500 --dry-run
 qts sweep … --param portfolio.trade_aversion=0.5,1,2 --param portfolio.hold_aversion=0.5,1 --grid --yes
 qts sweep … --param alpha.horizon_days=20,40 --param alpha.embargo_days=20,40 --zip
 ```
@@ -297,7 +299,7 @@ The dry run prints the members and the trial impact (family $N_{\text{eff}}$ bef
 ### `qts capacity`
 
 ```bash
-qts capacity --store data/store --start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8 \
+qts capacity --store data/store --start 2000-01-01 --max-rank 1500 \
     --navs 5e6,5e7,2.5e8,1e9 -v 2>&1 | tee runs/capacity.log
 ```
 
@@ -306,7 +308,7 @@ One cached fit, then one backtest per NAV (about 22 min each on the sealed histo
 ### `qts risk calibrate`
 
 ```bash
-qts risk calibrate --store data/store --start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8 \
+qts risk calibrate --store data/store --start 2000-01-01 --max-rank 1500 \
     --nu 0,0.05,0.25,1 -v 2>&1 | tee runs/risk_calibrate.log
 ```
 
@@ -545,7 +547,7 @@ A run can show a clean signal (rank IC with a Newey-West t above 5, positive in 
 
 ```bash
 python scripts/attribute_run.py --store data/store --start 2000-01-01 \
-    --max-names 3000 --min-mcap-ever 3e8 --cache --ml \
+    --max-rank 1500 --cache --ml \
     --set alpha.horizon_days=60 --run runs/<run_id>
 python scripts/attribute_run.py --synthetic      # builds a 250-day run in a temp dir
 ```
@@ -743,8 +745,8 @@ qts data sharadar derive --store data/store              # rebuild delisting_rea
 
 ```bash
 qts data sharadar derive-earnings --store data/store     # build earnings_dates / earnings_fundamentals
-python scripts/diagnose_signal.py --store data/store --start 2000-01-01 --max-names 3000 \
-    --min-mcap-ever 3e8 --set alpha.feature_set=v2 --coverage-only
+python scripts/diagnose_signal.py --store data/store --start 2000-01-01 --max-rank 1500 \
+    --set alpha.feature_set=v2 --coverage-only
 ```
 
 `alpha.feature_set=v2` (→ see **Alpha model › Feature set 2**) reads two derived tables. `derive-earnings` builds them from the stored `sharadar_sf1`, `sharadar_events` and `corporate_actions` without downloading anything, and prints: announcements by source (8-K event or filing-date fallback) and year, the frequency of every `EVENTS` code (to confirm that `22` is the earnings code), and how many split ratios the prices confirm. Two things it may ask for, both from the bulk folder: `qts data sharadar sync --tables EVENTS --from-files DIR` when the store has no `EVENTS` table (it then uses filing dates), and `qts data sharadar sync --tables SF1 --from-files DIR` when the stored SF1 predates the `ncfo` field (needed by `accruals`). `sync` rebuilds both tables at the end of every run. The second command prints the share of eligible names with a value per feature and year; it builds the features but fits nothing, so it takes minutes, not the run's hour. A `v2` run on a store without the tables stops before any fit with the command to run.
@@ -760,11 +762,11 @@ SEP, DAILY and SF1 are exported with `lastupdated.gte=<since>` (cached as `<YYYY
 ### 6. Run
 
 ```bash
-qts run --store data/store --start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8 --cache -v
-qts run --store data/store --start 2006-01-01 --max-names 3000 --ml --config configs/real.yaml
+qts run --store data/store --start 2000-01-01 --max-rank 1500 --cache -v
+qts run --store data/store --start 2006-01-01 --max-rank 1500 --ml --config configs/real.yaml
 ```
 
-`--max-names` / `--min-mcap-ever` keep the load within laptop memory (→ see **`qts run`: real data** above); the universe rules then pick the 1,000 names the strategy actually trades. Before trusting a result, check that `survivorship_check` did not warn, that `md.delisting_dates` and `md.close_raw` are present (they are, from this loader), and that the two parameters calibrated on synthetic data have been re-estimated (→ see **Recalibrating ν and b**).
+`--max-rank` (or the older `--max-names` / `--min-mcap-ever`, refused unless it covers the universe) keeps the load within laptop memory (→ see **`qts run`: real data** above); the universe rules then pick the 1,000 names the strategy actually trades. Before trusting a result, check that `survivorship_check` did not warn, that `md.delisting_dates` and `md.close_raw` are present (they are, from this loader), and that the two parameters calibrated on synthetic data have been re-estimated (→ see **Recalibrating ν and b**).
 
 ### Expected runtime and disk
 

@@ -63,6 +63,7 @@ def add_data_args(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--end")
     ap.add_argument("--max-names", type=int)
     ap.add_argument("--min-mcap-ever", type=float)
+    ap.add_argument("--max-rank", type=int, help="screened-rank store prefilter, as `qts run --max-rank`")
     ap.add_argument("--cache", action="store_true")
     ap.add_argument("--runs-root", default="runs")
     ap.add_argument("--config")
@@ -92,7 +93,7 @@ def load_config(a: argparse.Namespace) -> SystemConfig:
     return cfg
 
 
-def load_market(a: argparse.Namespace, with_earnings: bool = False):
+def load_market(a: argparse.Namespace, with_earnings: bool = False, cfg: SystemConfig | None = None):
     """``MarketData`` from ``--store`` (with the peak-market-cap prefilter, under the
     research holdout seal) or ``--synthetic`` (``with_earnings``: also the synthetic earnings tables, which
     ``alpha.feature_set=v2`` reads); ``None`` when neither was given."""
@@ -110,6 +111,7 @@ def load_market(a: argparse.Namespace, with_earnings: bool = False):
             StoreSpec.from_args(a),
             hash_cache_dir=f"{getattr(a, 'runs_root', 'runs')}/_cache/market_hash",
             log=print,
+            universe=cfg,
         )
         return load.md
     return None
@@ -182,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
 
     cfg = load_config(a)
-    md = load_market(a, with_earnings=cfg.alpha.feature_set == "v2")
+    md = load_market(a, with_earnings=cfg.alpha.feature_set == "v2", cfg=cfg)
     if md is None:
         print("give --store or --synthetic", file=sys.stderr)
         return 2

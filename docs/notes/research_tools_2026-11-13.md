@@ -1,5 +1,7 @@
 # Research tools: mid-cap check, holdout seal, signal tests, feature toggles, sweeps, capacity, risk calibration (2026-11-13)
 
+> **Correction 2026-11-14.** The owner commands below use the peak-cap prefilter `--max-names 3000 --min-mcap-ever 3e8`, which misses universe names (look-ahead; `docs/notes/prefilter_lookahead_2026-11-14.md`) and is now refused by the load-coverage guard. Use `--max-rank 1500` instead; handbook 12 has the corrected commands.
+
 Owner decisions of 2026-11-13: (1) one out-of-sample check of the frozen baseline on mid
 caps; (2) seal the last three years for all new research; (3) researcher tools with
 honest trial accounting. This note records what was built, the design choices that were

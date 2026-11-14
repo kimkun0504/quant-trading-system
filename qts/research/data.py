@@ -234,6 +234,8 @@ class ResearchLoad:
     exempt: str = ""
     market_hash_full: str = ""
     spec: StoreSpec | None = None
+    #: :class:`qts.research.coverage.LoadCoverage` of the prefilter (``None``: not checked)
+    coverage: Any = None
 
     def context(self, phase: int, **kw: Any) -> Any:
         """The :class:`~qts.runs.context.RunContext` of a pipeline run on this load:
@@ -255,6 +257,11 @@ class ResearchLoad:
                 d["market_hash_full"] = self.market_hash_full
                 d["family"] = research_family(int(phase), self.market_hash_full)
         d.update(kw)
+        if self.coverage is not None:  # on the ledger record next to any caller extras
+            d["record_extra"] = {
+                "load_coverage": self.coverage.to_dict(),
+                **dict(d.get("record_extra") or {}),
+            }
         return RunContext(**d)
 
     def family_full(self, phase: int) -> str | None:
@@ -271,8 +278,15 @@ def load_research_market(
     exempt: str = "",
     hash_cache_dir: str | None = "runs/_cache/market_hash",
     log: Printer = _quiet,
+    universe: Any = None,
+    allow_partial_coverage: bool = False,
 ) -> ResearchLoad:
     """Load ``spec`` under the research seal (:mod:`qts.research.seal`).
+
+    Before anything is loaded, the prefilter is checked against ``universe`` (a
+    ``UniverseConfig`` / ``SystemConfig``; ``None`` = the default universe) over the
+    window actually loaded (:func:`qts.research.coverage.require_load_coverage`): an
+    incomplete load raises ``LoadCoverageError`` unless ``allow_partial_coverage``.
 
     With a seal in force (``seal="default"``: :func:`qts.research.seal.load_seal`;
     ``None``: no seal) and neither ``unseal`` nor ``exempt``: the prefilter runs over
@@ -282,21 +296,32 @@ def load_research_market(
     survived; the full-history market hash of the same flags is computed for the
     ledger family.  Otherwise the full history is loaded (``unsealed`` set when a seal
     is in force)."""
+    from qts.research.coverage import require_load_coverage
     from qts.research.seal import apply_seal, load_seal
 
+    if universe is not None and spec.max_rank is not None:
+        # the screened-rank prefilter ranks with the universe's own price / ADV screens
+        spec = spec.with_screens(getattr(universe, "universe", universe))
     s = load_seal() if seal == "default" else seal
+
+    def _covered(end: str | None) -> Any:
+        return require_load_coverage(spec, universe, end=end, allow_partial=allow_partial_coverage, log=log)
+
     if s is None:
-        return ResearchLoad(md=load_store_market(spec, log=log), spec=spec)
+        cov = _covered(spec.end)
+        return ResearchLoad(md=load_store_market(spec, log=log), spec=spec, coverage=cov)
     if unseal or exempt:
+        cov = _covered(spec.end)
         md = load_store_market(spec, log=log)
-        return ResearchLoad(md=md, seal=s, unsealed=True, exempt=exempt, spec=spec)
+        return ResearchLoad(md=md, seal=s, unsealed=True, exempt=exempt, spec=spec, coverage=cov)
     end = s.load_end_iso
     if spec.end is not None and pd.Timestamp(spec.end) < s.load_end:
         end = str(pd.Timestamp(spec.end).date())
     log(f"seal: holdout from {s.holdout_start_iso} sealed; loading data through {end} ({s.path})")
+    cov = _covered(end)
     md = apply_seal(load_store_market(spec, end=end, log=log), s)
     mh_full = full_history_market_hash(spec, cache_dir=hash_cache_dir, log=log)
-    return ResearchLoad(md=md, seal=s, sealed=True, market_hash_full=mh_full, spec=spec)
+    return ResearchLoad(md=md, seal=s, sealed=True, market_hash_full=mh_full, spec=spec, coverage=cov)
 
 
 #: Peak RSS of ``as_market_data`` + the universe mask, measured with

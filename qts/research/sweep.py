@@ -454,13 +454,27 @@ class _Loaded:
     md: MarketData
 
 
-def _load(plan: SweepPlan, log: Printer) -> _Loaded:
+def _widest_universe(plan: SweepPlan, members: list[SweepMember], config: Any = None) -> Any:
+    """The member configuration whose universe needs the most loaded names (one load
+    serves every member, so the load-coverage guard checks the widest)."""
+    from qts.core.config import SystemConfig
+    from qts.research.midcap import needed_loaded_names
+
+    base = config if config is not None else SystemConfig.from_yaml(resolve_repo_path(plan.base_config))
+    cfgs = [base.with_overrides(m.overrides) for m in members] or [base]
+    return max(cfgs, key=needed_loaded_names)
+
+
+def _load(plan: SweepPlan, log: Printer, universe: Any = None) -> _Loaded:
     from qts.research.data import load_research_market
 
     if plan.store is None:
         raise SweepError("this sweep has no store spec: pass md= to run_sweep_member")
     load = load_research_market(
-        StoreSpec.from_dict(plan.store), hash_cache_dir=f"{plan.runs_root}/_cache/market_hash", log=log
+        StoreSpec.from_dict(plan.store),
+        hash_cache_dir=f"{plan.runs_root}/_cache/market_hash",
+        log=log,
+        universe=universe,  # the load must cover the universe of every member it serves
     )
     return _Loaded(load=load, md=load.md)
 
@@ -499,9 +513,9 @@ def run_sweep_member(
         raise SweepError(
             f"base config hash {base.hash()} != the sweep's {plan.base_config_hash}: the base file changed"
         )
-    if loaded is None:
-        loaded = ResearchLoad(md=md) if md is not None else _load(plan, log).load
     cfg_m = base.with_overrides(m.overrides)
+    if loaded is None:
+        loaded = ResearchLoad(md=md) if md is not None else _load(plan, log, cfg_m).load
     cfg_run = pipeline_config(cfg_m, loaded.md, f"{runs_root}/_cache")
     phase = 2 if plan.use_ml else 1
     sr = StoreRun(load=loaded, phase=phase)
@@ -677,7 +691,11 @@ def run_sweep(
     create_sweep(plan)
     pending = [m for m in plan.members if not (m.status == "done" and m.run_dir and Path(m.run_dir).exists())]
     if pending:
-        loaded = ResearchLoad(md=md) if md is not None else _load(plan, log).load
+        loaded = (
+            ResearchLoad(md=md)
+            if md is not None
+            else _load(plan, log, _widest_universe(plan, pending, config)).load
+        )
         for m in pending:
             run_sweep_member(
                 plan, m.index, runs_root=plan.runs_root, ledger_path=ledger_path, config=config,

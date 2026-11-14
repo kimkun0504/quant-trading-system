@@ -148,6 +148,7 @@ def prepare_store_run(
     force: bool = False,
     hash_cache_dir: str | None = "runs/_cache/market_hash",
     log: Printer = _quiet,
+    allow_partial_coverage: bool = False,
 ) -> StoreRun:
     """Check an ``--unseal`` (refused without a reason, without a ledger, or when this
     configuration was unsealed before and ``force`` is off), then load under the seal
@@ -168,7 +169,15 @@ def prepare_store_run(
             prev = previous_unseals(ledger_path, cfg.hash(), phase)
             if prev and not force:
                 raise SealError(_refusal(prev))
-    load = load_research_market(spec, seal=seal, unseal=unseal, hash_cache_dir=hash_cache_dir, log=log)
+    load = load_research_market(
+        spec,
+        seal=seal,
+        unseal=unseal,
+        hash_cache_dir=hash_cache_dir,
+        log=log,
+        universe=cfg,
+        allow_partial_coverage=allow_partial_coverage,
+    )
     return StoreRun(
         load=load,
         phase=phase,
