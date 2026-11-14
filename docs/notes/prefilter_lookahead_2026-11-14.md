@@ -91,3 +91,36 @@ traded a different book on the same dates.
 3. The full-history numbers of the old reference run are not re-measured (that would
    unseal). The 2003-06 .. 2026-11 large-cap figures in earlier notes stay as recorded,
    with this caveat.
+
+## Result of the corrected sealed baseline (run `20261114T064935329466Z_6ec7fd65`, 2026-11-14)
+
+Same frozen configuration (`configs/baseline.yaml`, config hash `6ec7fd650490ce4e`), `--max-rank 1500`
+(5,336 ids; coverage OK by construction), data through 2023-11-08, 2003-06-05 .. 2023-11-07:
+
+| | old load, reference run (full history) | old load, sealed | **corrected, sealed** | mid caps (`--max-rank 2750`) |
+|---|---|---|---|---|
+| net Sharpe on 2003-06 .. 2023-11 | 0.65 | 0.47 | **0.54** | 0.74 |
+| net return / yr | 2.9 % | 2.1 % | **2.5 %** | 5.0 % |
+| correlation with the corrected run | 0.88 | 0.89 | 1 | 0.25 |
+| positive calendar years (of 21) | 14 | 13 | **14** | 16 |
+
+Corrected run in full:
+- net Sharpe 0.54 (gross 0.74), NW t 2.34, vol 4.5 %, max drawdown −16.9 %;
+- rank IC 0.023 (NW t 3.80), IC positive in 6/6 folds, net Sharpe by fold 0.61 / −0.51 / 0.27 / 1.51 / 0.81 / 0.77;
+- cost per side 4.7 bp, breakeven 31 bp, net Sharpe 0.45 at 2× cost.
+
+Gates: FAIL on the decile long-short t (2.62 < 3.0) only.
+
+DSR: the report card's 0.993 counts one trial (new family `pipeline_phase2:34d0b5de91a6`). With the nine
+earlier trials merged in (10 trials, Nyholt N_eff 6.3, expected maximum Sharpe 0.66), it restates to **0.29**.
+That figure comes from a dry run on a copy of the owner's ledger; the owner runs the merge and the restate.
+
+Reading:
+- The old load inflated the large-cap Sharpe on these dates by about 0.1 (0.65 against 0.54).
+- The corrected large-cap result is modest and, after the trial count, not statistically convincing on its own.
+- The stronger evidence remains the mid-cap confirmation (PASS on pre-registered criteria, clean load). The two
+  books stay weakly correlated (0.25).
+- An ex-post equal-risk mix of the two on the pre-seal dates would have had net Sharpe 0.81. That is hypothetical,
+  a new research choice to test under the seal as a counted trial.
+
+`research/seal.yaml` `inherit_family` now names `pipeline_phase2:34d0b5de91a6`.

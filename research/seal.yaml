@@ -17,5 +17,8 @@ sealed_at: 2026-11-13
 store_end: 2026-11-09
 # Trials that already saw the sealed history and are counted by every sealed run of
 # the same phase (the sealed panel's full-history family; qts seal status).
+# 2026-11-14: the corrected load (--max-rank 1500, docs/notes/prefilter_lookahead_2026-11-14.md) has its own
+# close panel and family; the owner merges the nine earlier trials into it
+# (qts ledger merge-families --into pipeline_phase2:34d0b5de91a6 pipeline_phase2:c1da477b63d2).
 inherit_family:
-  - pipeline_phase2:c1da477b63d2
+  - pipeline_phase2:34d0b5de91a6
