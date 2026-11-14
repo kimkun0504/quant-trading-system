@@ -1,0 +1,240 @@
+# Baseline (frozen 2026-11-13): the working model after nine real-data trials.
+# Default config + alpha.horizon_days=60, alpha.sample_weight_halflife_years=8, alpha.feature_set=v1.
+# Reference run: runs/20261113T023313333450Z_e4667d90 (net Sharpe 0.68, DSR 0.697 at 8 trials).
+# Do not edit: new research changes go through --set or a new config file.
+universe:
+  top_n_by_mcap: 1000
+  min_price: 5.0
+  min_adv_usd: 2000000.0
+  adv_window: 63
+  exclude_bottom_size_quantile: 0.2
+  refresh_days: 21
+  exit_after_n_fails: 3
+  refresh_anchor: month_start
+alpha:
+  horizon_days: 60
+  secondary_horizons:
+  - 5
+  - 60
+  winsor_pct: 0.01
+  industry_demean:
+  - value_bp
+  - value_ep
+  - quality_gpa
+  - investment_ag
+  theme_weights:
+    value: 1.0
+    momentum: 1.0
+    quality: 1.0
+    investment: 1.0
+    low_risk: 1.0
+    short_interest: 1.0
+  factor_momentum_lookback_months: 1
+  factor_momentum_max_tilt: 0.25
+  momentum_vol_target_annual: 0.12
+  momentum_vol_scalar_bounds:
+  - 0.5
+  - 1.5
+  momentum_vol_window: 63
+  momentum_crash_market_lookback_days: 504
+  ic_shrink: 0.5
+  default_ic: 0.03
+  ic_window: 756
+  ic_min_obs: 60
+  ic_prior_obs: 252
+  ic_floor_frac: 0.25
+  composite_weight: 0.5
+  neutralize_score: true
+  score_smoothing_halflife_days: 10.0
+  dynamic_weights: true
+  half_life_lookback_days: 504
+  model_seeds: 3
+  valid_days: 252
+  ensemble_weights:
+    lgbm: 0.45
+    mlp: 0.35
+    ridge: 0.2
+  lgbm:
+    n_estimators: 600
+    learning_rate: 0.03
+    num_leaves: 31
+    min_data_in_leaf: 200
+    feature_fraction: 0.7
+    bagging_fraction: 0.8
+    bagging_freq: 1
+    lambda_l2: 1.0
+    early_stopping_rounds: 100
+    refit_on_full: true
+    n_jobs: 4
+  mlp:
+    hidden:
+    - 64
+    - 32
+    alpha: 0.001
+    max_iter: 200
+    batch_size: 2048
+    learning_rate_init: 0.001
+    max_train_rows: 400000
+    n_iter_no_change: 10
+    valid_fraction: 0.1
+    refit_on_full: true
+  refit_frequency_days: 252
+  train_min_days: 756
+  embargo_days: null
+  sample_weight_halflife_years: 8.0
+  feature_set: v1
+  delisting_gap_days: 63
+risk:
+  vol_half_life: 84
+  corr_half_life: 504
+  vra_half_life: 42
+  newey_west_lags_vol: 5
+  newey_west_lags_corr: 2
+  specific_half_life: 84
+  specific_shrink_q: 0.1
+  min_history_days: 252
+  styles:
+  - beta
+  - size
+  - momentum
+  - value
+  - residual_vol
+  - liquidity
+  - short_term_reversal
+  - quality
+  - investment
+  - short_interest
+  alignment: true
+  alignment_nu_scale: 0.05
+  eigenfactor_adjust: true
+  n_eigen_sims: 200
+  eigen_inflation_a: 1.2
+  eigen_parabola_smoothing: false
+  statistical_companion: true
+  max_statistical_factors: 5
+  statistical_n_factors: null
+  statistical_window: 252
+  statistical_refit_every: 21
+  missing_factor_alarm_share: 0.1
+  exposure_dtype: float64
+  clean_returns: true
+  return_abs_cap_up: 3.0
+  return_abs_cap_down: -0.95
+  return_min_prev_price: 0.25
+  return_winsor_mad_k: 8.0
+  estimation_universe_eligible_only: true
+  max_reference_vol: 1.0
+  thin_industry_min_members: 5
+  thin_industry_prior_obs: 5.0
+  specific_var_floor_frac: 0.1
+  vra_z2_clip: 25.0
+  vra_min: 0.5
+  vra_max: 4.0
+  reference_vol_check_in_fit: true
+  style_raw_winsor_mad_k: 10.0
+  style_exposure_cap: 3.0
+  flat_return_tol: 1.0e-06
+  flat_run_min_days: 20
+  min_specific_obs: 60
+  structural_clip_pctl: 0.01
+  specific_var_cap_mult: 25.0
+  covariance_repair: true
+  factor_var_repair_mult: 100.0
+cost:
+  commission_per_share: 0.0035
+  commission_min_per_order: 0.35
+  commission_max_pct_value: 0.01
+  clearing_per_share: 0.0002
+  sec_fee_per_dollar_sold: 2.0600000000000003e-05
+  finra_taf_per_share_sold: 0.000195
+  finra_taf_max_per_trade: 9.79
+  cat_fee_per_share: 3.0e-06
+  auction_exchange_fee_per_share: 0.001
+  impact_b_continuous: 1.0
+  impact_b_auction: 0.3
+  auction_volume_share_default: 0.09
+  impact_exponent: 1.5
+  default_half_spread_bps: 2.0
+  default_borrow_fee_annual: 0.005
+  max_participation_adv: 0.05
+  htb_fee_cap_annual: 0.25
+  borrow_proxy_si_gc: 0.05
+  borrow_proxy_si_htb: 0.2
+  small_cap_borrow_multiplier: 2.0
+  small_cap_threshold_usd: 2000000000.0
+  delisting_return_acquisition: 0.0
+  delisting_return_performance: -0.3
+  delisting_return_voluntary: -0.1
+  delisting_return_unknown: -0.3
+  delisting_short_gain_haircut: 1.0
+  delisting_against_position: false
+  delisting_haircut: null
+  impact_persistence: true
+  tca_reversion_reference: next_close
+portfolio:
+  book: long_short
+  gross_leverage_max: 2.0
+  net_exposure_target: 0.0
+  net_exposure_band: 0.05
+  max_position_weight: 0.02
+  max_adv_participation: 0.05
+  participation_from_urgency: false
+  beta_neutral: true
+  industry_band: 0.03
+  style_band_sd: 0.1
+  risk_aversion_mode: target_vol
+  vol_target_is_cap: true
+  leverage_cap_raises_gamma: true
+  risk_aversion: 2.0
+  trade_aversion: 1.0
+  hold_aversion: 1.0
+  turnover_penalty: 0.0
+  target_vol_annual: 0.1
+  vol_target_scale_up: true
+  effective_holding_days_target: 50
+  solver: CLARABEL
+  beta_factor_name: beta
+  beta_band: 0.05
+  relax_participation_on_infeasible: false
+  exit_ineligible_days: 5
+  vol_target_mode: projection
+  vol_target_projection_cost_weight: 1.0
+  use_gp_shrink: false
+  neutralize_risk_only_styles: true
+  reuse_problem: false
+  rebalance_every_days: 5
+  min_trade_weight: 0.0005
+execution:
+  auction_max_pct_of_auction_volume: 0.02
+  algo_max_pct_adv: 0.05
+  loc_offset_bps: 3.0
+  urgency_half_life_days_threshold: 5.0
+  signal_lag_days: 1
+validation:
+  n_splits: 6
+  embargo_days: 20
+  min_fold_days: 20
+  cpcv_n_groups: 8
+  cpcv_k_test: 2
+  dsr_threshold: 0.95
+  pbo_threshold: 0.5
+  phase1_min_net_sharpe: 0.3
+  phase2_min_net_sharpe: 0.5
+  min_fold_pass_fraction: 0.6666666666666666
+  hurdle_t_stat: 3.0
+  max_failed_solve_frac: 0.02
+  max_exante_vol: 2.0
+  max_exante_vol_alert_frac: 0.005
+  required_gates:
+  - phase_sharpe
+  - suspect
+  - dsr
+trading_days_per_year: 252
+seed: 0
+pipeline_pbo_configs: []
+cache:
+  enabled: false
+  root: ''
+  stages:
+  - risk_fit
+  - alpha_fit
