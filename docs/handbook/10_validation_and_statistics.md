@@ -975,6 +975,67 @@ Two lessons. First, even with $N = 1$ the PSR against zero would be only 0.97: f
 - [AlgoXpert protocol (as cited in BUILD_PLAN §2.4, §8)](https://arxiv.org/pdf/2603.09219)
 - `docs/BUILD_PLAN.md` §2.4 (hurdle table), `docs/REVIEW_NOTES.md` items 1 and 10, `docs/audit/RESOLUTION.md`, `docs/audit/second_pass_alpha_data_validation.md` (findings 2–4, 11, 14–17), `docs/audit/second_pass_costs_backtest_api.md` (finding 1), `docs/notes/lag_investigation_2026-11-05.md`.
 
+## 15. The holdout seal, research families and the research tools
+
+<callout icon="💡" color="blue_bg">
+Every design choice of the baseline (`configs/baseline.yaml`) was made after seeing 2003-06..2026-11: there is no clean time holdout left in the data the research has looked at. From 2026-11-13 the last three years of the store are sealed for new research, the cross-section the baseline never traded (ranks 1001–2000) is used once as a confirmation, and every research tool counts its trials.
+</callout>
+
+### The seal
+
+**What it is.** `research/seal.yaml` (committed) sets `holdout_start: 2023-11-09`. Every research command that loads the store loads data only through the day before (`load_end` = 2023-11-08): `qts run --store`, the diagnostics scripts (`scripts/diagnose_signal.py` and every script that loads through it, `attribute_run.py`), `qts signal test`, `qts sweep`, `qts capacity`, `qts risk calibrate`. The file is outside `SystemConfig` on purpose: a strategy's config hash (its identity in the ledger) does not change when the seal is set, moved or lifted. `qts.research.seal.load_seal()` / `is_sealed(date)` read it (the file at `$QTS_SEAL_FILE`, or `<repo>/research/seal.yaml`; the test suite sets `QTS_SEAL_FILE=none` and turns it on per test).
+
+**How the cut works.** At load time, not afterwards: the peak-cap prefilter runs over `[start, load_end]`, every panel is read through `load_end`, and `MarketData.slice_until` cuts the dated reference tables (earnings dates and filings by their own date column; delisting dates and reasons after the cut are unknown). `apply_seal` then asserts that nothing dated on or after `holdout_start` survived. Because the sealed data simply ends, a label whose forward window would reach into the holdout is missing, exactly as at the end of any panel; no feature, label, risk input or trailing statistic can read a sealed price. `tests/test_seal.py::test_sealed_load_and_fit_never_see_the_holdout` rewrites every stored value on or after the seal (prices, volume, market cap, fundamentals: multiplied by random factors between 0.2 and 5) and checks that the sealed load, its data hash, the prefilter's ids, the risk model's factor and specific returns and covariance, the alpha model's features, labels and traded score are all **bit for bit** unchanged.
+
+**Exempt.** `qts demo` (synthetic data), `qts ledger rekey --store` (only hashes the data, to reproduce earlier runs' hashes), `qts check midcap` (the pre-registered one-shot confirmation below; its record says `seal_exempt: midcap`), and paper trading (`qts.paper`: forward data; it calls `is_sealed`).
+
+**Unsealing.** `qts run … --unseal "<reason>"` loads the full history. Before the run starts — looking is what uses the holdout, whether or not the run finishes — it appends an `unseal` record to the ledger (`kind: "unseal"`: config hash, family, phase, reason, time, command) and prints a banner. The run's ledger record, `summary.json` and manifest carry `unsealed: true`. A second unseal of the same configuration (same phase; the stored config re-hashed with the current `SystemConfig`, so a field added since does not hide an earlier unseal) is refused unless `--force`; the forced run is flagged `holdout_already_used: true` on its record and in `summary.json`, and the report card opens with `!!! HOLDOUT ALREADY USED`. An unseal without a reason or without a ledger is refused. `qts seal status` lists the seal, every unseal, and the research runs made under the seal by family and kind.
+
+**Why once per configuration and not once overall.** The holdout loses its value for a configuration the moment that configuration's result on it is seen, and for every configuration chosen *after* seeing it. Once per configuration is the mechanical part; the second part is discipline: unseal only the final candidate, and say in the reason which decision it serves.
+
+### The families a run is counted in
+
+| Family | Written by | Counts towards |
+|---|---|---|
+| `pipeline_phase{p}:{market_hash[:12]}` | `qts run` (sealed: the *full-history* hash of the same load, see below), `qts sweep` members | the DSR of every pipeline run in it |
+| `confirm:midcap:{market_hash[:12]}` | `qts check midcap` | itself only (one trial) |
+| `signal:{market_hash[:12]}` | `qts signal test` | the Holm adjustment of signal tests |
+| `capacity:{…}`, `calibration:{…}` | `qts capacity`, `qts risk calibrate` (`kind: capacity / calibration`) | nothing |
+
+**The sealed family.** A sealed panel is a different close panel, so its market hash would start a new family with $N = 1$ — although the nine earlier trials saw this very history (and more). A sealed run therefore logs into the family of the *full-history* panel of the same load flags: `qts.research.data.full_history_market_hash` hashes `prices_close` over `[start, end]` for the prefilter's full-window ids, exactly what an unsealed `qts run` with the same flags hashes (cached under `runs/_cache/market_hash`, keyed on the flags and the stored files' sizes and times). Both hashes are on the record: `market_hash` (the sealed panel, what the run saw) and `market_hash_full` (the family). With the reference flags (`--start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8`) and an unchanged store this is `pipeline_phase2:c1da477b63d2`, which `seal.yaml` lists under `inherit_family`; a sealed run that resolves to another family of the same phase prints a warning naming the `merge-families` command (another store snapshot or other load flags: pool them by hand if they are one search, as after any data refresh).
+
+**Reference re-runs.** The baseline must be re-run under the seal once, to give new research a comparable pre-seal benchmark. It is the same strategy (same config hash) on a subset of the history its trial already saw: no new selection happened, so it must not raise $N$. A sealed run whose configuration is already a counted trial of its family (same phase; config hash compared after re-hashing the stored config) is logged with `reference: true` (and `reference_of`) and excluded from $N$, $V$ and Nyholt's correlation matrix; `qts ledger list` shows it under "not counted". Any *other* configuration under the seal is an ordinary trial of the inherited family. A `reference` record carries a different de-duplication key, so it can never collapse into, and hide, the trial it repeats.
+
+**Record kinds.** `kind` (absent = `"trial"`) and `reference` decide what the DSR sees: every query feeding $N$ and $V$ (`TrialLedger.records`, `n_trials`, `trial_sharpes_*`, `returns_matrix`, `dsr_inputs`) uses ordinary trials only; `records(include_non_trials=True)` and `raw_records()` see everything.
+
+### The mid-cap confirmation
+
+Pre-registration: `docs/notes/midcap_check_2026-11-13.md` (written before the run; the text above its "Result" heading is hashed onto the ledger record). The frozen baseline with `universe.rank_offset = 1000` — per date the names ranked 1001–2000 by market cap among those passing the price, ADV and size screens, which no earlier run traded — run once over the full history in its own family. **PASS** = C1 net Sharpe > 0 and Newey–West $t \ge 2$ of the daily net return, C2 traded-score IC > 0 in at least 4 of 6 purged folds, C3 fold net Sharpe > 0 in at least 4 of 6; **INCONCLUSIVE** when a validity condition fails (universe, load coverage, engine health). Why $t \ge 2$ and not 3 or a DSR: it is one pre-registered replication of a strategy selected elsewhere, not a search; the multiple-testing penalty belongs to the discovery (Hou, Xue & Zhang 2020 use $|t| \ge 1.96$ for replications). A second run of the same configuration is refused (`--force` flags it as not out-of-sample).
+
+### Signal tests: the statistics
+
+`qts signal test <feature>` (implementation: `qts.research.signals`, module docstring):
+
+* **IC by horizon.** The signal is processed exactly as the model processes the feature (winsorise, industry-demean where the model does, rank-Gaussian; missing stays missing) and multiplied by the composite's sign. On every 5th out-of-sample date $s$ (the baseline's rebalance cadence) the Spearman correlation with the risk-only residualised label of horizon $h$ (from the execution close $s + L$). Consecutive sampled labels overlap for about $\lceil h / 5 \rceil$ observations, so the Newey–West bandwidth is floored there: $L_{NW} = \max(\lceil h/5 \rceil, \lfloor 4 (T/100)^{2/9} \rfloor)$ (§4, "HAC lag = horizon overlap").
+* **The primary horizon** is the baseline's (60 days), fixed before the test; the others are reported, never selected from. Its NW $t$ is the test's statistic.
+* **Harvey–Liu–Zhu hurdle.** $|t| \ge 3.0$ (`validation.hurdle_t_stat`): the threshold Harvey, Liu & Zhu (2016) derive for a new factor given the number already tried in the literature.
+* **Holm.** Every test is a trial in the family `signal:<hash>`; the report applies Holm's (1979) step-down adjustment to the two-sided normal $p$ of the primary $t$ of *every* test logged in the family so far: sort $p_{(1)} \le \dots \le p_{(m)}$, $p^{adj}_{(k)} = \max_{j \le k} \min(1, (m - j + 1)\, p_{(j)})$. Holm controls the family-wise error rate under any dependence between the tests, which matters because signals are correlated. The adjusted $p$ of an early test rises as later tests are logged; the JSON keeps the whole table.
+* **Incremental value.** Per date, the OLS residual of the signal on an intercept, the risk model's industries, market and risk-only styles and the baseline's traded score, and its IC (same NW rule); the share of the signal's variance the residual keeps; and the paper book of $0.75\,z(\text{traded}) + 0.25\,z(\text{signal})$ against the traded score's book, with the NW $t$ of the daily return difference. The weight 0.25 is fixed in the code: optimising it would be one more search.
+* **Paper books** are rank-weighted, projected off the same exposures (industry and risk-style neutral), gross 2, held 5 days from the execution close, charged the baseline run's cost per side on their turnover. They are a scale-free read of the signal's tradability, not a backtest: no optimizer, no ADV caps, no impact.
+
+### Sweeps and PBO
+
+`qts sweep` expands a grid (at most 12 members by default), prints the family's trial count before and after and the haircut on the current best trial's DSR from $E[\max SR]$ at $N_{\text{eff}}$ and $N_{\text{eff}} + k$ (new members counted as independent: the conservative direction), then runs the members as ordinary trials and computes PBO by CSCV (§10) on their daily net returns with $S = 10$ blocks ($\binom{10}{5} = 252$ splits; about two years per block on the pre-seal history, long enough to hold a regime). A PBO above `validation.pbo_threshold` (0.5) says the in-sample best member is more likely than not to be below the median out of sample: the grid's winner is noise. Members whose configuration is already a counted trial are reference re-runs.
+
+### In the code
+`qts/research/seal.py`, `data.py` (`load_research_market`, `full_history_market_hash`), `store_run.py` (`prepare_store_run`, `reference_trial`), `midcap.py`, `signals.py`, `sweep.py`, `capacity.py`, `risk_calibration.py`; `qts/runs/context.py` (`RunContext`: the seal fields on the record, summary and manifest, the banner); `qts/validation/ledger.py` (`record_kind`, `is_trial_record`, `normalized_config_hash`). Tests: `tests/test_seal.py`, `test_midcap.py`, `test_signals.py`, `test_sweep.py`, `test_capacity.py`, `test_ledger_kinds.py`.
+
+### References
+- Harvey, C., Liu, Y. & Zhu, H. (2016). "… and the Cross-Section of Expected Returns." *Review of Financial Studies* 29(1).
+- Holm, S. (1979). "A Simple Sequentially Rejective Multiple Test Procedure." *Scandinavian Journal of Statistics* 6(2).
+- Hou, K., Xue, C. & Zhang, L. (2020). "Replicating Anomalies." *Review of Financial Studies* 33(5).
+- Bailey, D., Borwein, J., López de Prado, M. & Zhu, Q. (2017). "The Probability of Backtest Overfitting." *Journal of Computational Finance* 20(4).
+
 ## Roadmap
 - A drawdown gate (catastrophic-drawdown immediate fail, per the AlgoXpert protocol) and robustness splits (EW vs VW, size terciles, VIX regimes) in `hurdles.py`.
 - Use CPCV paths (`ValidationConfig.cpcv_*`) to report a distribution of out-of-sample Sharpe for configuration choices, not only the six walk-forward blocks.

@@ -7,6 +7,7 @@ momentum crash control, capped factor-momentum tilt).
 from __future__ import annotations
 
 import copy
+import functools
 import hashlib
 import json
 import math
@@ -98,6 +99,29 @@ def _field_default(f: Any) -> Any:
     return MISSING
 
 
+@functools.cache
+def _float_fields(cls: type) -> frozenset[str]:
+    """Fields of ``cls`` annotated ``float`` or ``float | None``."""
+    import typing
+
+    hints = typing.get_type_hints(cls)
+    out: set[str] = set()
+    for name, tp in hints.items():
+        args = set(typing.get_args(tp))
+        if tp is float or (args and args <= {float, type(None)} and float in args):
+            out.add(name)
+    return frozenset(out)
+
+
+def _coerce(cls: type, name: str, val: Any) -> Any:
+    """An ``int`` given for a ``float`` field becomes a ``float`` (``--set x=1`` and
+    ``x: 1`` in YAML mean 1.0): the config hash -- the ledger's identity of a strategy --
+    must not depend on how a number was typed."""
+    if isinstance(val, int) and not isinstance(val, bool) and name in _float_fields(cls):
+        return float(val)
+    return val
+
+
 def _from_dict(cls: type[_C], d: Any, path: str) -> _C:
     if not isinstance(d, Mapping):
         raise TypeError(f"{path}: expected a mapping, got {type(d).__name__}")
@@ -115,7 +139,7 @@ def _from_dict(cls: type[_C], d: Any, path: str) -> _C:
         elif isinstance(default, tuple) and isinstance(val, list):
             kwargs[name] = tuple(cast(list[Any], val))
         else:
-            kwargs[name] = copy.deepcopy(val)
+            kwargs[name] = _coerce(cls, name, copy.deepcopy(val))
     return cls(**kwargs)
 
 
@@ -123,24 +147,62 @@ def apply_overrides(cfg: _C, overrides: Mapping[str, Any]) -> _C:
     """Copy of ``cfg`` with dotted-path overrides applied, e.g.
     ``{"portfolio.risk_aversion": 5, "alpha.lgbm.num_leaves": 15, "seed": 1}``.
     Unknown paths raise ``KeyError`` (same strictness as ``from_dict``).  Configs
-    are frozen: each override rebuilds the sections on its path with
-    ``dataclasses.replace`` (so a section's ``__post_init__`` validation runs
-    on the new values); the input is never modified."""
+    are frozen: the overrides of one section are applied *together* with one
+    ``dataclasses.replace`` per section on their paths (so a section's
+    ``__post_init__`` validation runs once, on all of its new values: fields that are
+    validated against each other -- ``alpha.disabled_features`` against
+    ``alpha.feature_set`` -- can be given in any order); a later override of the same
+    key wins.  The input is never modified."""
     out = copy.deepcopy(cfg)
+    tree: dict[str, Any] = {}
     for key, val in overrides.items():
-        out = _replace_path(out, key.split("."), val, key)
+        parts = key.split(".")
+        node: dict[str, Any] = tree
+        for i, p in enumerate(parts[:-1]):
+            nxt: Any = node.get(p)
+            if not isinstance(nxt, _Overrides):
+                if p in node:  # a section and one of its fields both overridden: section first
+                    out = _apply_tree(out, {p: node.pop(p)}, "")
+                nxt = node[p] = _Overrides(".".join(parts[: i + 1]))
+            node = nxt
+        node[parts[-1]] = _Leaf(val, key)
+    return _apply_tree(out, tree, "")
+
+
+class _Overrides(dict[str, Any]):
+    """A section's pending overrides (name -> _Leaf | _Overrides)."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__()
+        self.path = path
+
+
+@dataclass(frozen=True)
+class _Leaf:
+    value: Any
+    key: str
+
+
+def _apply_tree(obj: Any, tree: Mapping[str, Any], prefix: str) -> Any:
+    changes: dict[str, Any] = {}
+    for name, sub in tree.items():
+        if isinstance(sub, _Overrides):
+            if not hasattr(obj, name):
+                key = next(iter(_leaf_keys(sub)), f"{prefix}{name}")
+                raise KeyError(f"unknown config section {name!r} in {key!r}")
+            changes[name] = _apply_tree(getattr(obj, name), sub, f"{prefix}{name}.")
+        else:
+            if not isinstance(obj, _ConfigBase) or name not in {f.name for f in fields(cast(Any, obj))}:
+                raise KeyError(f"unknown config field {sub.key!r}")
+            changes[name] = _coerce(type(obj), name, sub.value)
+    return replace(cast(Any, obj), **changes) if changes else obj
+
+
+def _leaf_keys(node: Mapping[str, Any]) -> list[str]:
+    out: list[str] = []
+    for v in node.values():
+        out.extend(_leaf_keys(v) if isinstance(v, _Overrides) else [v.key])
     return out
-
-
-def _replace_path(obj: Any, parts: list[str], val: Any, key: str) -> Any:
-    if len(parts) > 1:
-        if not hasattr(obj, parts[0]):
-            raise KeyError(f"unknown config section {parts[0]!r} in {key!r}")
-        child = _replace_path(getattr(obj, parts[0]), parts[1:], val, key)
-        return replace(obj, **{parts[0]: child})
-    if not isinstance(obj, _ConfigBase) or parts[0] not in {f.name for f in fields(cast(Any, obj))}:
-        raise KeyError(f"unknown config field {key!r}")
-    return replace(cast(Any, obj), **{parts[0]: val})
 
 
 # ============================================================================ sections

@@ -7,7 +7,10 @@ Commands
                      ``--signal-lag N``, ``--compare-lag`` prints lag-0 vs lag-1 Sharpe)
 ``run``              real data: ``--store PATH`` (ParquetStore) or ``--yfinance T1 T2 ...``;
                      ``--min-mcap-ever USD`` / ``--max-names N`` pre-filter a large store by
-                     peak market cap before anything is pivoted
+                     peak market cap before anything is pivoted; a store run loads data
+                     through the day before the research seal's holdout
+                     (``research/seal.yaml``) unless ``--unseal "<reason>"`` (once per
+                     configuration, logged; ``--force`` for a second time, flagged)
 ``--set KEY=VALUE``  (``demo`` and ``run``, repeatable) dotted-path config override applied
                      after ``--config`` is loaded, e.g. ``--set portfolio.risk_aversion=5
                      --set portfolio.risk_aversion_mode=target_vol``; VALUE is parsed as a
@@ -165,7 +168,12 @@ def _add_pipeline_args(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("-v", "--verbose", action="store_true")
 
 
-def _run_pipeline(md, cfg, a: argparse.Namespace, out=None) -> int:
+def _run_pipeline(md, cfg, a: argparse.Namespace, out=None, store_run=None) -> int:
+    """Build and run the pipeline.  ``store_run`` (:class:`qts.research.store_run.StoreRun`):
+    a store load under the research seal; its run context (seal fields, family,
+    reference flag, the unseal event) is fixed here, after the final config is known."""
+    import dataclasses
+
     from qts.pipeline import ResearchPipeline, format_result
 
     out = out if out is not None else sys.stdout  # resolved at call time (capture-friendly)
@@ -193,6 +201,15 @@ def _run_pipeline(md, cfg, a: argparse.Namespace, out=None) -> int:
             store = getattr(a, "store", None) or "<store>"
             print(f"error: {str(e).replace('<store>', store)}", file=sys.stderr)
             return 2
+    if store_run is not None:
+        from qts.research.seal import SealError
+
+        try:  # writes the unseal event (if any) before the run starts
+            pipe.context = store_run.finalize(cfg, a.ledger or None, log=lambda m: print(m, file=out))
+        except SealError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+    base_context = pipe.context
     if not a.compare_lag:
         res = pipe.run(md, progress=a.verbose, max_days=a.max_days)
         print(format_result(res), file=out)
@@ -214,6 +231,12 @@ def _run_pipeline(md, cfg, a: argparse.Namespace, out=None) -> int:
     results = {}
     for lag in sorted({0, 1, base}):
         pipe.cfg = cfg.with_overrides({"execution.signal_lag_days": lag})
+        # a sealed reference re-run is a reference only for the configuration it matched
+        pipe.context = (
+            base_context
+            if lag == base or not base_context.reference
+            else dataclasses.replace(base_context, reference=False, record_extra={})
+        )
         results[lag] = pipe.run(md, progress=a.verbose, max_days=a.max_days)
     pipe.cfg = cfg
     print(format_result(results[base]), file=out)
@@ -368,10 +391,29 @@ def cmd_run(a: argparse.Namespace) -> int:
     except ConfigOverrideError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
+    store_run = None
     if a.store:
-        md = _load_store(a)
-        if md is None:
+        # research seal (qts.research.seal): data through the day before the holdout,
+        # unless --unseal "<reason>" (once per configuration, logged)
+        from qts.research.data import StoreLoadError, StoreSpec
+        from qts.research.seal import SealError
+        from qts.research.store_run import prepare_store_run
+
+        try:
+            store_run = prepare_store_run(
+                StoreSpec.from_args(a),
+                cfg,
+                use_ml=a.ml,
+                ledger_path=a.ledger or None,
+                unseal_reason=a.unseal,
+                force=a.force,
+                hash_cache_dir=f"{a.runs_root}/_cache/market_hash",
+                log=print,
+            )
+        except (SealError, StoreLoadError, ValueError) as e:
+            print(f"error: {e}", file=sys.stderr)
             return 2
+        md = store_run.md
     elif a.yfinance:
         from qts.data.loaders import yfinance_to_market_data
 
@@ -382,7 +424,7 @@ def cmd_run(a: argparse.Namespace) -> int:
     from qts.data.universe import survivorship_check
 
     survivorship_check(md)
-    return _run_pipeline(md, cfg, a)
+    return _run_pipeline(md, cfg, a, store_run=store_run)
 
 
 def _earnings_codes() -> tuple[str, ...]:
@@ -705,6 +747,18 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--yfinance", nargs="*", default=None, help="tickers for a yfinance prototype run")
     _add_store_args(r)
     _add_pipeline_args(r)
+    r.add_argument(
+        "--unseal",
+        metavar="REASON",
+        default=None,
+        help="load the full history including the sealed holdout (research/seal.yaml): once per "
+        "configuration, logged in the trial ledger with REASON; a second unseal needs --force",
+    )
+    r.add_argument(
+        "--force",
+        action="store_true",
+        help="with --unseal: unseal a configuration whose holdout was already used (flagged)",
+    )
     r.set_defaults(func=cmd_run)
 
     dt = sub.add_parser("data", help="load vendor data into a ParquetStore")
@@ -844,6 +898,12 @@ def build_parser() -> argparse.ArgumentParser:
     from qts.research.cli import register_research_commands
 
     register_research_commands(sub)
+
+    # paper trading book (init, run, status, history, orders, ack, replay, schedule,
+    # reconcile): its own module, qts/paper/cli.py (handbook 14)
+    from qts.paper.cli import add_paper_parser
+
+    add_paper_parser(sub)
     return ap
 
 

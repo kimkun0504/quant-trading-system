@@ -1,0 +1,21 @@
+# Research holdout seal (qts.research.seal; handbook 10 "The holdout seal").
+# Every research command that loads the store (qts run --store, the diagnostics
+# scripts, qts signal test, qts sweep, qts capacity, qts risk calibrate) loads data
+# only through the day before holdout_start.  Exempt: qts demo (synthetic), qts check
+# midcap (pre-registered one-shot confirmation), paper trading (forward data).
+# Lifting it for one configuration: qts run ... --unseal "<reason>" (once per config,
+# logged in the trial ledger).  Not part of SystemConfig: config hashes do not change.
+# Do not edit holdout_start: moving the seal re-opens data that new research has not
+# seen; any change is a decision to log in docs/WORK_PLAN.md.
+holdout_start: 2023-11-09
+reason: >-
+  Every design choice of the baseline (configs/baseline.yaml, 9 real-data trials) was
+  made after seeing 2003-06..2026-11, so there is no clean time holdout.  The last
+  three years of the store are sealed for all new research from 2026-11-13 on.
+sealed_by: repository owner (decision of 2026-11-13)
+sealed_at: 2026-11-13
+store_end: 2026-11-09
+# Trials that already saw the sealed history and are counted by every sealed run of
+# the same phase (the sealed panel's full-history family; qts seal status).
+inherit_family:
+  - pipeline_phase2:c1da477b63d2

@@ -93,23 +93,25 @@ def load_config(a: argparse.Namespace) -> SystemConfig:
 
 
 def load_market(a: argparse.Namespace, with_earnings: bool = False):
-    """``MarketData`` from ``--store`` (with the peak-market-cap prefilter) or
-    ``--synthetic`` (``with_earnings``: also the synthetic earnings tables, which
+    """``MarketData`` from ``--store`` (with the peak-market-cap prefilter, under the
+    research holdout seal) or ``--synthetic`` (``with_earnings``: also the synthetic earnings tables, which
     ``alpha.feature_set=v2`` reads); ``None`` when neither was given."""
     if a.synthetic:
         from qts.data.synthetic import SyntheticSpec, generate
 
         return generate(SyntheticSpec(n_stocks=120, n_days=900, seed=0, with_earnings=with_earnings))
     if a.store:
-        from qts.data.store import ParquetStore
+        # the research seal (qts.research.seal; research/seal.yaml): diagnostics load data
+        # through the day before the holdout, exactly as a sealed `qts run` with the same
+        # flags (same panels, same stage-cache key)
+        from qts.research.data import StoreSpec, load_research_market
 
-        store = ParquetStore(a.store)
-        tickers = None
-        if a.min_mcap_ever is not None or a.max_names is not None:
-            tickers = store.tickers_by_market_cap(
-                a.start, a.end, min_mcap_ever=a.min_mcap_ever, max_names=a.max_names
-            )
-        return store.as_market_data(universe_tickers=tickers, start=a.start, end=a.end)
+        load = load_research_market(
+            StoreSpec.from_args(a),
+            hash_cache_dir=f"{getattr(a, 'runs_root', 'runs')}/_cache/market_hash",
+            log=print,
+        )
+        return load.md
     return None
 
 

@@ -85,7 +85,7 @@ cd ui && npm ci && cd ..
 
 ## The `qts` command
 
-`qts` has six subcommands (`demo`, `run`, `data`, `config`, `runs`, `ledger`). Every pipeline command (`demo`, `run`) fits the full pipeline, backtests, evaluates, prints the report card, writes a run directory under `--runs-root` (default `runs`) and appends a trial to the ledger at `--ledger` (default `runs/trial_ledger.jsonl`).
+`qts` has six core subcommands (`demo`, `run`, `data`, `config`, `runs`, `ledger`) and seven research commands (`check`, `seal`, `signal`, `features`, `sweep`, `capacity`, `risk`; → see **Research tools** below). Every pipeline command (`demo`, `run`) fits the full pipeline, backtests, evaluates, prints the report card, writes a run directory under `--runs-root` (default `runs`) and appends a trial to the ledger at `--ledger` (default `runs/trial_ledger.jsonl`).
 
 ### Flags shared by `demo` and `run`
 
@@ -221,6 +221,96 @@ The trial family is keyed on the price history (`market_hash`, the adjusted-clos
 <callout icon="⚠️" color="yellow_bg">
 Never delete or edit `runs/trial_ledger.jsonl`. It is the input to the deflated Sharpe ratio: every variant you tried raises the bar for the best one. Deleting failed trials makes every later result look more significant than it is. Back it up, and share one ledger across everyone who runs experiments on the same data.
 </callout>
+
+## Research tools
+
+Added 2026-11-13 (`qts/research/`, implementation note `docs/notes/research_tools_2026-11-13.md`, statistics in handbook 10 §15). Every command below is a thin layer over a library function that returns a dataclass with a JSON-serialisable `to_dict()`; the JSON each writes is what the API serves. Runtimes are estimates for the owner's Mac (36 GB) on the reference load (`--start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8`), scaled from the last full run (about 50 minutes with the fits rebuilt, 25 minutes of backtest).
+
+### The holdout seal: `qts run` under `research/seal.yaml`
+
+`qts run --store …` now loads data through 2023-11-08 (the day before `holdout_start`); the first lines say so (`seal: holdout from 2023-11-09 sealed; loading data through 2023-11-08`) and the report card opens with `seal: data through …`. The run logs into the full-history family of the same load flags (computing that hash once reads the close panel, about a minute; cached afterwards). `summary.json` and `manifest.json` gain `holdout_start`, `sealed_end`, `unsealed`, `holdout_already_used`, `reference`, `record_kind`, `seal_exempt`, `market_hash_full`.
+
+```bash
+# the pre-seal benchmark: the frozen baseline once under the seal (about 45 min: the fits are
+# rebuilt once on the sealed data, then reused by every command below)
+qts run --store data/store --start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8 \
+    --config configs/baseline.yaml --ml --cache -v 2>&1 | tee runs/baseline_sealed.log
+qts seal status                                   # the seal, every unseal, runs under the seal
+qts run … --unseal "final check of candidate X before paper trading"   # once per configuration
+```
+
+The benchmark run is the baseline's configuration, already a counted trial of `pipeline_phase2:c1da477b63d2`, so it prints `logged as a reference` and does not raise the trial count. A second `--unseal` of a configuration exits 2; `--unseal … --force` runs and is flagged `HOLDOUT ALREADY USED`.
+
+### `qts check midcap`: the one-shot mid-cap confirmation
+
+```bash
+qts check midcap --store data/store --start 2000-01-01 --dry-run          # 1-3 min: coverage + plan
+qts check midcap --store data/store --start 2000-01-01 --cache -v 2>&1 | tee runs/midcap_check.log
+```
+
+`configs/baseline.yaml` + `universe.rank_offset=1000` (ranks 1001–2000), full history (exempt from the seal), ML on, NAV $5M, its own family `confirm:midcap:<hash>`. The default prefilter is `--max-rank 2750`: every id that ranks ≤ 2,750 by market cap among the names passing the price / ADV screens on some date (a peak-cap cut can miss mid caps that never grew). The dry run prints the number of ids, an estimate of the load's memory and the coverage check; the real run refuses when coverage fails, when the pre-registration note is missing, without a ledger, and when the check of this configuration already ran (`--force` runs it again, flagged). It prints the report card, the pre-registered criteria with PASS/FAIL, the verdict and a side-by-side with the large-cap reference run (`--reference-run DIR` if it is not in `runs/`), and writes `runs/_checks/midcap_<run_id>.json` and `midcap_check.json` in the run directory. Expected 1–1.5 h (more ids to load and fit than the large-cap run; same backtest length).
+
+### `qts signal list` / `qts signal test`
+
+```bash
+qts signal list                                    # the 26 v1 + v2 features and custom signals
+qts signal test high_52w --store data/store --start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8
+qts signal test strev_21 --horizons 5,20,60 … --json runs/strev.json
+qts signal test my_signal --signal-module research/my_signals.py …
+```
+
+Uses the baseline's cached fit (same load flags as the benchmark run above: the first line after the load reads `stage cache {'risk_fit': 'hit', 'alpha_fit': 'hit'}`; otherwise the note says the fit was rebuilt). Prints coverage by year, rank IC by horizon with NW $t$ (and the incremental IC), IC by year and by fold, the decay curve and half-life, the neutral paper book (gross / net Sharpe at the baseline run's cost per side, turnover, breakeven), the correlations with the baseline's features, the baseline + 0.25 × signal book, and the trial line (family `signal:<hash>`, primary $t$, $p$, Holm-adjusted $p$, HLZ $|t| \ge 3$). Writes `runs/_signals/<id>.json`. `--no-log` does not count the test (use only for debugging). Expected 5–10 min, most of it the store load; the labels at the extra horizons take a minute or two.
+
+**Adding a signal.** A signal is a function `fn(md: MarketData) -> DataFrame` (date × ticker, point in time: trailing windows only). Register it in `qts/research/custom_signals.py` or in your own file passed with `--signal-module`:
+
+```python
+from qts.research.signals import register_signal
+
+@register_signal("my_signal", description="what it measures", sign=1.0, industry_demean=False)
+def my_signal(md):
+    return -(md.close / md.close.shift(5) - 1.0)
+```
+
+To *trade* a signal it must become a feature of a new feature set (`qts/alpha/features.py`), which is a new trial.
+
+### `qts features list` and `alpha.disabled_features`
+
+```bash
+qts features list                                   # v1: name, theme, sign, role, set, on/off, description
+qts features list --set alpha.feature_set=v2 --set alpha.disabled_features=sue,accruals
+qts run … --config configs/baseline.yaml --set alpha.disabled_features=mom_change,strev_21
+```
+
+A disabled feature is dropped before preprocessing: neither the composite nor the ML sleeve sees it. A composite theme averages its remaining members; a theme with none left is omitted and the theme weights renormalise over the others. The label residualiser's warm-up exposures, the score neutralisation and the residual-vol scaling still use the raw panels, so a toggle never changes the label or the sizing rule. Unknown names are a config error that lists the valid ones; every toggle setting is a config change, so a logged trial. The alpha fit misses the cache once (the risk fit does not).
+
+### `qts sweep`
+
+```bash
+qts sweep --config configs/baseline.yaml --param portfolio.trade_aversion=0.5,1,2 \
+    --store data/store --start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8 --dry-run
+qts sweep … --param portfolio.trade_aversion=0.5,1,2 --param portfolio.hold_aversion=0.5,1 --grid --yes
+qts sweep … --param alpha.horizon_days=20,40 --param alpha.embargo_days=20,40 --zip
+```
+
+The dry run prints the members and the trial impact (family $N_{\text{eff}}$ before / after, $E[\max SR]$, the current best trial's DSR before / after). Without `--yes` it asks before running (and refuses when not on a terminal). Members run one after another under the seal with the stage cache; a sweep over `portfolio` / `cost` / `execution` fields fits once, so each member costs one backtest (about 22 min on the sealed history); a sweep over `alpha` fields refits the alpha model per member (plus about 20 min each). The manifest `runs/_sweeps/<id>.json` is updated after every member; running the same command again resumes. At the end it prints the table metric vs parameter and PBO (CSCV, 10 blocks). `--max-runs` (default 12) caps the size; `--max-days` shortens every member's backtest (the PBO then has fewer days).
+
+### `qts capacity`
+
+```bash
+qts capacity --store data/store --start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8 \
+    --navs 5e6,5e7,2.5e8,1e9 -v 2>&1 | tee runs/capacity.log
+```
+
+One cached fit, then one backtest per NAV (about 22 min each on the sealed history, so about 1.5 h for four; `--max-days 1260` reads the last five years in about a quarter of that). Prints NAV vs gross / net Sharpe, net CAGR, cost per side (and its impact / spread / fee split: per-order minimum commissions make fees per side fall with NAV, impact rises), turnover, the share of traded names at the ADV participation cap, breakeven cost, and the NAV at which net Sharpe falls below half its $5M value (log-NAV interpolation). Logged with `kind: capacity` in `capacity:<hash>` (not trials). Writes `runs/_capacity/<id>.json`.
+
+### `qts risk calibrate`
+
+```bash
+qts risk calibrate --store data/store --start 2000-01-01 --max-names 3000 --min-mcap-ever 3e8 \
+    --nu 0,0.05,0.25,1 -v 2>&1 | tee runs/risk_calibrate.log
+```
+
+One cached fit, one backtest per `risk.alignment_nu_scale` (the alignment variance is read by the risk model's `as_of` only, so nothing is refitted): realised / ex-ante vol and the bias statistic of the baseline book by year and overall, ex-ante and realised vol, net Sharpe, and the recommended value (closest whole-period ratio to 1 in log terms; ties to the smaller $\nu$). A report only: adopting the value is one logged trial (`qts run … --set risk.alignment_nu_scale=<value>`). Same runtime as the capacity curve. Writes `runs/_risk/<id>.json`. `scripts/calibrate_alignment_nu.py` stays the synthetic calibration.
 
 ## What a run leaves behind
 
@@ -850,6 +940,30 @@ Never regenerate the golden file to make an unexplained diff go away. And never 
 <callout icon="⚠️" color="yellow_bg">
 CI covers the `qts` package only. The API tests (`make api-test`) and the UI checks (`npm run typecheck`, `lint`, `test`, `test:e2e`) are not in the workflow, so run them locally after touching `api/` or `ui/`.
 </callout>
+
+## Paper trading the baseline
+
+The paper book (`qts paper ...`, `qts/paper/`) runs `configs/baseline.yaml` once a trading day on the owner's Mac: refresh, fill yesterday's MOC orders at yesterday's close with the cost model, mark, decide the next close's orders with the frozen models, compare with the reference backtest under pre-registered stop rules (→ see **Paper trading** for the timeline, the serving path, the files and the rules; the rules note is `docs/notes/paper_trading_rules_2026-11-13.md`). The book lives under `paper/<name>/` (git-ignored).
+
+**1. Backfill check** (a pipeline test on recent history, not evidence; `replica` sizing reproduces the batch simulator):
+
+```bash
+qts paper init --name check --config configs/baseline.yaml --nav 5e6 --start 2026-10-01 --sizing replica
+qts paper run --name check --until 2026-11-09 --no-sync      # first run trains every fold (~25 min), then ~6-9 min per rebalance day
+qts paper reconcile --name check                             # max weight diff, NAV diff, return correlation vs the batch
+```
+
+**2. The live book.** `--start` is the first job day: its close produces the first orders, which fill at the next session's close. To have the first fills on Monday 2026-11-16, start on Friday 2026-11-13 and run the first job after Friday's prices are published (Saturday or Monday 07:05 ET):
+
+```bash
+qts paper init --name baseline --config configs/baseline.yaml --nav 5e6 --start 2026-11-13 \
+    --reference-run runs/20261113T023313333450Z_e4667d90
+qts paper run --name baseline            # sync, freshness check, first fit (~25 min the first time)
+qts paper status --name baseline
+qts paper orders --name baseline         # the orders for the next close
+```
+
+**3. Every trading day** (scheduled at 07:05 ET; `qts paper schedule --print` prints the launchd plist and a crontab line, nothing is installed): `qts paper run --name baseline`. A missed day is caught up on the next run; a run before the vendor has published the expected session exits with code 3 and changes nothing. After a STOP: read `qts paper status`, decide, `qts paper ack --name baseline --note "..."`. After a crash: `qts paper replay --name baseline`.
 
 ## Troubleshooting
 

@@ -354,6 +354,8 @@ def seal_status(ledger_path: str | None, seal: Seal | None = None) -> SealStatus
 
     s = seal if seal is not None else load_seal()
     st = SealStatus(seal=s, ledger_path=ledger_path)
+    if s is not None:
+        st.inherited = dict.fromkeys(s.inherit_family)
     if s is None or not ledger_path or not Path(ledger_path).exists():
         return st
     led = TrialLedger(ledger_path)

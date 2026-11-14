@@ -437,6 +437,7 @@ The pages are written to be read in order the first time, but each stands on its
 | 11 | Concepts glossary | One paragraph per term, alphabetical | Any |
 | 12 | Operating guide | Install, the `qts` command, the run registry and trial ledger, reading the report card, the Workbench UI, loading real data, recalibration, tests and CI, troubleshooting | 2 |
 | 13 | Audit history & known limitations | What the independent audits found and what is still open | 2, 10 |
+| 14 | Paper trading | The daily paper book of the frozen baseline: timeline, serving the frozen models, prices and corporate events, pre-registered stop rules, scheduling on macOS, what it is and is not evidence of | 8, 9, 12 |
 
 Three suggested paths:
 

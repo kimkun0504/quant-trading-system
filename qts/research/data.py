@@ -249,7 +249,9 @@ class ResearchLoad:
             d["unsealed"] = bool(self.unsealed)
             d["seal_exempt"] = self.exempt
             if self.sealed:
-                d["sealed_end"] = str(self.md.dates[-1].date()) if len(self.md.dates) else self.seal.load_end_iso
+                d["sealed_end"] = (
+                    str(self.md.dates[-1].date()) if len(self.md.dates) else self.seal.load_end_iso
+                )
                 d["market_hash_full"] = self.market_hash_full
                 d["family"] = research_family(int(phase), self.market_hash_full)
         d.update(kw)

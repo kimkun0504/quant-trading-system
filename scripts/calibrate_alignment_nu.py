@@ -18,9 +18,12 @@ at ``nu_scale=1`` before the window).
     python scripts/calibrate_alignment_nu.py --seeds 0 --n-dates 120
     python scripts/calibrate_alignment_nu.py --json runs/nu_cal.json
 
-On real data replace ``generate(...)`` by the loaded ``MarketData`` (same code
-path from ``ResearchPipeline.fit`` on) and use the median calibrated value as
-``RiskConfig.alignment_nu_scale``.
+On real data use ``qts risk calibrate`` (``qts.research.risk_calibration``): it runs
+under the research seal on the baseline's *cached* fits (the backtest is re-run per
+``nu``, nothing is refitted) and reports realised / ex-ante vol of the baseline book by
+year with a recommended value.  This script stays the synthetic calibration of the
+default (it fits the composite-only pipeline per seed and bisects on ``nu`` with
+``qts.risk.calibrate_alignment_nu``).  Adopting a new value is one logged trial.
 """
 
 from __future__ import annotations

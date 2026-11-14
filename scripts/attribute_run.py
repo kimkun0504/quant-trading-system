@@ -1412,6 +1412,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"WARNING: config hash {cfg.hash()} differs from the run's {run.config_hash}: the scores and the\n"
                 "risk model below may not be the ones the run traded (pass the run's --config / --set flags)"
             )
+        if run.summary.get("unsealed") and not run.summary.get("seal_exempt"):
+            print(
+                "WARNING: this run was unsealed (full history incl. the holdout); the store is loaded "
+                "under the seal here, so the attribution covers the dates before the holdout only"
+            )
         s = run.summary.get("backtest", run.summary)
         print(
             f"run {run_dir.name}: {len(run.dec)} days {run.dec[0].date()}..{run.dec[-1].date()}; summary Sharpe gross "

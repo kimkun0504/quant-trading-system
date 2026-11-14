@@ -31,6 +31,11 @@ def pytest_addoption(parser):
 
 
 def pytest_configure(config):
+    # the research holdout seal (research/seal.yaml) is off in tests unless a test turns
+    # it on (monkeypatch.setenv("QTS_SEAL_FILE", path)): synthetic stores end in 2020-2023
+    import os
+
+    os.environ["QTS_SEAL_FILE"] = "none"
     # registered here because pyproject.toml is owned elsewhere
     config.addinivalue_line(
         "markers",

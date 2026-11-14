@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 /runs/
 /data/
+/paper/
 .DS_Store
 .env
 .env.*

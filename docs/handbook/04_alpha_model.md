@@ -372,6 +372,16 @@ The second command prints, per year, the share of eligible names with a value fo
 - *Synthetic market:* share counts there never change, so `net_issuance` is constant and has no IC on synthetic data.
 - *Stage cache:* `feature_set` is part of the alpha-fit key; the risk-fit key does not depend on it, nor on the earnings tables.
 
+### Feature toggles (`alpha.disabled_features`) and the feature registry
+
+**What it is.** A tuple of feature names of the active feature set (`qts features list` shows them, with theme, sign, role and a one-line description from `qts/alpha/feature_registry.py::FEATURE_DESCRIPTIONS`) that are dropped from the model inputs: `AlphaModel.fit` removes them from the raw panels *before* `FeatureBuilder.process`, so neither the rank composite nor the ML sleeve ever sees them.
+
+**What changes and what does not.** The composite averages the remaining members of each theme (`theme_scores_long` divides by the number of members present), a theme with no member left is omitted and the theme weights renormalise over the others (the composite's denominator counts only the themes present). The ML sleeve trains on the remaining columns. Unchanged by design: the label (its warm-up exposures use the raw risk-only proxies), the score neutralisation, the Grinold residual vol (`idio_vol_252`) and every other feature's processed values (`tests/test_feature_toggles.py` checks each). So disabling `beta_252` removes it as a predictor; the book stays beta-neutral.
+
+**Rules.** Names are validated against `qts.core.roles.FEATURE_SET_NAMES[feature_set]` (an unknown name is a config error listing the valid ones; disabling every feature is refused); the tuple is stored sorted and de-duplicated, so the order it was typed in does not change the config hash; a comma-separated string works on the command line (`--set alpha.disabled_features=mom_change,strev_21`); overrides of one section are applied together, so `--set alpha.disabled_features=sue --set alpha.feature_set=v2` works in either order. The default `()` is bitwise the earlier model (golden file unchanged). Each setting is a configuration, therefore a logged trial; the alpha fit's cache key changes, the risk fit's does not.
+
+**For the API / UI.** The field's dataclass metadata carries `choices` (feature set -> list of names), `choices_key = "feature_set"` and `multiple = True`: a form should render a multi-select whose options follow the current `alpha.feature_set`. The API's config-schema generator currently skips tuple fields; it needs a branch for this metadata (not done here: `api/` belongs to the UI phase).
+
 ### Why this feature set
 
 The plan specifies ~60–100 Tier-1 features; the default set (`v1`) has 18, a deliberate thin slice (review item 11): every extra feature is another ledger trial and leakage surface, and each must pass the incremental-IC gate (§9). Excluded on evidence (plan §2.2): post-earnings drift (t = 1.43 ex-microcaps, 2001–2024), retail order imbalance (no longer predictive 2016–2021), and anything whose profits concentrate in microcaps (Avramov, Cheng & Metzker).
