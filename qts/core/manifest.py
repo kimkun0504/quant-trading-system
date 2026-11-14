@@ -121,8 +121,16 @@ def hash_market(md: MarketData, n_chars: int = 16) -> str:
     (including a vendor back-adjustment after a data refresh) is a different
     hash: see handbook 10 for ``qts ledger merge-families``.
     """
+    return hash_close(md.close, n_chars)
+
+
+def hash_close(close: pd.DataFrame, n_chars: int = 16) -> str:
+    """:func:`hash_market` of a bare adjusted-close panel (the same bytes: a market
+    hash can be computed from ``prices_close`` alone, without assembling a
+    ``MarketData``; ``qts.research.data`` uses it for the full-history identity of a
+    sealed load)."""
     h = hashlib.sha256(b"qts-market-v1")
-    _hash_frame(h, "close", md.close)
+    _hash_frame(h, "close", close)
     return h.hexdigest()[:n_chars]
 
 
@@ -261,6 +269,13 @@ class RunManifest:
     market_hash: str = ""
     #: trial-ledger family the run was logged under (``""`` for older runs)
     ledger_family: str = ""
+    #: holdout seal (``qts.research.seal``): last date loaded when the seal was applied
+    #: (``""``: full history -- no seal in force, an unsealed run or a run written
+    #: before the seal existed), whether a seal was in force but the full history was
+    #: loaded (``--unseal`` / the exempt mid-cap check), and the seal's first sealed date
+    sealed_end: str = ""
+    unsealed: bool = False
+    holdout_start: str = ""
 
     @classmethod
     def create(
@@ -274,6 +289,9 @@ class RunManifest:
         notes: str = "",
         market_hash: str = "",
         ledger_family: str = "",
+        sealed_end: str = "",
+        unsealed: bool = False,
+        holdout_start: str = "",
     ) -> RunManifest:
         now = datetime.now(timezone.utc)
         g = git_info()
@@ -293,6 +311,9 @@ class RunManifest:
             notes=notes,
             market_hash=market_hash,
             ledger_family=ledger_family,
+            sealed_end=str(sealed_end or ""),
+            unsealed=bool(unsealed),
+            holdout_start=str(holdout_start or ""),
         )
 
     def to_dict(self) -> dict[str, Any]:

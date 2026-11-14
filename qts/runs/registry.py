@@ -99,8 +99,20 @@ def run_summary_dict(res: PipelineResult) -> dict[str, Any]:
             "git_sha": res.git_sha,
             "timings": res.timings,
             "notes": res.notes,
+            # holdout seal / ledger record kind (qts.runs.context.RunContext.summary_fields):
+            # sealed_end, unsealed, holdout_start, holdout_already_used, reference, ...
+            **_context_fields(res),
         }
     )
+
+
+def _context_fields(res: PipelineResult) -> dict[str, Any]:
+    ctx = getattr(res, "context", None)
+    if ctx is None:
+        from qts.runs.context import RunContext
+
+        ctx = RunContext()
+    return ctx.summary_fields()
 
 
 def _write_parquet(obj: pd.DataFrame | pd.Series, path: Path, name: str = "value") -> None:
@@ -112,12 +124,16 @@ def _write_parquet(obj: pd.DataFrame | pd.Series, path: Path, name: str = "value
 def save_run(res: PipelineResult, cfg: SystemConfig, runs_root: str | Path) -> Path:
     """Write ``res`` to ``<runs_root>/<run_id>/`` (layout: module docstring)."""
     if res.manifest is None:
+        ctx = getattr(res, "context", None)
         res.manifest = RunManifest.create(
             config_hash=res.config_hash,
             data_hash=res.data_hash,
             timings=res.timings,
             market_hash=res.market_hash,
             ledger_family=res.ledger_family,
+            sealed_end=(ctx.sealed_end if ctx is not None else None) or "",
+            unsealed=bool(ctx.unsealed) if ctx is not None else False,
+            holdout_start=(ctx.holdout_start if ctx is not None else None) or "",
         )
     run_dir = Path(runs_root) / res.manifest.run_id
     run_dir.mkdir(parents=True, exist_ok=False)

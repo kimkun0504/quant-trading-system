@@ -79,6 +79,25 @@ family on the record (``family_rekeyed_from`` / ``family_merged_from``), write a
 backup ``<path>.bak-<UTC timestamp>`` first and are idempotent.  They can only
 *pool* trials: nothing here deletes a trial or splits a family.
 
+Record kinds and reference re-runs (2026-11-13)
+-----------------------------------------------
+Not every line is an alpha trial.  A record may carry ``kind`` (absent =
+``"trial"``): ``"unseal"`` (an event: someone loaded the sealed holdout,
+``qts.research.seal``), ``"capacity"`` (the same strategy re-run at another NAV),
+``"calibration"`` (a risk-forecast diagnostic).  A trial may carry
+``reference: true``: a re-run of a strategy that is already counted, on a subset of
+the same history (the baseline re-run under the seal).  Every query that feeds the
+DSR (:meth:`TrialLedger.n_trials`, :meth:`TrialLedger.records`,
+:meth:`TrialLedger.trial_sharpes_daily`, :meth:`TrialLedger.returns_matrix`,
+:meth:`TrialLedger.dsr_inputs`, ...) sees trials only (:func:`is_trial_record`);
+``records(include_non_trials=True)`` and :meth:`TrialLedger.raw_records` see
+everything.  A non-default kind / ``reference`` is part of the de-duplication key,
+so such a record never replaces a trial in the de-duplicated view.
+:func:`normalized_config_hash` re-hashes a record's stored config with the current
+``SystemConfig`` (new fields at their defaults): the strategy identity used by the
+once-only rules (unseal, the mid-cap confirmation) and by the ``reference`` check,
+stable when a config field is added.
+
 Family names and the one-off migration
 --------------------------------------
 Between 2026-11-05 and 2026-11-12 ``ResearchPipeline`` logged under
@@ -188,6 +207,65 @@ def _is_clean_code_version(code_version: str) -> bool:
     return bool(cv) and cv != "unknown" and not cv.endswith("+dirty")
 
 
+#: Record fields :meth:`TrialLedger.log` sets itself (``extra`` may not use them).
+_RESERVED_KEYS = frozenset(
+    {
+        "ts",
+        "name",
+        "family",
+        "config",
+        "config_hash",
+        "metrics",
+        "data_hash",
+        "code_version",
+        "notes",
+        "market_hash",
+        "run_spec",
+        "returns_monthly",
+        "dedup_key",
+        "n_reruns",
+        "ts_first",
+        "family_rekeyed_from",
+        "family_merged_from",
+        "family_migrated_from",
+    }
+)
+
+
+def record_kind(rec: dict) -> str:
+    """``"trial"`` (also for every record written before kinds existed), or the
+    record's ``kind`` (``"unseal"``, ``"capacity"``, ``"calibration"``, ...)."""
+    return str(rec.get("kind") or "trial")
+
+
+def is_trial_record(rec: dict) -> bool:
+    """True when the record counts towards a family's DSR inputs: an ordinary trial
+    that is not a ``reference`` re-run of an already counted strategy."""
+    return record_kind(rec) == "trial" and not bool(rec.get("reference"))
+
+
+def normalized_config_hash(rec: dict) -> str | None:
+    """The record's configuration hashed by the *current* ``SystemConfig``: the stored
+    ``config`` dict rebuilt with ``SystemConfig.from_dict`` (fields added since the
+    record was written take their defaults) and hashed.  Two records of the same
+    strategy written before and after a config field was added therefore share it,
+    although their stored ``config_hash`` differs.  ``None`` when the stored dict no
+    longer parses (a removed field) or there is none."""
+    from qts.core.config import SystemConfig
+
+    cfg = rec.get("config")
+    if not isinstance(cfg, dict) or not cfg:
+        return None
+    try:
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            return SystemConfig.from_dict(cfg).hash()
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 class TrialLedger:
     def __init__(self, path: str):
         self.path = str(path)
@@ -219,9 +297,19 @@ class TrialLedger:
                     out.append(json.loads(line))
         return out
 
-    def _records(self) -> list[dict]:
+    def _records(self, include_non_trials: bool = False) -> list[dict]:
         """Trials: raw records with identical re-runs (same ``dedup_key``) collapsed
-        into the latest record at the first one's position (``n_reruns``, ``ts_first``)."""
+        into the latest record at the first one's position (``n_reruns``, ``ts_first``).
+
+        Records that are not alpha trials are left out unless ``include_non_trials``
+        (module docstring "Record kinds"): ``kind`` other than ``"trial"`` (unseal
+        events, capacity and calibration runs) and ``reference`` re-runs."""
+        out = self._dedup_records()
+        if include_non_trials:
+            return out
+        return [r for r in out if is_trial_record(r)]
+
+    def _dedup_records(self) -> list[dict]:
         out: list[dict] = []
         where: dict[str, int] = {}
         for r in self.raw_records():
@@ -263,12 +351,19 @@ class TrialLedger:
         replace_identical: bool = False,
         run_spec: dict | None = None,
         market_hash: str = "",
+        extra: dict | None = None,
     ) -> dict:
         """Append one trial.
 
         ``market_hash`` (:func:`qts.core.manifest.hash_market`): the price history
         the trial was run on; stored next to ``data_hash`` so that
         :meth:`rekey_families` can map the one to the other.
+
+        ``extra``: further top-level fields (e.g. ``kind``, ``reference``, the seal
+        fields of :class:`qts.runs.context.RunContext`); a key that collides with a
+        standard field raises ``ValueError``.  A non-default ``kind`` or
+        ``reference`` enters the de-duplication key, so such a record can never
+        collapse into (and hide) an ordinary trial with the same identity.
 
         With ``replace_identical=True`` (and a non-empty ``data_hash`` and a clean
         ``code_version``) the record carries a ``dedup_key`` so that an identical
@@ -305,8 +400,17 @@ class TrialLedger:
         if returns_monthly is not None and len(returns_monthly):
             rm = pd.Series(returns_monthly, dtype=float)
             rec["returns_monthly"] = {str(pd.Timestamp(k).strftime("%Y-%m")): float(v) for k, v in rm.items()}
+        ex = _jsonable_nested(extra or {})
+        clash = sorted(set(ex) & (set(rec) | _RESERVED_KEYS))
+        if clash:
+            raise ValueError(f"TrialLedger.log: extra fields {clash} collide with standard record fields")
+        rec.update(ex)
         if replace_identical and data_hash and _is_clean_code_version(code_version):
-            rec["dedup_key"] = self.dedup_key(name, str(config_hash), data_hash, code_version, run_spec)
+            spec_key = run_spec
+            kind = str(ex.get("kind") or "trial")
+            if kind != "trial" or ex.get("reference"):
+                spec_key = {**(run_spec or {}), "_record_kind": kind, "_reference": bool(ex.get("reference"))}
+            rec["dedup_key"] = self.dedup_key(name, str(config_hash), data_hash, code_version, spec_key)
         line = (json.dumps(rec, default=str) + "\n").encode()
         with self._locked(exclusive=True):
             fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
@@ -445,14 +549,15 @@ class TrialLedger:
     def families(self) -> list[dict]:
         """One summary row per family, in order of first appearance: ``family``,
         ``n_records`` (raw lines), ``n_trials`` (identical re-runs collapsed: the
-        DSR's raw count), ``n_effective`` (Nyholt), ``data_hashes`` /
+        DSR's raw count), ``n_not_counted`` (reference re-runs and non-trial records:
+        unseal events, capacity / calibration runs), ``n_effective`` (Nyholt), ``data_hashes`` /
         ``market_hashes`` (distinct, in order), ``first_ts`` / ``last_ts``,
         ``best_sharpe`` (annual; ``None`` without a Sharpe)."""
         raw: dict[str, int] = {}
         for r in self.raw_records():
             raw[str(r.get("family"))] = raw.get(str(r.get("family")), 0) + 1
         rows: dict[str, dict[str, Any]] = {}
-        for r in self._records():
+        for r in self._records(include_non_trials=True):
             fam = str(r.get("family"))
             row = rows.setdefault(
                 fam,
@@ -460,6 +565,7 @@ class TrialLedger:
                     "family": fam,
                     "n_records": raw.get(fam, 0),
                     "n_trials": 0,
+                    "n_not_counted": 0,
                     "data_hashes": [],
                     "market_hashes": [],
                     "first_ts": r.get("ts_first", r.get("ts")),
@@ -467,6 +573,11 @@ class TrialLedger:
                     "best_sharpe": None,
                 },
             )
+            if not is_trial_record(r):
+                # reference re-runs, unseal events, capacity / calibration runs
+                row["n_not_counted"] += 1
+                row["last_ts"] = max(str(row["last_ts"]), str(r.get("ts")))
+                continue
             row["n_trials"] += 1
             row["last_ts"] = max(str(row["last_ts"]), str(r.get("ts")))
             for key, col in (("data_hash", "data_hashes"), ("market_hash", "market_hashes")):
@@ -520,8 +631,11 @@ class TrialLedger:
             rows.append(row)
         return pd.DataFrame(rows)
 
-    def records(self, family: str | None = None) -> list[dict]:
-        recs = self._records()
+    def records(self, family: str | None = None, include_non_trials: bool = False) -> list[dict]:
+        """De-duplicated records (of ``family``); trials only unless
+        ``include_non_trials`` (unseal events, capacity / calibration runs and
+        reference re-runs are then included, each with its ``kind`` / ``reference``)."""
+        recs = self._records(include_non_trials=include_non_trials)
         return recs if family is None else [r for r in recs if r.get("family") == family]
 
     def trial_sharpes_annual(self, family: str | None = None, periods_per_year: int = 252) -> pd.Series:

@@ -191,6 +191,7 @@ from qts.risk import BarraStyleRiskModel, HybridRiskModel, build_risk_model
 # The run registry and the report card live in qts.runs; re-exported here because
 # ``from qts.pipeline import save_run, load_run, format_result, ...`` is public API.
 from qts.runs.cache import DEFAULT_CACHE_DIRNAME, STAGE_EXCLUDED_DATA, StageCache
+from qts.runs.context import RunContext
 from qts.runs.registry import (
     RunRecord,
     _from_json_scalar,
@@ -255,6 +256,8 @@ class PipelineResult:
     signal_lag_days: int = 0
     manifest: RunManifest | None = None
     run_dir: str | None = None
+    #: seal / family / record kind of the run (:class:`qts.runs.context.RunContext`)
+    context: RunContext = field(default_factory=RunContext)
 
 
 def data_hash_of(md: MarketData) -> str:
@@ -363,6 +366,10 @@ class ResearchPipeline:
     runs_root : str | None
         When set, every :meth:`run` writes a run directory under it (layout in
         the module docstring).
+    context : RunContext | None
+        Holdout seal, ledger family override and record kind of the run
+        (:mod:`qts.runs.context`); ``None`` = the default (no seal fields, the
+        default research family, a counted trial).  Changes no number.
     """
 
     #: D1: the single risk-only set (``qts.core.roles``); kept as a class
@@ -382,8 +389,10 @@ class ResearchPipeline:
         nav0: float = 1_000_000.0,
         warmup_days: int | None = None,
         runs_root: str | None = None,
+        context: RunContext | None = None,
     ):
         self.cfg = cfg or SystemConfig()
+        self.context = context if context is not None else RunContext()
         self.use_ml = use_ml
         self.phase = phase if phase is not None else (2 if use_ml else 1)
         self.ledger_path = ledger_path
@@ -771,6 +780,9 @@ class ResearchPipeline:
             seeds=self._seeds(),
             market_hash=res.market_hash,
             ledger_family=res.ledger_family,
+            sealed_end=self.context.sealed_end or "",
+            unsealed=bool(self.context.unsealed),
+            holdout_start=self.context.holdout_start or "",
         )
         res.git_sha = res.manifest.git_sha
         if self.runs_root:
@@ -814,7 +826,11 @@ class ResearchPipeline:
         """DSR trial family (the *research family*): ``pipeline_phase{p}:{market_hash[:12]}``
         -- one search per phase and price history.  Config, signal-lag and
         auxiliary-data variants (delisting reasons, fundamentals, industries, the
-        universe rules) all pool within it; see :mod:`qts.validation.ledger`."""
+        universe rules) all pool within it; see :mod:`qts.validation.ledger`.
+        ``context.family`` overrides it (a run under the holdout seal logs into the
+        family of the full-history panel; the mid-cap confirmation into its own)."""
+        if self.context.family:
+            return str(self.context.family)
         return research_family(self.phase, self.market_hash())
 
     def run_spec(self, dates: pd.Index | None, signal_lag_days: int) -> dict[str, Any]:
@@ -875,6 +891,7 @@ class ResearchPipeline:
             notes="ResearchPipeline.run",
             replace_identical=True,
             run_spec=self.run_spec(dates if dates is not None else bt.weights.index, signal_lag_days),
+            extra=self.context.ledger_fields() or None,
         )
 
     @staticmethod
@@ -918,6 +935,7 @@ class ResearchPipeline:
                 warmup_days=self.warmup_days,
                 # every grid configuration is a trial of the same search (audit 2 #11)
                 ledger_path=self.ledger_path,
+                context=self.context,
             )
             res = pipe.run(self._md_input, dates=dates)
             cols[f"cfg{i}"] = res.backtest.returns["net"]
@@ -998,6 +1016,12 @@ class ResearchPipeline:
         )
         notes = self._notes(summ, pbo, blocks, len(net))
         notes += self._ledger_notes()
+        if self.context.holdout_already_used:
+            notes.insert(
+                0,
+                "holdout already used: an earlier unseal of this configuration looked at the sealed "
+                "period, so this full-history result is not out-of-sample",
+            )
         timings = dict(timings or {})
         timings["evaluate"] = time.perf_counter() - t0
         return PipelineResult(
@@ -1022,6 +1046,7 @@ class ResearchPipeline:
             use_ml=self.use_ml,
             phase=self.phase,
             signal_lag_days=int(signal_lag_days),
+            context=self.context,
         )
 
     def _signal_quality(self, bt: BacktestResult, L: int) -> tuple[ICReport, DecileSpreadResult]:

@@ -76,7 +76,9 @@ def format_result(res: PipelineResult) -> str:
     bt = getattr(res, "backtest", None)
     rv = bt.realized_vs_exante() if bt is not None and hasattr(bt, "realized_vs_exante") else None
     diag: Mapping[str, object] = getattr(bt, "diagnostics", None) or {}
-    lines = [
+    ctx = getattr(res, "context", None)
+    lines = list(ctx.banner()) if ctx is not None else []
+    lines += [
         "=== Backtest summary ===",
         f"period            {s['start']} -> {s['end']}  ({s['n_days']} days)"
         + (f"   signal lag {res.signal_lag_days}d" if res.signal_lag_days else ""),
@@ -118,6 +120,7 @@ def format_result(res: PipelineResult) -> str:
         + (f"  PBO {res.pbo:.3f}" if res.pbo is not None else "  PBO skipped"),
         f"config {res.config_hash}  data {res.data_hash}  git {res.git_sha[:12]}"
         + (f"  run {res.manifest.run_id}" if res.manifest is not None else ""),
+        f"ledger family {res.ledger_family}" if res.ledger_family else "ledger family n/a",
         "",
         "=== Fold (purged walk-forward test block) net Sharpe ===",
         (

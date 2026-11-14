@@ -37,6 +37,8 @@ Commands
 ``ledger merge-families --into F A B ...``  declare families one search (backup first)
 ``ledger restate RUN``  recompute a finished run's DSR at its family's current trial
                      count (no backtest); writes ``extras.json["dsr_restated"]``
+``check`` / ``seal`` / ``signal`` / ``features`` / ``sweep`` / ``capacity`` / ``risk``
+                     research tools, wired in :mod:`qts.research.cli` (handbook 12)
 
 Every pipeline command writes a run directory (``--runs-root``, default
 ``runs``; ``--no-save`` disables) and logs to the trial ledger (``--ledger``).
@@ -836,6 +838,12 @@ def build_parser() -> argparse.ArgumentParser:
     lrs.add_argument("--family", default=None, help="override the family (default: the run's ledger record)")
     lrs.add_argument("--dry-run", action="store_true", help="print only, do not write extras.json")
     lg.set_defaults(func=cmd_ledger)
+
+    # research tools (check midcap, seal, signal, features, sweep, capacity, risk):
+    # their own module, qts/research/cli.py
+    from qts.research.cli import register_research_commands
+
+    register_research_commands(sub)
     return ap
 
 

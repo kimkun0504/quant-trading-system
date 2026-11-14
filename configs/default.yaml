@@ -11,6 +11,7 @@ universe:
   refresh_days: 21
   exit_after_n_fails: 3
   refresh_anchor: month_start
+  rank_offset: 0
 alpha:
   horizon_days: 20
   secondary_horizons:
@@ -83,6 +84,7 @@ alpha:
   embargo_days: null
   sample_weight_halflife_years: 0.0
   feature_set: v1
+  disabled_features: []
   delisting_gap_days: 63
 risk:
   vol_half_life: 84

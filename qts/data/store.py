@@ -367,6 +367,61 @@ class ParquetStore:
             sql += f" LIMIT {int(max_names)}"
         return [str(t) for t in self.duckdb_query(sql)["ticker"]]
 
+    def screened_rank_sql(self, start=None, end=None, min_price: float = 5.0, min_adv_usd: float = 2e6,
+                          adv_window: int = 63) -> str:
+        """SQL (over :meth:`duckdb_connection` views) of a table ``date, ticker, rk``: per
+        date, the rank by market cap (1 = largest) among the names that pass the
+        universe's price and liquidity screens on that date -- as-traded close
+        (``prices_close_raw``, else ``prices_close``) ``>= min_price`` and the trailing
+        ``adv_window``-row mean of as-traded close x shares traded ``>= min_adv_usd``
+        with at least ``max(5, adv_window // 2)`` observations, as
+        :func:`qts.data.universe.raw_eligibility` computes them (the window here runs
+        over each name's own rows, the panel's over the date index: names with gaps
+        differ slightly, so callers keep a margin).  The universe's bottom-size-quantile
+        cut is not applied (it only removes names from the bottom)."""
+        where = []
+        if start is not None:
+            where.append(f"date >= DATE '{pd.Timestamp(start).date()}'")
+        if end is not None:
+            where.append(f"date <= DATE '{pd.Timestamp(end).date()}'")
+        w = (" WHERE " + " AND ".join(where)) if where else ""
+        px = "prices_close_raw" if self.exists("prices_close_raw") else "prices_close"
+        n = int(adv_window)
+        min_obs = max(5, n // 2)
+        return f"""
+            WITH px AS (SELECT date, ticker, value AS price FROM "{px}"{w}),
+            vol AS (SELECT date, ticker, value AS shares FROM "prices_volume"{w}),
+            mc AS (SELECT date, ticker, value AS mcap FROM "market_cap"{w}),
+            dv AS (SELECT px.date, px.ticker, px.price, px.price * vol.shares AS dvol
+                   FROM px JOIN vol ON px.date = vol.date AND px.ticker = vol.ticker),
+            adv AS (SELECT date, ticker, price,
+                           avg(dvol) OVER win AS adv, count(dvol) OVER win AS n_obs
+                    FROM dv
+                    WINDOW win AS (PARTITION BY ticker ORDER BY date ROWS BETWEEN {n - 1} PRECEDING AND CURRENT ROW)),
+            pass AS (SELECT adv.date, adv.ticker, mc.mcap FROM adv
+                     JOIN mc ON adv.date = mc.date AND adv.ticker = mc.ticker
+                     WHERE mc.mcap IS NOT NULL AND adv.price >= {float(min_price)!r}
+                       AND adv.n_obs >= {min_obs} AND adv.adv >= {float(min_adv_usd)!r})
+            SELECT date, ticker, row_number() OVER (PARTITION BY date ORDER BY mcap DESC, ticker) AS rk
+            FROM pass
+        """
+
+    def tickers_by_screened_rank(self, max_rank: int, start=None, end=None, min_price: float = 5.0,
+                                 min_adv_usd: float = 2e6, adv_window: int = 63) -> List[str]:
+        """Ids that rank ``<= max_rank`` by market cap, among the names passing the
+        universe's price / ADV screens (:meth:`screened_rank_sql`), on at least one date
+        in ``[start, end]`` -- the ``--max-rank`` prefilter.  Unlike the peak-cap
+        prefilter it loads every name that could enter a universe of ranks
+        ``rank_offset + 1 .. rank_offset + top_n`` on some date (``max_rank`` above that
+        last rank, with a margin; the universe's bottom-size cut needs
+        ``last_rank / (1 - exclude_bottom_size_quantile)`` loaded names that pass the
+        screens on each date, which this set guarantees when ``max_rank`` is at least
+        that), whatever its size on other dates.  A loading convenience: the
+        universe rules still apply point in time on top.  Ordered by best rank, then id."""
+        sql = (f"SELECT ticker, min(rk) AS best FROM ({self.screened_rank_sql(start, end, min_price, min_adv_usd, adv_window)}) "
+               f"WHERE rk <= {int(max_rank)} GROUP BY ticker ORDER BY best, ticker")
+        return [str(t) for t in self.duckdb_query(sql)["ticker"]]
+
     # ------------------------------------------------------------------ duckdb
     def duckdb_connection(self):
         import duckdb

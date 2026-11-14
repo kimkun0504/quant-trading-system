@@ -30,33 +30,16 @@ import pandas as pd
 from qts.core import stats
 from qts.core.config import AlphaConfig
 from qts.core.crosssection import demean_by_group
-from qts.core.roles import FEATURE_SET_2_FEATURES
+from qts.core.roles import FEATURE_SET_1_FEATURES, FEATURE_SET_2_FEATURES
 from qts.core.stats import rank_gauss
 from qts.core.types import Long, MarketData, Wide, to_long
 
 from .features_v2 import EARNINGS_MAX_AGE_DAYS, build_v2_features
 
 # Canonical feature order.  Keep stable: it is part of the live/train parity hash.
-FEATURE_ORDER: list[str] = [
-    "value_bp",
-    "value_ep",
-    "mom_12_1",
-    "mom_6_1",
-    "mom_change",
-    "industry_momentum",
-    "quality_gpa",
-    "investment_ag",
-    "beta_252",
-    "idio_vol_252",
-    "max_ret_21",
-    "turnover_63",
-    "amihud_63",
-    "log_dollar_vol_63",
-    "log_mcap",
-    "short_interest",
-    "borrow_fee",
-    "strev_21",
-]
+# The single list lives in ``qts.core.roles.FEATURE_SET_1_FEATURES`` (the config
+# validates ``AlphaConfig.disabled_features`` against it without importing this layer).
+FEATURE_ORDER: list[str] = list(FEATURE_SET_1_FEATURES)
 
 
 #: ``AlphaConfig.feature_set`` -> canonical feature order.  ``"v2"`` appends the

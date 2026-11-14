@@ -38,6 +38,31 @@ RISK_ONLY_FEATURE_PROXIES: dict[str, tuple[str, ...]] = {
 #: Flat tuple of the proxy features, in a stable order.
 RISK_ONLY_FEATURES: tuple[str, ...] = tuple(f for s in RISK_ONLY_STYLES for f in RISK_ONLY_FEATURE_PROXIES[s])
 
+#: The 18 Tier-1 features of ``AlphaConfig.feature_set = "v1"`` in canonical model-input
+#: order (``qts.alpha.features.FEATURE_ORDER`` is this list; the order is part of the
+#: train / live parity hash).  Kept here, with no dependency, so that the config can
+#: validate ``AlphaConfig.disabled_features`` without importing the alpha layer.
+FEATURE_SET_1_FEATURES: tuple[str, ...] = (
+    "value_bp",
+    "value_ep",
+    "mom_12_1",
+    "mom_6_1",
+    "mom_change",
+    "industry_momentum",
+    "quality_gpa",
+    "investment_ag",
+    "beta_252",
+    "idio_vol_252",
+    "max_ret_21",
+    "turnover_63",
+    "amihud_63",
+    "log_dollar_vol_63",
+    "log_mcap",
+    "short_interest",
+    "borrow_fee",
+    "strev_21",
+)
+
 #: The eight features ``AlphaConfig.feature_set = "v2"`` adds, in model-input order
 #: (handbook 04 "Feature set 2").  All are alpha features: none proxies a risk-only
 #: style, so none is ever used to residualise the label or neutralise the score.
@@ -51,6 +76,13 @@ FEATURE_SET_2_FEATURES: tuple[str, ...] = (
     "net_issuance",
     "high_52w",
 )
+
+#: ``AlphaConfig.feature_set`` -> its model inputs in canonical order (the names
+#: ``AlphaConfig.disabled_features`` may list).  ``v1`` is a prefix of ``v2``.
+FEATURE_SET_NAMES: dict[str, tuple[str, ...]] = {
+    "v1": FEATURE_SET_1_FEATURES,
+    "v2": (*FEATURE_SET_1_FEATURES, *FEATURE_SET_2_FEATURES),
+}
 
 #: Alpha-layer features belonging to traded themes; must never be used to
 #: residualise the label.

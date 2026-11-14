@@ -262,7 +262,16 @@ class AlphaModel:
         self.md_ = md
         self.eligible_ = md.eligibility()
         self.raw_features_ = self.features.build(md)
-        self.X_: Long = self.features.process(self.raw_features_, md, valid=self.eligible_)
+        # feature toggles (AlphaConfig.disabled_features): dropped before processing, so
+        # neither the composite nor the ML sleeve sees them; raw_features_ keeps every
+        # panel for the label residualiser, the score neutralisation and the residual vol
+        disabled = set(self.cfg.disabled_features)
+        model_inputs = (
+            {k: v for k, v in self.raw_features_.items() if k not in disabled}
+            if disabled
+            else self.raw_features_
+        )
+        self.X_: Long = self.features.process(model_inputs, md, valid=self.eligible_)
         # labels: used ONLY as training targets / for OOS evaluation
         L = self.signal_lag_days
         G = int(self.cfg.delisting_gap_days)

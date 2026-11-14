@@ -2,6 +2,7 @@
 # Default config + alpha.horizon_days=60, alpha.sample_weight_halflife_years=8, alpha.feature_set=v1.
 # Reference run: runs/20261113T023313333450Z_e4667d90 (net Sharpe 0.68, DSR 0.697 at 8 trials).
 # Do not edit: new research changes go through --set or a new config file.
+# Regenerated 2026-11-13 for the new fields universe.rank_offset (0) and alpha.disabled_features ([]): behaviour unchanged.
 universe:
   top_n_by_mcap: 1000
   min_price: 5.0
@@ -11,6 +12,7 @@ universe:
   refresh_days: 21
   exit_after_n_fails: 3
   refresh_anchor: month_start
+  rank_offset: 0
 alpha:
   horizon_days: 60
   secondary_horizons:
@@ -83,6 +85,7 @@ alpha:
   embargo_days: null
   sample_weight_halflife_years: 8.0
   feature_set: v1
+  disabled_features: []
   delisting_gap_days: 63
 risk:
   vol_half_life: 84

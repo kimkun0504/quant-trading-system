@@ -16,6 +16,8 @@ from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass,
 from pathlib import Path
 from typing import Any, TypeVar, cast
 
+from qts.core.roles import FEATURE_SET_NAMES
+
 #: Bumped when the serialised layout changes incompatibly (renamed / removed
 #: fields).  A ``schema_version`` key in a dict/YAML is accepted and ignored by ``from_dict``.
 CONFIG_SCHEMA_VERSION = 1
@@ -159,6 +161,20 @@ class UniverseConfig(_ConfigBase):
     # dates do not depend on the load ``start`` (refresh_days is then unused);
     # "panel_start" is the legacy grid every ``refresh_days`` from the first date.
     refresh_anchor: str = "month_start"
+    # Skip the ``rank_offset`` largest names before taking ``top_n_by_mcap``: per date
+    # the universe is the names ranked ``rank_offset + 1 .. rank_offset + top_n_by_mcap``
+    # by market cap among the names that pass the price / ADV / size-quantile screens
+    # (the same point-in-time daily ranks as the top-N rule; refresh grid and exit
+    # hysteresis unchanged).  0 = the largest ``top_n_by_mcap`` (default, unchanged).
+    # 1000 with top_n_by_mcap 1000 = mid caps ranked 1001-2000 (`qts check midcap`,
+    # docs/notes/midcap_check_2026-11-13.md).  Load enough names: the store prefilter
+    # must cover ranks up to rank_offset + top_n_by_mcap on every date.
+    rank_offset: int = 0
+
+    def __post_init__(self) -> None:
+        k: Any = self.rank_offset
+        if isinstance(k, bool) or not isinstance(k, int) or k < 0:
+            raise ValueError(f"UniverseConfig: rank_offset must be an integer >= 0, got {k!r}")
 
 
 @dataclass(frozen=True)
@@ -208,8 +224,29 @@ class MLPParams(_ConfigBase):
     refit_on_full: bool = True
 
 
-#: Values of ``AlphaConfig.feature_set`` (the feature lists live in ``qts.alpha.features``).
-ALPHA_FEATURE_SETS: tuple[str, ...] = ("v1", "v2")
+#: Values of ``AlphaConfig.feature_set`` (the feature lists: ``qts.core.roles.FEATURE_SET_NAMES``).
+ALPHA_FEATURE_SETS: tuple[str, ...] = tuple(FEATURE_SET_NAMES)
+
+
+def _normalise_names(v: Any) -> tuple[str, ...]:
+    """``AlphaConfig.disabled_features`` in canonical form: a sorted, de-duplicated
+    tuple of names (so the config hash does not depend on the order they were
+    listed in).  Accepts a tuple / list of strings or one comma-separated string."""
+    if v is None:
+        return ()
+    if isinstance(v, str):
+        items: list[Any] = [p.strip() for p in v.split(",")]
+    elif isinstance(v, (list, tuple)):
+        items = list(cast("list[Any] | tuple[Any, ...]", v))
+    else:
+        raise ValueError(f"AlphaConfig: disabled_features must be a list of names, got {v!r}")
+    out: set[str] = set()
+    for x in items:
+        if not isinstance(x, str):
+            raise ValueError(f"AlphaConfig: disabled_features entries must be strings, got {x!r}")
+        if x:
+            out.add(x)
+    return tuple(sorted(out))
 
 
 @dataclass(frozen=True)
@@ -308,6 +345,27 @@ class AlphaConfig(_ConfigBase):
     # horizon_days=60 and sample_weight_halflife_years=8
     # (docs/notes/feature_set_2_2026-11-13.md).
     feature_set: str = "v1"
+    # Feature toggles (handbook 04 "Feature toggles"): names of the active feature set's
+    # model inputs (``qts.core.roles.FEATURE_SET_NAMES[feature_set]``; ``qts features
+    # list``) that are dropped *before* preprocessing, so neither the rank composite nor
+    # the ML sleeve sees them.  A composite theme averages its remaining members (a theme
+    # with none left is omitted and the theme weights renormalise over the others).  The
+    # raw panels stay available to what is not a model input: the label residualiser's
+    # warm-up proxies, the score neutralisation and the Grinold residual vol
+    # (``idio_vol_252``), so a toggle never changes the label or the sizing rule.
+    # Stored sorted and de-duplicated; a comma-separated string is accepted
+    # (``--set alpha.disabled_features=mom_change,strev_21``).  () = every feature
+    # (default; bitwise the earlier behaviour).  Each toggle setting is a logged trial.
+    disabled_features: tuple[str, ...] = field(
+        default=(),
+        metadata={
+            # allowed values depend on ``feature_set``: UI / API render a multi-select
+            # whose options are ``choices[<current feature_set>]``
+            "choices": {k: list(v) for k, v in FEATURE_SET_NAMES.items()},
+            "choices_key": "feature_set",
+            "multiple": True,
+        },
+    )
     # Causal delisting rule for labels when ``MarketData.delisting_dates`` does not
     # cover a name: a price gap at the label's window end counts as a delisting
     # only once the name has had no close for this many trading days after its
@@ -331,6 +389,16 @@ class AlphaConfig(_ConfigBase):
             raise ValueError(
                 f"AlphaConfig: feature_set must be one of {ALPHA_FEATURE_SETS}, got {self.feature_set!r}"
             )
+        object.__setattr__(self, "disabled_features", _normalise_names(self.disabled_features))
+        valid = FEATURE_SET_NAMES[self.feature_set]
+        unknown = [n for n in self.disabled_features if n not in valid]
+        if unknown:
+            raise ValueError(
+                f"AlphaConfig: disabled_features {unknown} are not features of feature_set "
+                f"{self.feature_set!r}; valid names: {list(valid)}"
+            )
+        if len(self.disabled_features) >= len(valid):
+            raise ValueError("AlphaConfig: disabled_features would disable every feature")
 
 
 @dataclass(frozen=True)

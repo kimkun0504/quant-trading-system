@@ -14,7 +14,10 @@ available on or before it:
   eligible cross-section (an NYSE-breakpoint proxy: the quantile is computed
   on names that already pass the price/liquidity screens, which drops the
   microcap tail where anomaly returns live but cannot be captured);
-* within the top ``top_n_by_mcap`` by market cap among the survivors.
+* within the top ``top_n_by_mcap`` by market cap among the survivors -- or, with
+  ``UniverseConfig.rank_offset = k > 0``, ranked ``k + 1 .. k + top_n_by_mcap``
+  (the ``k`` largest survivors are skipped; same daily PIT ranks, e.g. the mid caps
+  1001-2000 of ``qts check midcap``).
 
 Membership is refreshed on a fixed calendar grid and held constant in between:
 with ``UniverseConfig.refresh_anchor = "month_start"`` (default) on the first
@@ -58,6 +61,10 @@ def raw_eligibility(md: MarketData, cfg: UniverseConfig) -> Wide:
         base = base & (mcap.ge(cut, axis=0))
         m_elig = mcap.where(base)
     rank = m_elig.rank(axis=1, ascending=False, method="first")
+    offset = int(getattr(cfg, "rank_offset", 0) or 0)
+    if offset > 0:
+        # mid caps etc.: skip the ``offset`` largest survivors, then take the next top_n
+        return (base & (rank > offset) & (rank <= offset + cfg.top_n_by_mcap)).fillna(False).astype(bool)
     return (base & (rank <= cfg.top_n_by_mcap)).fillna(False).astype(bool)
 
 
