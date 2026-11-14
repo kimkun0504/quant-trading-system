@@ -35,5 +35,6 @@ Notion page ids:
 - 11 Glossary 40f8262e-79e0-81c1-a4b7-d4cf357f3d33
 - 13 Audit history & known limitations 40f8262e-79e0-81e7-aefa-eddf31cf8570
 - 12 Operating guide 40f8262e-79e0-810a-92de-cd8568ffee80
+- 14 Paper trading 4188262e-79e0-81e8-8b4c-ed314ac80dd2 (created 2026-11-14; in the hub's "Using it" section after 12)
 
 Load the Notion tools with ToolSearch: "select:mcp__Notion__notion-update-page,mcp__Notion__notion-create-pages,mcp__Notion__notion-fetch".
