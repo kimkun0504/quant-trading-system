@@ -23,6 +23,12 @@ import {
 } from './lib';
 
 const job = (id: string, status: Job['status'], extra: Partial<Job> = {}): Job => ({
+  task: 'pipeline',
+  subject: null,
+  command: null,
+  result: null,
+  error_kind: null,
+  exit_code: null,
   job_id: id,
   run_id: `run_${id}`,
   status,

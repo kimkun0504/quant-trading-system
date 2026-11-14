@@ -7,6 +7,7 @@ import type {
   RunSummary,
 } from '@/shared/api';
 import type { Field } from './fields';
+import { listText } from './fields';
 
 /** A field's edited input: text for numbers and strings, a boolean, or null ("no value"). */
 export type Raw = string | boolean | null;
@@ -26,9 +27,17 @@ export interface RunSettings {
   end: string;
   maxNames: string;
   minMcapEver: string;
+  /** Screened market-cap rank prefilter (`--max-rank`; '' = off). Not with the two above. */
+  maxRank: string;
+  /** Load although the prefilter misses universe names (`--allow-partial-coverage`, flagged). */
+  allowPartialCoverage: boolean;
   /** Backtest only the last N out-of-sample days ('' = all). */
   maxDays: string;
   cache: boolean;
+  /** Store runs: load the sealed holdout (`--unseal REASON`; '' = sealed). */
+  unsealReason: string;
+  /** With an unseal: a configuration whose holdout was already used (`--force`, flagged). */
+  force: boolean;
 }
 
 export type RunSettingKey = keyof RunSettings;
@@ -71,8 +80,14 @@ export const DEFAULT_RUN: RunSettings = {
   end: '',
   maxNames: '',
   minMcapEver: '',
+  // the store prefilter of every store load (`qts run --max-rank 1500`): covers the
+  // baseline's 1,000-name universe by construction (handbook 12; a synthetic run ignores it)
+  maxRank: '1500',
+  allowPartialCoverage: false,
   maxDays: '',
   cache: false,
+  unsealReason: '',
+  force: false,
 };
 
 export function defaultBase(): Base {
@@ -115,8 +130,16 @@ export function baseFromRun(detail: RunDetail, summary: RunSummary | undefined):
       end: text(src.end),
       maxNames: text(src.max_names),
       minMcapEver: text(src.min_mcap_ever),
+      // a store run keeps its own prefilter (none recorded: no prefilter); a synthetic
+      // base switched to the store starts from the default rank prefilter
+      maxRank: src.kind === 'store' ? text(src.max_rank) : DEFAULT_RUN.maxRank,
+      // a partial load is a decision for this launch, never inherited from the base run
+      allowPartialCoverage: false,
       maxDays: text(src.max_days),
       cache: src.cache,
+      // an unseal is a decision for this launch, never inherited from the base run
+      unsealReason: '',
+      force: false,
     },
     sourceRecorded: src.recorded,
     storePath: src.store_path,
@@ -128,6 +151,9 @@ export function baseFromRun(detail: RunDetail, summary: RunSummary | undefined):
 /** The base's value of a field: the run's own, else the schema default, else null. */
 export function baseValue(base: Base, f: Field): ConfigLeaf {
   const own = base.leaves[f.path];
+  // a list arrives as compact JSON in config_leaves ('["mom_change"]'): compare it as names
+  if (f.type === 'array')
+    return listText(typeof own === 'string' ? own : typeof f.default === 'string' ? f.default : '');
   if (own !== undefined) return own;
   return f.default ?? null;
 }
@@ -155,6 +181,16 @@ export function parseRaw(f: Field, raw: Raw): Parsed {
       ? { ok: true, value: raw }
       : { ok: false, error: `${f.title} must be on or off.` };
   if (typeof raw === 'boolean') return { ok: false, error: `${f.title} must be a value.` };
+  if (f.type === 'array') {
+    const names = listText(raw);
+    if (f.choices) {
+      const known = new Set(Object.values(f.choices).flat());
+      const unknown = names ? names.split(',').filter((n) => !known.has(n)) : [];
+      if (unknown.length)
+        return { ok: false, error: `${f.title}: unknown name ${unknown.join(', ')}.` };
+    }
+    return { ok: true, value: names };
+  }
   if (f.type === 'string') {
     if (f.enum && !f.enum.includes(raw))
       return { ok: false, error: `${f.title} must be one of ${f.enum.join(', ')}.` };
@@ -269,6 +305,11 @@ export function runErrors(
       const n = Number(r.minMcapEver);
       if (!Number.isFinite(n) || n < 0) e.minMcapEver = 'Enter a market cap in USD, 0 or more.';
     }
+    if (r.maxRank.trim() !== '') {
+      set('maxRank', intError(r.maxRank, 10, 20_000, 'Max rank'));
+      if (!e.maxRank && (r.maxNames.trim() !== '' || r.minMcapEver.trim() !== ''))
+        e.maxRank = 'The rank prefilter cannot be combined with max names / min peak market cap.';
+    }
   }
   return e;
 }
@@ -293,6 +334,8 @@ const DATA_KEYS: readonly [RunSettingKey, string][] = [
   ['end', 'data.end'],
   ['maxNames', 'data.max_names'],
   ['minMcapEver', 'data.min_mcap_ever'],
+  ['maxRank', 'data.max_rank'],
+  ['allowPartialCoverage', 'data.allow_partial_coverage'],
 ];
 const RUN_KEYS: readonly [RunSettingKey, string][] = [
   ['ml', 'ml'],
@@ -323,7 +366,7 @@ export function diffRows(draft: Draft, base: Base, fields: readonly Field[]): Di
   const now = runSettings(draft, base);
   const relevant = (k: RunSettingKey) =>
     now.kind === 'synthetic'
-      ? !['start', 'end', 'maxNames', 'minMcapEver'].includes(k)
+      ? !['start', 'end', 'maxNames', 'minMcapEver', 'maxRank', 'allowPartialCoverage'].includes(k)
       : !['stocks', 'days'].includes(k);
   for (const [k, key] of RUN_KEYS)
     if (now[k] !== base.run[k])
@@ -404,6 +447,12 @@ export function toRequest(draft: Draft, base: Base, fields: readonly Field[]): L
     req.end = r.end || null;
     req.max_names = optInt(r.maxNames);
     req.min_mcap_ever = r.minMcapEver.trim() === '' ? null : Number(r.minMcapEver);
+    req.max_rank = optInt(r.maxRank);
+    if (r.allowPartialCoverage) req.allow_partial_coverage = true;
+    if (r.unsealReason.trim()) {
+      req.unseal_reason = r.unsealReason.trim();
+      if (r.force) req.force = true;
+    }
   }
   return req;
 }

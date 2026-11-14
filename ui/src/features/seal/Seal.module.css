@@ -1,0 +1,52 @@
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 1.75rem;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  color: var(--color-fg);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.chip:hover {
+  background: var(--color-surface-2);
+}
+
+.chip[data-state='none'] {
+  color: var(--color-fg-muted);
+}
+
+.glyph {
+  flex: none;
+}
+
+.chipMuted {
+  color: var(--color-fg-muted);
+}
+
+@media (max-width: 1280px) {
+  .chipMuted {
+    display: none;
+  }
+}
+
+.badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  /* a 24px target (WCAG 2.2 target size) around the small badges */
+  min-height: 24px;
+  min-width: 24px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: help;
+}

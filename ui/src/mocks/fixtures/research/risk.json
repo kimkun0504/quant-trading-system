@@ -1,0 +1,129 @@
+{
+  "id": "20261114T042614680785Z_feafa843",
+  "config_hash": "feafa84386ebe781",
+  "current_nu_scale": 0.05,
+  "results": [
+    {
+      "nu_scale": 0.0,
+      "overall": {
+        "realised_vol": 0.03912248948871673,
+        "exante_vol": 0.041692295010569744,
+        "ratio": 0.9383625794358041,
+        "bias_stat": 0.9474233561343994,
+        "n_days": null
+      },
+      "by_year": {
+        "2020": {
+          "realised_vol": 0.04039262078175657,
+          "exante_vol": 0.04060677962885138,
+          "ratio": 0.9947260322278143,
+          "bias_stat": 1.0014166797631723,
+          "n_days": 80.0
+        },
+        "2021": {
+          "realised_vol": 0.0368756491831367,
+          "exante_vol": 0.043834948000036164,
+          "ratio": 0.8412385748263298,
+          "bias_stat": 0.8375777810164744,
+          "n_days": 39.0
+        }
+      },
+      "sharpe_net": 0.3439056672007071,
+      "run_id": "20261114T042618271451Z_cb23a2ee"
+    },
+    {
+      "nu_scale": 0.05,
+      "overall": {
+        "realised_vol": 0.03902116142675521,
+        "exante_vol": 0.0421307939112176,
+        "ratio": 0.9261909829894179,
+        "bias_stat": 0.9338398134794498,
+        "n_days": null
+      },
+      "by_year": {
+        "2020": {
+          "realised_vol": 0.04022694562029516,
+          "exante_vol": 0.04105754823932175,
+          "ratio": 0.9797697949671749,
+          "bias_stat": 0.9850992981632941,
+          "n_days": 80.0
+        },
+        "2021": {
+          "realised_vol": 0.03691000008511436,
+          "exante_vol": 0.044250936620888776,
+          "ratio": 0.8341066405290706,
+          "bias_stat": 0.8302023736695359,
+          "n_days": 39.0
+        }
+      },
+      "sharpe_net": 0.3510710255592845,
+      "run_id": "20261114T042622257724Z_feafa843"
+    },
+    {
+      "nu_scale": 0.25,
+      "overall": {
+        "realised_vol": 0.03872555488121839,
+        "exante_vol": 0.04341166317479758,
+        "ratio": 0.8920541635387127,
+        "bias_stat": 0.896782189672184,
+        "n_days": null
+      },
+      "by_year": {
+        "2020": {
+          "realised_vol": 0.03971314401969004,
+          "exante_vol": 0.04241229561374706,
+          "ratio": 0.9363592195376911,
+          "bias_stat": 0.9392804397779257,
+          "n_days": 80.0
+        },
+        "2021": {
+          "realised_vol": 0.0370700562857276,
+          "exante_vol": 0.04539284421027051,
+          "ratio": 0.8166497810538206,
+          "bias_stat": 0.8129562347703922,
+          "n_days": 39.0
+        }
+      },
+      "sharpe_net": 0.2738960865983305,
+      "run_id": "20261114T042626220087Z_6bf0b4e7"
+    },
+    {
+      "nu_scale": 1.0,
+      "overall": {
+        "realised_vol": 0.037927457543563595,
+        "exante_vol": 0.045429389911169134,
+        "ratio": 0.8348660991865723,
+        "bias_stat": 0.8378377054981284,
+        "n_days": null
+      },
+      "by_year": {
+        "2020": {
+          "realised_vol": 0.038224448348756115,
+          "exante_vol": 0.04457677704689556,
+          "ratio": 0.8574969049140388,
+          "bias_stat": 0.8605455645197588,
+          "n_days": 80.0
+        },
+        "2021": {
+          "realised_vol": 0.03775878363777507,
+          "exante_vol": 0.04713009341455771,
+          "ratio": 0.8011608062315447,
+          "bias_stat": 0.799104217377643,
+          "n_days": 39.0
+        }
+      },
+      "sharpe_net": 0.1677454490013453,
+      "run_id": "20261114T042630213406Z_fc305438"
+    }
+  ],
+  "recommended_nu_scale": 0.0,
+  "rule": "minimise |log(realised / ex-ante vol)| over the invested days of the pre-seal period; ties (0.01) -> smaller nu",
+  "family": "calibration:20b8af2873cb",
+  "sealed_end": "2021-02-26",
+  "cache": {
+    "risk_fit": "hit",
+    "alpha_fit": "hit"
+  },
+  "notes": [],
+  "json_path": "runs/_risk/20261114T042614680785Z_feafa843.json"
+}

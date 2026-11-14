@@ -1,0 +1,80 @@
+{
+  "id": "20261114T042605395445Z_feafa843",
+  "config_hash": "feafa84386ebe781",
+  "family": "capacity:20b8af2873cb",
+  "points": [
+    {
+      "nav": 5000000.0,
+      "sharpe_gross": -0.18210568956732545,
+      "sharpe_net": -0.3613267047935666,
+      "cagr_net": -0.01517632187993645,
+      "cost_bps_per_side": 10.95837641948651,
+      "turnover_per_day": 0.021249340283459765,
+      "traded_at_adv_cap": 0.0,
+      "solves_with_adv_cap": 0.0,
+      "breakeven_cost_bps": -16.12304883282199,
+      "impact_bps_per_side": 9.787545330338162,
+      "spread_bps_per_side": 0.49609202172403866,
+      "fees_bps_per_side": 0.6747390674243087,
+      "run_id": "20261114T042607336452Z_feafa843",
+      "seconds": 2.401480061998882
+    },
+    {
+      "nav": 50000000.0,
+      "sharpe_gross": 0.4633786566856546,
+      "sharpe_net": 0.1320130567470802,
+      "cagr_net": 0.003830602753355228,
+      "cost_bps_per_side": 26.815704381311566,
+      "turnover_per_day": 0.014572245227942237,
+      "traded_at_adv_cap": 0.0,
+      "solves_with_adv_cap": 0.0,
+      "breakeven_cost_bps": 38.69069013251092,
+      "impact_bps_per_side": 24.335306893939176,
+      "spread_bps_per_side": 1.9078018557214866,
+      "fees_bps_per_side": 0.5725956316509057,
+      "run_id": "20261114T042609482927Z_feafa843",
+      "seconds": 2.0841995530008717
+    },
+    {
+      "nav": 250000000.0,
+      "sharpe_gross": -0.05013217613372429,
+      "sharpe_net": -0.46288251697231064,
+      "cagr_net": -0.01034370616492064,
+      "cost_bps_per_side": 35.01254728619637,
+      "turnover_per_day": 0.009440565156470815,
+      "traded_at_adv_cap": 0.05188625322966048,
+      "solves_with_adv_cap": 0.5833333333333334,
+      "breakeven_cost_bps": -7.6925173519070755,
+      "impact_bps_per_side": 32.364230834555336,
+      "spread_bps_per_side": 2.1022064187315626,
+      "fees_bps_per_side": 0.5461100329094773,
+      "run_id": "20261114T042611616821Z_feafa843",
+      "seconds": 2.1315229660012847
+    },
+    {
+      "nav": 1000000000.0,
+      "sharpe_gross": -1.3444424893922622,
+      "sharpe_net": -1.715233430783363,
+      "cagr_net": -0.022394233710726907,
+      "cost_bps_per_side": 36.8205033329919,
+      "turnover_per_day": 0.004835670506944972,
+      "traded_at_adv_cap": 0.2269722720090367,
+      "solves_with_adv_cap": 1.0,
+      "breakeven_cost_bps": -148.3334705069452,
+      "impact_bps_per_side": 34.688395595505064,
+      "spread_bps_per_side": 1.6541634638316425,
+      "fees_bps_per_side": 0.4779442736551883,
+      "run_id": "20261114T042613659246Z_feafa843",
+      "seconds": 2.0381092320003518
+    }
+  ],
+  "half_sharpe_nav": null,
+  "reference_sharpe_net": -0.3613267047935666,
+  "cache": {
+    "risk_fit": "hit",
+    "alpha_fit": "hit"
+  },
+  "sealed_end": "2021-02-26",
+  "notes": [],
+  "json_path": "runs/_capacity/20261114T042605395445Z_feafa843.json"
+}

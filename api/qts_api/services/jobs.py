@@ -145,31 +145,53 @@ class _BacktestDayHandler(logging.Handler):
             pass
 
 
+def store_spec(req: dict[str, Any], store_path: str | None):
+    """The request's store slice and prefilter as :class:`qts.research.data.StoreSpec`."""
+    from qts.research.data import StoreSpec
+
+    if not store_path:
+        raise ValueError("store runs need QTS_STORE_PATH set on the API server")
+    return StoreSpec(
+        store=str(store_path),
+        start=req.get("start"),
+        end=req.get("end"),
+        max_names=req.get("max_names"),
+        min_mcap_ever=req.get("min_mcap_ever"),
+        max_rank=req.get("max_rank"),
+    )
+
+
 def _load_market(payload: dict[str, Any]):
+    """``(MarketData, StoreRun | None)``.  A store run loads exactly as ``qts run --store``
+    does, *under the research seal* (:func:`qts.research.store_run.prepare_store_run`):
+    data through the day before ``holdout_start`` unless the request unseals (once per
+    configuration; ``force`` for a second time).  The returned ``StoreRun`` is finalized
+    into the run's :class:`~qts.runs.context.RunContext` once the final config is known."""
     req = payload["request"]
     if req["kind"] == "synthetic":
         from qts.data.synthetic import SyntheticSpec, generate
 
-        return generate(SyntheticSpec(n_stocks=req["stocks"], n_days=req["days"], seed=req["seed"]))
-    from qts.data.store import ParquetStore
+        return generate(SyntheticSpec(n_stocks=req["stocks"], n_days=req["days"], seed=req["seed"])), None
+    from qts.core.config import SystemConfig
     from qts.data.universe import survivorship_check
+    from qts.research.store_run import prepare_store_run
 
-    # same path as ``qts run --store``: optional prefilter by peak market cap (reads only
-    # the long market_cap table), then the [start, end] slice
-    store = ParquetStore(payload["store_path"])
-    start, end = req.get("start"), req.get("end")
-    tickers = None
-    if req.get("min_mcap_ever") is not None or req.get("max_names") is not None:
-        tickers = store.tickers_by_market_cap(
-            start, end, min_mcap_ever=req.get("min_mcap_ever"), max_names=req.get("max_names")
-        )
-        job_log.info("prefilter: %d candidate ids by peak market cap", len(tickers))
-        if not tickers:
-            raise ValueError("the universe prefilter left no ids")
-    md = store.as_market_data(universe_tickers=tickers, start=start, end=end)
-    job_log.info("store: %d ids x %d days", md.close.shape[1], md.close.shape[0])
+    store_run = prepare_store_run(
+        store_spec(req, payload.get("store_path")),
+        SystemConfig.from_dict(payload["config"]),
+        use_ml=bool(req["ml"]),
+        ledger_path=payload.get("ledger_path") or None,
+        unseal_reason=req.get("unseal_reason"),
+        force=bool(req.get("force")),
+        hash_cache_dir=str(Path(payload["runs_root"]) / "_cache" / "market_hash"),
+        log=lambda m: job_log.info("%s", m),
+        allow_partial_coverage=bool(req.get("allow_partial_coverage")),
+    )
+    md = store_run.md
+    if not len(md.dates):
+        raise ValueError("the store slice is empty (under the seal: no date before the holdout)")
     survivorship_check(md)
-    return md
+    return md, store_run
 
 
 def log_path(job_path: Path) -> Path:
@@ -203,6 +225,7 @@ def cli_command(req: dict[str, Any], store_path: str | None, overrides: dict[str
             ("--end", "end"),
             ("--max-names", "max_names"),
             ("--min-mcap-ever", "min_mcap_ever"),
+            ("--max-rank", "max_rank"),
         ):
             if req.get(key) is not None:
                 v = req[key]
@@ -217,6 +240,12 @@ def cli_command(req: dict[str, Any], store_path: str | None, overrides: dict[str
         parts += ["--max-days", str(req["max_days"])]
     if req.get("cache"):
         parts.append("--cache")
+    if req["kind"] == "store" and req.get("unseal_reason"):
+        parts += ["--unseal", str(req["unseal_reason"])]
+        if req.get("force"):
+            parts.append("--force")
+    if req["kind"] == "store" and req.get("allow_partial_coverage"):
+        parts.append("--allow-partial-coverage")
     ov = dict(overrides if overrides is not None else req.get("config_overrides") or {})
     if req["kind"] == "store" and (req.get("base_run_id") or int(req.get("seed", 0)) != 0):
         ov = {"seed": req["seed"], **ov}  # `qts run` has no --seed flag: the seed is a config key
@@ -248,12 +277,22 @@ def run_job(job_path: str, payload: dict[str, Any]) -> None:
         rep.stage(
             0.02, "Building the market data" if req["kind"] == "synthetic" else "Loading the data store", stage="data"
         )
-        md = _load_market(payload)
+        md, store_run = _load_market(payload)
 
         cfg = SystemConfig.from_dict(payload["config"])
         cfg = cfg.with_overrides({"universe.top_n_by_mcap": min(cfg.universe.top_n_by_mcap, md.close.shape[1])})
         if req.get("cache"):  # qts --cache: operational, outside the config hash
             cfg = cfg.with_overrides({"cache.enabled": True, "cache.root": str(Path(payload["runs_root"]) / "_cache")})
+        context = None
+        if store_run is not None:
+            # as `qts run`: the unseal event (if any) is written before the run starts; a
+            # sealed re-run of a counted configuration becomes a reference (not a trial)
+            context = store_run.finalize(
+                cfg,
+                payload.get("ledger_path") or None,
+                log=lambda m: job_log.info("%s", m),
+                command=cli_command(req, payload.get("store_path")),
+            )
 
         # stage hooks (worker process only)
         orig_u, orig_r, orig_a = P.build_universe_mask, P.build_risk_model, P.AlphaModel
@@ -285,6 +324,7 @@ def run_job(job_path: str, payload: dict[str, Any]) -> None:
             nav0=NAV0,
             venue=req.get("venue") or "routed",
             runs_root=None,
+            context=context,
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
@@ -333,6 +373,12 @@ def run_job(job_path: str, payload: dict[str, Any]) -> None:
                 "request": req,
                 "store_path": payload.get("store_path"),
                 "command": cli_command(req, payload.get("store_path")),
+                # the load-coverage guard's verdict (also on the ledger record)
+                "load_coverage": (
+                    store_run.load.coverage.to_dict()
+                    if store_run is not None and getattr(store_run.load, "coverage", None) is not None
+                    else None
+                ),
             },
         )
         os.replace(run_dir, root / payload["run_id"])
@@ -350,12 +396,14 @@ def run_job(job_path: str, payload: dict[str, Any]) -> None:
     except BaseException as e:  # report everything, including KeyboardInterrupt in the worker
         with contextlib.suppress(Exception):
             job_log.error("failed: %s: %s", type(e).__name__, e)
+        coverage = type(e).__name__ == "LoadCoverageError"  # the store prefilter misses universe names
         rep.update(
             status="failed",
             stage="",
-            message=f"Failed: {type(e).__name__}: {e}"[:500],
+            message=(f"Refused: {e}" if coverage else f"Failed: {type(e).__name__}: {e}")[:900],
             error=traceback.format_exc()[-4000:],
             finished_at=_now(),
+            **({"error_kind": "coverage", "exit_code": 2} if coverage else {}),
         )
         if staging is not None:
             shutil.rmtree(staging, ignore_errors=True)
@@ -395,19 +443,47 @@ def job_size(req: dict[str, Any]) -> tuple[float | None, tuple[Any, ...]]:
     if req.get("kind") == "synthetic":
         days = req.get("max_days") or req.get("days") or 0
         return float(req.get("stocks") or 0) * float(days), ("synthetic", req.get("stocks"), req.get("days"))
-    return None, ("store", req.get("start"), req.get("end"), req.get("max_names"), req.get("min_mcap_ever"))
+    return None, (
+        "store",
+        req.get("start"),
+        req.get("end"),
+        req.get("max_names"),
+        req.get("min_mcap_ever"),
+        req.get("max_rank"),
+    )
+
+
+def job_task(j: dict[str, Any]) -> str:
+    """``"pipeline"`` for a run job (also every job written before tasks existed), else
+    the task name (:mod:`qts_api.services.tasks`)."""
+    return str(j.get("task") or "pipeline")
 
 
 def estimate_seconds(job: dict[str, Any], history: list[dict[str, Any]]) -> float | None:
     """Median duration of finished jobs of *similar size*: same data kind and ML flag,
     and either the same data slice or a synthetic market within a factor of two (scaled
-    linearly by names x days)."""
+    linearly by names x days).  A task job: finished jobs of the same task and the same
+    ``size_key`` (e.g. the number of NAVs of a capacity curve)."""
+    if job_task(job) != "pipeline":
+        key = (job_task(job), json.dumps(job.get("size_key"), sort_keys=True, default=str))
+        ds = sorted(
+            d
+            for h in history
+            if h.get("status") == "done"
+            and h.get("job_id") != job.get("job_id")
+            and (job_task(h), json.dumps(h.get("size_key"), sort_keys=True, default=str)) == key
+            and (d := _duration(h)) is not None
+        )
+        if not ds:
+            return None
+        mid = len(ds) // 2
+        return ds[mid] if len(ds) % 2 else 0.5 * (ds[mid - 1] + ds[mid])
     req = job.get("request") or {}
     size, key = job_size(req)
     scaled: list[float] = []
     for h in history:
         hreq = h.get("request") or {}
-        if h.get("status") != "done" or h.get("job_id") == job.get("job_id"):
+        if h.get("status") != "done" or h.get("job_id") == job.get("job_id") or job_task(h) != "pipeline":
             continue
         if hreq.get("kind") != req.get("kind") or bool(hreq.get("ml")) != bool(req.get("ml")):
             continue
@@ -601,7 +677,21 @@ class JobManager:
             with self._cv:
                 q = list(self._queue)
             position = q.index(j["job_id"]) if j["job_id"] in q else None
+        task = job_task(j)
+        command = j.get("command")
+        if command is None and task == "pipeline" and req.get("kind"):
+            with contextlib.suppress(Exception):
+                command = cli_command(req, (j.get("payload") or {}).get("store_path"))
+        result = j.get("result") if isinstance(j.get("result"), dict) else None
         return {
+            "task": task,
+            "subject": j.get("subject"),
+            "command": command,
+            "result": None
+            if result is None
+            else {str(k): v for k, v in result.items() if v is None or isinstance(v, (bool, int, float, str))},
+            "error_kind": j.get("error_kind") if status == "failed" else None,
+            "exit_code": j.get("exit_code") if status == "failed" else None,
             "job_id": j["job_id"],
             "run_id": j.get("run_id", ""),
             "status": status if status in ("queued", "running", "done", "failed", "cancelled") else "failed",
@@ -709,6 +799,72 @@ class JobManager:
             self._cv.notify_all()
         return rec
 
+    def submit_task(
+        self,
+        *,
+        task: str,
+        params: dict[str, Any],
+        label: str,
+        subject: str | None = None,
+        command: str = "",
+        use_ml: bool = True,
+        config_hash: str = "",
+        size_key: Any = None,
+    ) -> dict[str, Any]:
+        """Queue a research / paper task (:mod:`qts_api.services.tasks`): same queue,
+        same files, same cancellation and restart rules as a run."""
+        with self._cv:
+            if len(self._queue) >= self.max_queued:
+                raise QueueFull(
+                    f"{len(self._queue)} jobs are already queued (limit {self.max_queued}, "
+                    "QTS_MAX_QUEUED); wait for one to start or cancel one"
+                )
+        job_id = f"job_{uuid.uuid4().hex[:12]}"
+        paper_root = getattr(self.settings, "paper_root", None)
+        payload = {
+            "job_id": job_id,
+            "task": task,
+            "runs_root": str(self.settings.runs_root),
+            "ledger_path": str(self.settings.ledger),
+            "store_path": str(self.settings.store_path) if self.settings.store_path else None,
+            "paper_root": str(paper_root) if paper_root else None,
+            "params": params,
+            "label": label,
+            "command": command,
+        }
+        rec = {
+            "job_id": job_id,
+            "run_id": "",
+            "task": task,
+            "subject": subject,
+            "status": "queued",
+            "progress": 0.0,
+            "message": "Queued",
+            "stage": "",
+            "created_at": _now(),
+            "label": label,
+            "kind": "store",
+            "phase": 2 if use_ml else 1,
+            "use_ml": bool(use_ml),
+            "config_hash": config_hash,
+            "command": command,
+            "size_key": size_key,
+            "request": params,
+            "payload": payload,
+        }
+        _write_json(self._path(job_id), rec)
+        with self._cv:
+            self._payloads[job_id] = payload
+            self._queue.append(job_id)
+            self._save_queue()
+            self._cv.notify_all()
+        return rec
+
+    def tasks(self, task: str, subject: str | None = None) -> list[dict[str, Any]]:
+        """Jobs of one task (and subject), newest first."""
+        out = [j for j in self.all() if job_task(j) == task and (subject is None or j.get("subject") == subject)]
+        return sorted(out, key=lambda j: str(j.get("created_at", "")), reverse=True)
+
     def cancel(self, job_id: str) -> dict[str, Any]:
         j = self.get(job_id)
         if j.get("status") in TERMINAL:
@@ -762,8 +918,13 @@ class JobManager:
                 )
 
     def _start_process(self, job_id: str, payload: dict[str, Any]) -> Any:
+        target = run_job
+        if payload.get("task"):
+            from qts_api.services.tasks import run_task
+
+            target = run_task
         p = self.ctx.Process(
-            target=run_job,
+            target=target,
             args=(str(self._path(job_id)), payload),
             name=f"qts-job-{job_id}",
             daemon=True,

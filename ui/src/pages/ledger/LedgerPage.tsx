@@ -3,12 +3,14 @@ import { useLedger } from '@/entities/run';
 import { dateTime, int, num, sharpe, shortHash } from '@/shared/lib/format';
 import {
   Annotated,
+  Badge,
   ErrorState,
   MarginNote,
   Page,
   Section,
   Skeleton,
   SortableTable,
+  Tooltip,
   Wide,
 } from '@/shared/ui';
 import type { Column } from '@/shared/ui';
@@ -22,6 +24,33 @@ const COLUMNS: Column<LedgerTrial>[] = [
     rowHeader: true,
     sortValue: (t) => t.name,
     render: (t) => t.name,
+  },
+  {
+    key: 'counted',
+    header: 'Counted',
+    headerText: 'Counted in the family',
+    sortValue: (t) => (t.counted ? 1 : 0),
+    render: (t) =>
+      t.counted ? (
+        <span className={styles.counted}>
+          trial
+          {t.unsealed ? (
+            <Badge tone={t.holdout_already_used ? 'fail' : 'caution'}>
+              {t.holdout_already_used ? 'holdout already used' : 'unsealed'}
+            </Badge>
+          ) : null}
+        </span>
+      ) : (
+        <Tooltip content={t.note ?? 'Not a trial: not counted in N.'}>
+          <button
+            type="button"
+            className={styles.notCountedTag}
+            aria-label={`Not counted: ${t.note ?? 'not a trial'}`}
+          >
+            <Badge tone="skipped">{t.reference ? 'reference' : t.kind}</Badge>
+          </button>
+        </Tooltip>
+      ),
   },
   {
     key: 'config',
@@ -83,6 +112,14 @@ const COLUMNS: Column<LedgerTrial>[] = [
   },
 ];
 
+function captionFor(rows: readonly LedgerTrial[]): string {
+  const n = rows.filter((t) => t.counted).length;
+  const rest = rows.length - n;
+  return rest
+    ? `${n} trials and ${rest} records not counted (greyed: references, unseal events, capacity and calibration runs), newest first`
+    : `${n} trials, newest first`;
+}
+
 export function LedgerPage() {
   const ledger = useLedger();
   return (
@@ -127,6 +164,7 @@ export function LedgerPage() {
                   <dd>
                     {f.n_trials} trials, {num(f.effective_trials, { digits: 1 })} effective, Sharpe
                     variance {num(f.var_sr_annual, { digits: 3 })}
+                    {f.n_not_counted ? `; ${int(f.n_not_counted)} more logged, not counted` : ''}
                   </dd>
                 </div>
               ))}
@@ -134,10 +172,11 @@ export function LedgerPage() {
           </Section>
           <Wide>
             <SortableTable
-              caption={`${ledger.data.trials.length} trials, newest first`}
+              caption={captionFor(ledger.data.trials)}
               columns={COLUMNS}
               rows={ledger.data.trials}
               rowKey={(t) => t.id}
+              rowClassName={(t) => (t.counted ? undefined : styles.notCounted)}
               initialSort={{ key: 'ts', dir: 'descending' }}
             />
           </Wide>

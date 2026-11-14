@@ -18,7 +18,12 @@ have no ``default`` when the default is ``None``; they carry ``nullable: true`` 
 accept ``null`` as an override.  A field without comments falls back to its
 ````field``: text`` entry in the class docstring, when there is one.  Lists, tuples and dicts (style
 lists, theme weights, the PBO grid) are not form-editable and are left out; they
-are still settable through a config file.
+are still settable through a config file.  The exception is a tuple field whose
+dataclass ``metadata`` declares ``choices`` and ``multiple: true``
+(``alpha.disabled_features``): it becomes an ``array`` leaf with ``choices`` keyed by
+the sibling field named in ``choices_key`` (published as a dotted path,
+``alpha.feature_set``), so the form renders a multi-select that follows it; as an
+override it takes a comma-separated string of names (as ``--set``) or a list.
 
 Overrides
 ---------
@@ -63,6 +68,7 @@ ENUMS: dict[str, list[str]] = {
     "portfolio.solver": ["CLARABEL", "SCS", "OSQP", "ECOS"],
     "cost.tca_reversion_reference": ["next_close", "next_open"],
     "risk.exposure_dtype": ["float64", "float32"],
+    "alpha.feature_set": [str(x) for x in C.ALPHA_FEATURE_SETS],
 }
 
 #: Curated (minimum, maximum); ``None`` = unbounded on that side.
@@ -74,6 +80,7 @@ BOUNDS: dict[str, tuple[float | None, float | None]] = {
     "universe.exclude_bottom_size_quantile": (0, 0.9),
     "universe.refresh_days": (1, 252),
     "universe.exit_after_n_fails": (1, 50),
+    "universe.rank_offset": (0, 10_000),
     "alpha.horizon_days": (1, 252),
     "alpha.winsor_pct": (0, 0.25),
     "alpha.factor_momentum_max_tilt": (0, 1),
@@ -191,6 +198,12 @@ DESCRIPTIONS: dict[str, str] = {
     "AlphaConfig.horizon_days": "Label horizon in trading days: the forward return the alpha "
     "is scored and trained against. Shorter horizons trade faster and cost more.",
     "UniverseConfig.top_n_by_mcap": "Names kept by point-in-time market cap at each universe refresh.",
+    "UniverseConfig.rank_offset": "Skip this many of the largest names before taking top_n_by_mcap: 1000 with "
+    "top_n_by_mcap 1000 trades the names ranked 1001-2000 (the mid-cap check). 0 = the largest names.",
+    "AlphaConfig.disabled_features": "Features dropped before preprocessing, so neither the rank composite nor "
+    "the ML sleeve sees them. A theme averages its remaining members; a theme with none left is omitted and the "
+    "theme weights renormalise over the others. The label and the sizing rule never change. Each setting is a "
+    "logged trial.",
     "UniverseConfig.min_price": "Minimum share price (USD) for universe membership.",
     "UniverseConfig.min_adv_usd": "Minimum average daily dollar volume (USD) for universe membership.",
     "UniverseConfig.adv_window": "Trading days in the average-daily-volume window.",
@@ -372,6 +385,31 @@ def _leaf(path: str, kind: str, default: Any, description: str | None, nullable:
     return leaf
 
 
+def _choice_leaf(path: str, f: Any, default: Any, description: str | None) -> dict[str, Any] | None:
+    """A multi-select leaf for a tuple field whose ``metadata`` lists its ``choices``
+    (``alpha.disabled_features``: ``{"choices": {feature_set: [names]}, "choices_key":
+    "feature_set", "multiple": True}``).  ``choices_key`` is published as the dotted path
+    of the sibling field that picks the active list, so a form can follow it."""
+    md = dict(getattr(f, "metadata", {}) or {})
+    if not md.get("multiple") or not isinstance(md.get("choices"), dict):
+        return None
+    leaf: dict[str, Any] = {
+        "type": "array",
+        "title": _title(f.name),
+        "items": {"type": "string"},
+        "uniqueItems": True,
+        "multiple": True,
+        "choices": {str(k): [str(x) for x in v] for k, v in md["choices"].items()},
+        "default": [str(x) for x in (default or ())],
+    }
+    if md.get("choices_key"):
+        section = path.rsplit(".", 1)[0] if "." in path else ""
+        leaf["choices_key"] = f"{section}.{md['choices_key']}" if section else str(md["choices_key"])
+    if description:
+        leaf["description"] = description
+    return leaf
+
+
 def _object_schema(cls: type, prefix: str) -> dict[str, Any]:
     hints = get_type_hints(cls, vars(C))
     comments = field_comments(cls)
@@ -384,9 +422,12 @@ def _object_schema(cls: type, prefix: str) -> dict[str, Any]:
             props[f.name] = _object_schema(type(default), f"{path}.")
             continue
         kind = _scalar_kind(hints.get(f.name, Any))
-        if kind is None:
-            continue
         description = comments.get(f.name) or DESCRIPTIONS.get(f"{cls.__name__}.{f.name}") or documented.get(f.name)
+        if kind is None:
+            choice = _choice_leaf(path, f, default, description)
+            if choice is not None:
+                props[f.name] = choice
+            continue
         nullable = _unwrap_optional(hints.get(f.name, Any))[1]
         props[f.name] = _leaf(path, kind, default, description, nullable)
     obj: dict[str, Any] = {"type": "object", "properties": props}
@@ -439,8 +480,28 @@ def _all_fields() -> list[Any]:
     return out
 
 
+def _check_choices(leaf: dict[str, Any], v: Any) -> tuple[Any, str | None]:
+    """A multi-select value: a comma-separated string (as ``--set``) or a list of names,
+    each one of the leaf's choices (of any list: which list applies is checked by the
+    config section itself, against the field ``choices_key`` names).  Returns the
+    canonical comma-separated string (sorted, de-duplicated; ``""`` = none)."""
+    if isinstance(v, str):
+        names = [p.strip() for p in v.split(",") if p.strip()]
+    elif isinstance(v, (list, tuple)) and all(isinstance(x, str) for x in v):
+        names = [x.strip() for x in v if x.strip()]
+    else:
+        return v, "must be a comma-separated list of names"
+    valid = sorted({n for opts in (leaf.get("choices") or {}).values() for n in opts})
+    unknown = sorted(set(names) - set(valid))
+    if unknown:
+        return v, f"has unknown name(s) {unknown}; valid: {valid}"
+    return ",".join(sorted(set(names))), None
+
+
 def _check_value(path: str, leaf: dict[str, Any], v: Any) -> tuple[Any, str | None]:
     kind = leaf["type"]
+    if kind == "array":
+        return _check_choices(leaf, "" if v is None else v)
     if v is None:
         return (None, None) if leaf.get("nullable") else (v, "cannot be empty (null)")
     if kind == "boolean":
@@ -504,14 +565,25 @@ def validate_overrides(overrides: typing.Mapping[str, Any], base: C.SystemConfig
         clean[key] = val
     if issues:
         raise ConfigError(issues)
-    # one key at a time through ``SystemConfig.with_overrides`` (each rebuilds its section,
-    # so the section's own ``__post_init__`` validation names the offending key)
-    cfg = base or C.SystemConfig()
-    for key, val in clean.items():
-        try:
-            cfg = cfg.with_overrides({key: val})
-        except (KeyError, TypeError, ValueError) as e:
-            issues.append((["body", "config_overrides", key], str(e.args[0] if e.args else e), "value_error.config"))
+    # all together first (one rebuild per section, so fields validated against each other,
+    # such as alpha.disabled_features and alpha.feature_set, can come in any order); when
+    # that fails, one key at a time, so the section's own ``__post_init__`` names the key
+    start = base or C.SystemConfig()
+    try:
+        cfg = start.with_overrides(clean)
+    except (KeyError, TypeError, ValueError) as joint:
+        cfg = start
+        for key, val in clean.items():
+            try:
+                cfg = cfg.with_overrides({key: val})
+            except (KeyError, TypeError, ValueError) as e:
+                issues.append(
+                    (["body", "config_overrides", key], str(e.args[0] if e.args else e), "value_error.config")
+                )
+        if not issues:
+            issues.append(
+                (["body", "config_overrides"], str(joint.args[0] if joint.args else joint), "value_error.config")
+            )
     if issues:
         raise ConfigError(issues)
     try:

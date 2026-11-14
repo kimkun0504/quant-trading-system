@@ -12,7 +12,7 @@ from qts_api import schemas as S
 from qts_api.deps import get_jobs, get_registry, get_settings
 from qts_api.problems import Problem, summarize
 from qts_api.routers._common import problems
-from qts_api.services.jobs import JobManager, QueueFull, default_label
+from qts_api.services.jobs import JobManager, QueueFull, default_label, job_task
 from qts_api.services.launch import prepare_launch
 from qts_api.services.registry import (
     COMPARE_MAX_RUNS,
@@ -20,6 +20,7 @@ from qts_api.services.registry import (
     RunNotFound,
     RunRegistry,
     RunUnreadable,
+    pending_seal,
     valid_run_id,
 )
 from qts_api.settings import Settings
@@ -36,7 +37,7 @@ FAILED_DETAIL = "This run failed before evaluation; no results were written."
 
 
 def _job_for_run(jobs: JobManager, run_id: str) -> dict[str, Any] | None:
-    matches = [j for j in jobs.all() if j.get("run_id") == run_id]
+    matches = [j for j in jobs.all() if j.get("run_id") == run_id and job_task(j) == "pipeline"]
     return max(matches, key=lambda j: str(j.get("created_at", ""))) if matches else None
 
 
@@ -55,6 +56,7 @@ def _pending_summary(j: dict[str, Any]) -> dict[str, Any]:
         "status": "failed" if j.get("status") == "failed" else "running",
         "headline": None,
         "config_leaves": {},
+        "seal": pending_seal(j.get("request") or {}),
     }
 
 
@@ -103,7 +105,7 @@ def list_runs(registry: Registry, jobs: Jobs) -> list[dict[str, Any]]:
     pending = [
         _pending_summary(j)
         for j in jobs.all()
-        if j.get("status") not in ("done", "cancelled") and j.get("run_id") not in have
+        if job_task(j) == "pipeline" and j.get("status") not in ("done", "cancelled") and j.get("run_id") not in have
     ]
     return sorted(done + pending, key=lambda r: r["created_at"], reverse=True)
 

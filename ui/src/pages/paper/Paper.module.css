@@ -1,0 +1,61 @@
+.schedule {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.scheduleHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.code {
+  margin: 0;
+  max-height: 16rem;
+  overflow: auto;
+  padding: var(--space-3);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.picker {
+  display: flex;
+  gap: var(--space-3);
+  align-items: end;
+  flex-wrap: wrap;
+}
+
+.status {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.level {
+  font-size: var(--text-2xl);
+  font-weight: 650;
+}
+
+.reasons {
+  margin: 0;
+  padding-left: 1.2em;
+}
+
+.checkRow[data-level='STOP'] td {
+  background: var(--color-loss-wash);
+}
+
+.checkRow[data-level='WATCH'] td {
+  background: var(--color-caution-wash);
+}
+
+.orderSummary {
+  margin: 0;
+  padding: var(--space-3) var(--space-4) 0;
+  color: var(--color-fg-muted);
+  font-variant-numeric: tabular-nums;
+}

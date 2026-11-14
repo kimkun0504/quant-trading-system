@@ -18,3 +18,5 @@ export { StackedAreaChart } from './StackedAreaChart';
 export type { AreaKey } from './StackedAreaChart';
 export { MultiPointLineChart } from './MultiPointLineChart';
 export type { PointSeries } from './MultiPointLineChart';
+export { LogLineChart } from './LogLineChart';
+export type { LogSeries } from './LogLineChart';

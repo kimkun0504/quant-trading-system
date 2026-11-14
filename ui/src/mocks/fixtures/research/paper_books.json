@@ -1,0 +1,22 @@
+{
+  "paper_root": "paper",
+  "paper_root_flag": null,
+  "books": [
+    {
+      "name": "check",
+      "sizing": "replica",
+      "nav0": 5000000.0,
+      "start": "2021-08-31",
+      "first_execution": "2021-09-01",
+      "use_ml": false,
+      "config_hash": "feafa84386ebe781",
+      "reference_run": "runs/20261114T042537493781Z_feafa843",
+      "n_days": 44,
+      "last_date": "2021-11-01",
+      "last_mode": "backfill",
+      "level": "OK",
+      "trading_halted": false,
+      "nav": 5030439.031490063
+    }
+  ]
+}

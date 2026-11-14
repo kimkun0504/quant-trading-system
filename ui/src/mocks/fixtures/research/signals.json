@@ -1,0 +1,272 @@
+[
+  {
+    "name": "value_bp",
+    "theme": "value",
+    "sign": 1.0,
+    "role": "alpha_theme",
+    "feature_set": "v1",
+    "description": "log book-to-price from the latest filing visible at t (filing date + 1 day)",
+    "industry_demean": true,
+    "source": "builtin"
+  },
+  {
+    "name": "value_ep",
+    "theme": "value",
+    "sign": 1.0,
+    "role": "alpha_theme",
+    "feature_set": "v1",
+    "description": "earnings yield: trailing earnings / market cap from the latest visible filing",
+    "industry_demean": true,
+    "source": "builtin"
+  },
+  {
+    "name": "mom_12_1",
+    "theme": "momentum",
+    "sign": 1.0,
+    "role": "alpha_theme",
+    "feature_set": "v1",
+    "description": "12-1 month momentum: return from t-252 to t-21 trading days",
+    "industry_demean": false,
+    "source": "builtin"
+  },
+  {
+    "name": "mom_6_1",
+    "theme": "momentum",
+    "sign": 1.0,
+    "role": "alpha_theme",
+    "feature_set": "v1",
+    "description": "6-1 month momentum: return from t-126 to t-21 trading days",
+    "industry_demean": false,
+    "source": "builtin"
+  },
+  {
+    "name": "mom_change",
+    "theme": "ml_only",
+    "sign": 1.0,
+    "role": "alpha_theme",
+    "feature_set": "v1",
+    "description": "change of 12-1 momentum over the last 63 trading days",
+    "industry_demean": false,
+    "source": "builtin"
+  },
+  {
+    "name": "industry_momentum",
+    "theme": "momentum",
+    "sign": 1.0,
+    "role": "alpha_theme",
+    "feature_set": "v1",
+    "description": "cap-weighted mean 6-1 momentum of the name's industry (eligible names at t)",
+    "industry_demean": false,
+    "source": "builtin"
+  },
+  {
+    "name": "quality_gpa",
+    "theme": "quality",
+    "sign": 1.0,
+    "role": "alpha_theme",
+    "feature_set": "v1",
+    "description": "gross profitability: gross profits / total assets (latest visible filing)",
+    "industry_demean": true,
+    "source": "builtin"
+  },
+  {
+    "name": "investment_ag",
+    "theme": "investment",
+    "sign": 1.0,
+    "role": "alpha_theme",
+    "feature_set": "v1",
+    "description": "minus year-over-year total-asset growth (low investment scores high)",
+    "industry_demean": true,
+    "source": "builtin"
+  },
+  {
+    "name": "beta_252",
+    "theme": "low_risk",
+    "sign": -1.0,
+    "role": "risk_only_proxy",
+    "feature_set": "v1",
+    "description": "252-day rolling beta on the equal-weighted return of the eligible names",
+    "industry_demean": false,
+    "source": "builtin"
+  },
+  {
+    "name": "idio_vol_252",
+    "theme": "low_risk",
+    "sign": -1.0,
+    "role": "risk_only_proxy",
+    "feature_set": "v1",
+    "description": "252-day residual volatility of that beta regression (daily)",
+    "industry_demean": false,
+    "source": "builtin"
+  },
+  {
+    "name": "max_ret_21",
+    "theme": "low_risk",
+    "sign": -1.0,
+    "role": "model_input",
+    "feature_set": "v1",
+    "description": "largest daily return of the last 21 trading days (lottery demand)",
+    "industry_demean": false,
+    "source": "builtin"
+  },
+  {
+    "name": "turnover_63",
+    "theme": "ml_only",
+    "sign": 1.0,
+    "role": "risk_only_proxy",
+    "feature_set": "v1",
+    "description": "63-day mean of dollar volume / market cap",
+    "industry_demean": false,
+    "source": "builtin"
+  },
+  {
+    "name": "amihud_63",
+    "theme": "ml_only",
+    "sign": 1.0,
+    "role": "model_input",
+    "feature_set": "v1",
+    "description": "log 63-day mean Amihud illiquidity |return| / dollar volume",
+    "industry_demean": false,
+    "source": "builtin"
+  },
+  {
+    "name": "log_dollar_vol_63",
+    "theme": "ml_only",
+    "sign": 1.0,
+    "role": "risk_only_proxy",
+    "feature_set": "v1",
+    "description": "log 63-day mean dollar volume (as-traded price x shares traded)",
+    "industry_demean": false,
+    "source": "builtin"
+  },
+  {
+    "name": "log_mcap",
+    "theme": "ml_only",
+    "sign": 1.0,
+    "role": "risk_only_proxy",
+    "feature_set": "v1",
+    "description": "log market capitalisation",
+    "industry_demean": false,
+    "source": "builtin"
+  },
+  {
+    "name": "short_interest",
+    "theme": "short_interest",
+    "sign": -1.0,
+    "role": "alpha_theme",
+    "feature_set": "v1",
+    "description": "short interest / shares outstanding (where the store has it)",
+    "industry_demean": false,
+    "source": "builtin"
+  },
+  {
+    "name": "borrow_fee",
+    "theme": "short_interest",
+    "sign": -1.0,
+    "role": "alpha_theme",
+    "feature_set": "v1",
+    "description": "annualised stock-borrow fee (where the store has it)",
+    "industry_demean": false,
+    "source": "builtin"
+  },
+  {
+    "name": "strev_21",
+    "theme": "ml_only",
+    "sign": 1.0,
+    "role": "risk_only_proxy",
+    "feature_set": "v1",
+    "description": "short-term reversal: minus the 21-day return, demeaned within industry",
+    "industry_demean": false,
+    "source": "builtin"
+  },
+  {
+    "name": "ear_3d",
+    "theme": "ml_only",
+    "sign": 1.0,
+    "role": "alpha_theme",
+    "feature_set": "v2",
+    "description": "earnings announcement return over [p-1, p+1] minus the market, visible from p+2",
+    "industry_demean": true,
+    "source": "builtin"
+  },
+  {
+    "name": "sue",
+    "theme": "ml_only",
+    "sign": 1.0,
+    "role": "alpha_theme",
+    "feature_set": "v2",
+    "description": "standardised unexpected EPS (seasonal random walk, trailing 8 quarters), filing + 1 day",
+    "industry_demean": true,
+    "source": "builtin"
+  },
+  {
+    "name": "days_since_earnings",
+    "theme": "ml_only",
+    "sign": 1.0,
+    "role": "alpha_theme",
+    "feature_set": "v2",
+    "description": "trading days since the last visible announcement, capped at 126 (conditioning)",
+    "industry_demean": false,
+    "source": "builtin"
+  },
+  {
+    "name": "abn_volume_5d",
+    "theme": "ml_only",
+    "sign": 1.0,
+    "role": "alpha_theme",
+    "feature_set": "v2",
+    "description": "log of 5-day mean dollar volume over the 252-day mean before it",
+    "industry_demean": true,
+    "source": "builtin"
+  },
+  {
+    "name": "abn_volume_earn",
+    "theme": "ml_only",
+    "sign": 1.0,
+    "role": "alpha_theme",
+    "feature_set": "v2",
+    "description": "log dollar volume around the last announcement over its 252-day base",
+    "industry_demean": true,
+    "source": "builtin"
+  },
+  {
+    "name": "accruals",
+    "theme": "ml_only",
+    "sign": 1.0,
+    "role": "alpha_theme",
+    "feature_set": "v2",
+    "description": "Sloan accruals: (net income - operating cash flow) / average assets (TTM filing)",
+    "industry_demean": true,
+    "source": "builtin"
+  },
+  {
+    "name": "net_issuance",
+    "theme": "ml_only",
+    "sign": 1.0,
+    "role": "alpha_theme",
+    "feature_set": "v2",
+    "description": "minus the 252-day log growth of split-adjusted shares (Daniel-Titman issuance)",
+    "industry_demean": true,
+    "source": "builtin"
+  },
+  {
+    "name": "high_52w",
+    "theme": "ml_only",
+    "sign": 1.0,
+    "role": "alpha_theme",
+    "feature_set": "v2",
+    "description": "close / its 252-day high, in (0, 1] (George-Hwang 52-week high)",
+    "industry_demean": true,
+    "source": "builtin"
+  },
+  {
+    "name": "rev_5d",
+    "theme": "custom",
+    "sign": 1.0,
+    "role": "custom",
+    "feature_set": "custom",
+    "description": "example custom signal: minus the 5-day return (weekly reversal)",
+    "industry_demean": false,
+    "source": "custom"
+  }
+]

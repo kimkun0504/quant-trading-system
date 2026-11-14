@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { Link } from 'react-router';
 import type { Job } from '@/shared/api';
 import { useCancelJob, useJobLog, useMoveJob, useQueue } from '@/entities/run';
+import { TASK_NAMES, taskHref } from '@/entities/research/links';
+import { failureHint } from '@/features/research-launch/lib/failure';
 import { MAX_SELECTED, toggleSelected, useSelection } from '@/features/selection';
 import { dateTime, pct } from '@/shared/lib/format';
 import { cx } from '@/shared/lib/cx';
@@ -86,6 +88,9 @@ function JobItem({
   const running = job.status === 'running';
   const waiting = job.status === 'queued';
   const pos = job.position ?? 0;
+  // research and paper tasks share the queue: they link to their result, not to a run
+  const isRun = job.task === 'pipeline';
+  const href = taskHref(job);
   return (
     <li
       className={cx(styles.job, styles[job.status])}
@@ -94,8 +99,8 @@ function JobItem({
     >
       <div className={styles.jobHead}>
         <Badge tone={TONE[job.status]}>{WORD[job.status]}</Badge>
-        {job.status === 'done' ? (
-          <Link to={`/runs/${encodeURIComponent(job.run_id)}`} className={styles.jobLabel}>
+        {job.status === 'done' && href ? (
+          <Link to={href} className={styles.jobLabel}>
             {job.label}
           </Link>
         ) : (
@@ -132,7 +137,7 @@ function JobItem({
               Cancel
             </Button>
           ) : null}
-          {job.status === 'done' ? (
+          {job.status === 'done' && isRun ? (
             <Button
               size="sm"
               variant="quiet"
@@ -159,21 +164,22 @@ function JobItem({
             />
             <span className={styles.pct}>{pct(job.progress, { digits: 0 })}</span>
           </div>
-          <StageRail stage={job.stage} />
+          {isRun ? <StageRail stage={job.stage} /> : null}
         </>
       ) : null}
       <p className={styles.statusLine} aria-live={running ? 'off' : undefined}>
         {jobStatusLine(job)}
       </p>
+      {failureHint(job) ? <p className={styles.lastLog}>{failureHint(job)}</p> : null}
       {running && job.last_log && !job.message.startsWith(logLineText(job.last_log)) ? (
         <p className={styles.lastLog} title="Last line of the job's log">
           {logLineText(job.last_log)}
         </p>
       ) : null}
       <p className={styles.jobMeta}>
-        {job.ml ? 'Composite + ML' : 'Composite'},{' '}
+        {isRun ? (job.ml ? 'Composite + ML' : 'Composite') : TASK_NAMES[job.task]},{' '}
         {job.kind === 'synthetic' ? 'synthetic market' : 'data store'}
-        {job.n_overrides
+        {isRun && job.n_overrides
           ? `, ${job.n_overrides} ${job.n_overrides === 1 ? 'override' : 'overrides'}`
           : ''}
         {job.finished_at ? `, ${dateTime(job.finished_at)}` : ''}

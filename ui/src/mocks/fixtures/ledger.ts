@@ -26,12 +26,47 @@ const rows: [string, 1 | 2, string, number, number, number | null, number][] = [
 ];
 
 /** Per-family DSR inputs as the API reports them (illustrative values). */
-const FAMILY_STATS: Record<string, Omit<LedgerFamily, 'family' | 'n_trials'>> = {
+const FAMILY_STATS: Record<string, Omit<LedgerFamily, 'family' | 'n_trials' | 'n_not_counted'>> = {
   legacy: { effective_trials: 3.4, var_sr_annual: 0.087 },
   [ledgerFamily(1, DEMO)]: { effective_trials: 1.6, var_sr_annual: 1.97 },
   [ledgerFamily(2, DEMO)]: { effective_trials: 1.0, var_sr_annual: 0 },
   [ledgerFamily(1, STORE)]: { effective_trials: 1.0, var_sr_annual: 0 },
 };
+
+/** Records that are not trials (the shapes of `api/qts_api/services/ledger.py`). */
+const NOT_COUNTED: {
+  ts: string;
+  phase: 1 | 2;
+  dataHash: string;
+  kind: string;
+  reference: boolean;
+  note: string;
+}[] = [
+  {
+    ts: '2026-11-03T22:10:41Z',
+    phase: 1,
+    dataHash: STORE,
+    kind: 'trial',
+    reference: true,
+    note: 'A reference re-run: the same configuration as an already counted trial (for example the baseline re-run under the seal). Logged, but not counted again in N.',
+  },
+  {
+    ts: '2026-11-03T22:31:05Z',
+    phase: 1,
+    dataHash: STORE,
+    kind: 'unseal',
+    reference: false,
+    note: 'An unseal event: it records that the holdout of this configuration was looked at. Not a trial.',
+  },
+  {
+    ts: '2026-11-03T23:02:17Z',
+    phase: 1,
+    dataHash: STORE,
+    kind: 'capacity',
+    reference: false,
+    note: 'A capacity run: the baseline re-run at another NAV. Not an alpha trial, not counted in any DSR.',
+  },
+];
 
 export function seedLedger(): Ledger {
   const trials: LedgerTrial[] = rows.map(([ts, phase, dataHash, sharpe, nObs, ic, reruns], i) => {
@@ -47,16 +82,51 @@ export function seedLedger(): Ledger {
       n_obs: nObs,
       mean_ic: ic,
       n_reruns: reruns,
+      kind: 'trial',
+      reference: false,
+      counted: true,
+      note: null,
+      holdout_already_used: false,
+      unsealed: false,
     };
   });
   const counts = new Map<string, number>();
   for (const t of trials) counts.set(t.family, (counts.get(t.family) ?? 0) + 1);
+  const extra: LedgerTrial[] = NOT_COUNTED.map((r, i) => {
+    const family =
+      r.kind === 'capacity'
+        ? `capacity:${r.dataHash.slice(0, 12)}`
+        : ledgerFamily(r.phase, r.dataHash);
+    return {
+      id: `trial-${rows.length + i + 1}`,
+      ts: r.ts,
+      name: r.kind === 'unseal' ? `unseal:${family}` : family,
+      family,
+      config_hash: hex(`nc${i}`, 16),
+      data_hash: r.kind === 'unseal' ? '' : r.dataHash,
+      sharpe_annual: r.kind === 'unseal' ? Number.NaN : 1.18 - 0.2 * i,
+      n_obs: r.kind === 'unseal' ? 0 : 2008,
+      mean_ic: null,
+      n_reruns: 0,
+      kind: r.kind,
+      reference: r.reference,
+      counted: false,
+      note: r.note,
+      holdout_already_used: false,
+      unsealed: false,
+    };
+  });
+  const notCounted = new Map<string, number>();
+  for (const t of extra) notCounted.set(t.family, (notCounted.get(t.family) ?? 0) + 1);
+  const all = [...trials, ...extra];
+  const names = [...new Set(all.map((t) => t.family))].sort();
   return {
-    trials,
-    families: [...counts.keys()].sort().map((family) => ({
+    trials: all,
+    families: names.map((family) => ({
       family,
       n_trials: counts.get(family) ?? 0,
       ...(FAMILY_STATS[family] ?? { effective_trials: 1, var_sr_annual: 0 }),
+      n_not_counted: notCounted.get(family) ?? 0,
     })),
   };
 }

@@ -163,12 +163,19 @@ def test_apply_seal_cuts_reference_tables(tmp_path):
 
 
 def test_full_history_hash_is_cached_and_invalidated(store, tmp_path):
+    from qts.research.data import cached_full_history_market_hash
+
     spec = StoreSpec(store=str(store), max_names=50)
     cache = tmp_path / "mh"
+    assert cached_full_history_market_hash(spec, str(cache)) is None  # nothing computed yet
+    assert cached_full_history_market_hash(spec, None) is None
     h1 = full_history_market_hash(spec, cache_dir=str(cache))
     assert len(list(cache.glob("*.json"))) == 1
     assert full_history_market_hash(spec, cache_dir=str(cache)) == h1
+    assert cached_full_history_market_hash(spec, str(cache)) == h1  # the lookup reads no panel
+    assert cached_full_history_market_hash(StoreSpec(store=str(store), max_names=40), str(cache)) is None
     _perturb_after(store, HOLDOUT)  # rewrites the files: new fingerprint, new entry
+    assert cached_full_history_market_hash(spec, str(cache)) is None  # a stale entry is never served
     h2 = full_history_market_hash(spec, cache_dir=str(cache))
     assert h2 != h1 and len(list(cache.glob("*.json"))) == 2
     md = ParquetStore(str(store)).as_market_data(

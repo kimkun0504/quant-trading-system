@@ -14,6 +14,7 @@ QTS_JOB_START_METHOD   multiprocessing start method           ``spawn``
 QTS_ALLOWED_HOSTS      extra Host header names, comma-        (none; localhost, 127.0.0.1
                        separated (``*.example.com`` allowed)  and ::1 are always allowed)
 QTS_MAX_QUEUED         jobs waiting for a worker; more -> 429 ``20``
+QTS_PAPER_ROOT         paper books (``qts paper --paper-root``) ``./paper``
 =====================  =====================================  ==========================
 
 The Host allow-list (``TrustedHostMiddleware``) is the DNS-rebinding defence: a web page
@@ -49,6 +50,7 @@ class Settings:
     job_start_method: str = "spawn"
     allowed_hosts: tuple[str, ...] = DEFAULT_ALLOWED_HOSTS
     max_queued: int = 20
+    paper_root: Path = Path("paper")
     extra: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -77,4 +79,5 @@ class Settings:
             job_start_method=e.get("QTS_JOB_START_METHOD", "spawn"),
             allowed_hosts=DEFAULT_ALLOWED_HOSTS + tuple(h for h in extra_hosts if h not in DEFAULT_ALLOWED_HOSTS),
             max_queued=max(0, int(e.get("QTS_MAX_QUEUED", "20"))),
+            paper_root=Path(e.get("QTS_PAPER_ROOT", "paper")).expanduser().resolve(),
         )

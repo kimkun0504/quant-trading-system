@@ -1,0 +1,50 @@
+{
+  "seal": {
+    "holdout_start": "2021-03-01",
+    "load_end": "2021-02-28",
+    "reason": "fixture: the last months of the synthetic store are the holdout",
+    "sealed_by": "fixture",
+    "sealed_at": "2026-11-13",
+    "store_end": "2021-11-01",
+    "inherit_family": ["pipeline_phase1:20b8af2873cb"],
+    "path": "research/seal.yaml"
+  },
+  "data_through": "2021-02-28",
+  "unseals": [
+    {
+      "ts": "2026-11-14T04:25:44.331041+00:00",
+      "config_hash": "4b151894c44ea62e",
+      "family": "pipeline_phase1:20b8af2873cb",
+      "phase": 1,
+      "unseal_reason": "fixture: final check",
+      "forced": false,
+      "n_previous_unseals": 0
+    }
+  ],
+  "n_forced": 0,
+  "runs_under_seal": 13,
+  "by_family": {
+    "pipeline_phase1:20b8af2873cb": {
+      "trial": 4,
+      "reference": 1
+    },
+    "capacity:20b8af2873cb": {
+      "capacity": 4
+    },
+    "calibration:20b8af2873cb": {
+      "calibration": 4
+    }
+  },
+  "inherited_families": {
+    "pipeline_phase1:20b8af2873cb": 5
+  },
+  "exempt_runs": [
+    {
+      "ts": "2026-11-14T04:26:42.798710+00:00",
+      "family": "confirm:midcap:770ab7da1011",
+      "seal_exempt": "midcap",
+      "config_hash": "3ad20e2259c071c5"
+    }
+  ],
+  "ledger_path": "runs/trial_ledger.jsonl"
+}

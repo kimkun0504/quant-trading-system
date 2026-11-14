@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { mockSeal } from '@/mocks/fixtures/generate';
 import type { RunSummary } from '@/shared/api';
 import {
   clusterFamilies,
@@ -40,6 +41,7 @@ function run(
     status: 'done',
     headline: null,
     config_leaves: { ...BASE, ...leaves },
+    seal: mockSeal({}),
     ...extra,
   };
 }
@@ -147,6 +149,7 @@ describe('families', () => {
           n_trials: 4,
           effective_trials: 3,
           var_sr_annual: 0.2,
+          n_not_counted: 0,
         },
       ])?.n_trials,
     ).toBe(4);

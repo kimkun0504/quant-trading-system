@@ -1,0 +1,13 @@
+{
+  "date": "2021-11-01",
+  "orders_for": null,
+  "mode": "backfill",
+  "status": "OK",
+  "orders": [],
+  "fills": [],
+  "n_orders": 0,
+  "buy_usd": 0.0,
+  "sell_usd": 0.0,
+  "est_cost_usd": 0.0,
+  "cancelled_by_stop": 0
+}

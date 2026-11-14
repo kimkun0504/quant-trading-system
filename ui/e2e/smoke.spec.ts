@@ -105,7 +105,7 @@ test('dossier: old tab addresses redirect to the section; add to tray from the h
   // config: search and diff against another run
   await page.goto(`/runs/${DEMO}#config`);
   await page.getByRole('searchbox', { name: /Search configuration/ }).fill('horizon');
-  await expect(page.getByText('1 of 35 keys')).toBeVisible();
+  await expect(page.getByText('1 of 38 keys')).toBeVisible();
   await expect(page.getByRole('region', { name: 'Configuration' })).not.toContainText(
     'trade_aversion',
   );

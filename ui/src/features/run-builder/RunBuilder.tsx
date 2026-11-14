@@ -32,9 +32,13 @@ const RUN_FIELD_BY_LOC: Record<string, RunSettingKey> = {
   end: 'end',
   max_names: 'maxNames',
   min_mcap_ever: 'minMcapEver',
+  max_rank: 'maxRank',
+  allow_partial_coverage: 'allowPartialCoverage',
   max_days: 'maxDays',
   label: 'label',
   signal_lag_days: 'lag',
+  unseal_reason: 'unsealReason',
+  force: 'force',
 };
 
 /** API issues of a validation, split into per-config-path and per-run-setting messages. */
@@ -307,6 +311,7 @@ export function RunBuilder({
             errors={runErrs}
             storePath={health.data ? health.data.store_path : undefined}
             minDays={activeValidation?.min_days}
+            configHash={activeValidation?.config_hash ?? null}
             autoLabel={autoLabel(state.base, active.rows)}
             onChange={(key, value) => dispatch({ type: 'setRun', key, value })}
             onReset={(key) => dispatch({ type: 'resetRun', key })}

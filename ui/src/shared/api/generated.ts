@@ -412,6 +412,536 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/seal': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** The holdout seal, every unseal, runs under it */
+    get: operations['get_seal_api_seal_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/seal/unseals': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Earlier unseals of one configuration (a second needs force and is flagged) */
+    get: operations['get_unseals_api_seal_unseals_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/ledger/impact': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * What k new trials do to a family's deflated Sharpe ratio (trial_impact)
+     * @description The family's trial count before / after, ``N_eff``, ``E[max SR]`` and the current
+     *     best trial's DSR before and after ``n_new`` independent new trials
+     *     (:func:`qts.research.sweep.trial_impact`, the numbers ``qts sweep`` prints).
+     */
+    get: operations['get_trial_impact_api_ledger_impact_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/families/resolve': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** The full-history market hash of a store slice, when cached (no store read) */
+    post: operations['resolve_family_api_families_resolve_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/families/resolve/jobs': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Compute and cache the family hash of a store slice (a background job, about a minute) */
+    post: operations['launch_resolve_family_api_families_resolve_jobs_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/features': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** The alpha features of a feature set */
+    get: operations['get_features_api_features_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/signals': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Every testable signal */
+    get: operations['list_signals_api_signals_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/signals/tests': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Signal tests, newest first */
+    get: operations['list_signal_tests_api_signals_tests_get'];
+    put?: never;
+    /** Run a signal test as a background job (one trial in signal:<hash>) */
+    post: operations['launch_signal_test_api_signals_tests_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/signals/tests/{test_id}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** One signal test, with its family's multiple-testing state now */
+    get: operations['get_signal_test_api_signals_tests__test_id__get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/signals/tests/preview': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Before a test: the family it joins and that family's test count */
+    post: operations['preview_signal_test_api_signals_tests_preview_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/sweeps/plan': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Plan a sweep: members, family, trials added and the DSR haircut (nothing written) */
+    post: operations['plan_sweep_api_sweeps_plan_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/sweeps': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Every sweep manifest, newest first */
+    get: operations['list_sweeps_api_sweeps_get'];
+    put?: never;
+    /**
+     * Create the confirmed sweep and queue one job per member, then the PBO job
+     * @description ``create_sweep(plan)`` then one ``run_sweep_member`` job per member that is not
+     *     done (members run one at a time with the stage cache) and a ``finalize_sweep`` job.
+     *     The plan must be the one confirmed (``expected_id`` = the preview's id).
+     */
+    post: operations['create_sweep_api_sweeps_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/sweeps/{sweep_id}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** One sweep: members, metrics, PBO, and its jobs */
+    get: operations['get_sweep_api_sweeps__sweep_id__get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/sweeps/{sweep_id}/resume': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Queue the members that are not done (an interrupted sweep), then PBO again */
+    post: operations['resume_sweep_api_sweeps__sweep_id__resume_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/capacity': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Capacity curves, newest first */
+    get: operations['list_capacity_api_capacity_get'];
+    put?: never;
+    /** Re-run the baseline backtest at several NAVs (a background job; not trials) */
+    post: operations['launch_capacity_api_capacity_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/capacity/{result_id}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Capacity */
+    get: operations['get_capacity_api_capacity__result_id__get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/risk-calibrations': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Risk calibration reports */
+    get: operations['list_risk_api_risk_calibrations_get'];
+    put?: never;
+    /** Realised / ex-ante vol by year for a grid of nu (a background job; a report, not trials) */
+    post: operations['launch_risk_api_risk_calibrations_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/risk-calibrations/{result_id}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Risk */
+    get: operations['get_risk_api_risk_calibrations__result_id__get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/checks/midcap': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** The pre-registered criteria, results found on disk, and whether the check may run */
+    get: operations['get_midcap_api_checks_midcap_get'];
+    put?: never;
+    /**
+     * Run the mid-cap check (or its coverage dry run) as a background job
+     * @description Once per configuration: a second run is refused (409) unless ``force`` with
+     *     ``confirm`` equal to the status's ``force_phrase``; the repeat is flagged on its
+     *     ledger record.  A dry run (coverage and plan only) is always allowed.
+     */
+    post: operations['launch_midcap_api_checks_midcap_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/checks/midcap/preregistration': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** The pre-registration note and its SHA-256 */
+    get: operations['get_preregistration_api_checks_midcap_preregistration_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/checks/midcap/results/{run_id}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** One mid-cap check result with the mid-cap run and the large-cap reference */
+    get: operations['get_midcap_result_api_checks_midcap_results__run_id__get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/paper/books': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** The paper books, with their current status level */
+    get: operations['list_books_api_paper_books_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/paper/books/{name}/status': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Status level, checks, metrics and series of a book (qts paper status) */
+    get: operations['get_status_api_paper_books__name__status_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/paper/books/{name}/history': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get History */
+    get: operations['get_history_api_paper_books__name__history_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/paper/books/{name}/orders': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Orders generated on a job day (for the next close) with estimated costs, and that day's fills */
+    get: operations['get_orders_api_paper_books__name__orders_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/paper/books/{name}/holdings': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Holdings */
+    get: operations['get_holdings_api_paper_books__name__holdings_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/paper/books/{name}/schedule': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** launchd plist and crontab line for the daily job (printed, never installed) */
+    get: operations['get_schedule_api_paper_books__name__schedule_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/paper/books/{name}/ack': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Acknowledge the latest status (a STOP needs it before trading resumes) */
+    post: operations['post_ack_api_paper_books__name__ack_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/paper/books/{name}/run': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** The daily job (qts paper run) as a background job */
+    post: operations['post_run_api_paper_books__name__run_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/paper/books/{name}/reconcile': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Paper vs the batch simulator over the book's dates (a background job) */
+    post: operations['post_reconcile_api_paper_books__name__reconcile_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -649,6 +1179,108 @@ export interface components {
       /** N Failed Solves */
       n_failed_solves: number;
     };
+    /** CapacityList */
+    CapacityList: {
+      /** Results */
+      results: components['schemas']['CapacitySummary'][];
+    };
+    /** CapacityPoint */
+    CapacityPoint: {
+      /** Nav */
+      nav: number;
+      /** Sharpe Gross */
+      sharpe_gross: number | null;
+      /** Sharpe Net */
+      sharpe_net: number | null;
+      /** Cagr Net */
+      cagr_net: number | null;
+      /** Cost Bps Per Side */
+      cost_bps_per_side: number | null;
+      /** Turnover Per Day */
+      turnover_per_day: number | null;
+      /** Traded At Adv Cap */
+      traded_at_adv_cap: number | null;
+      /** Solves With Adv Cap */
+      solves_with_adv_cap: number | null;
+      /** Breakeven Cost Bps */
+      breakeven_cost_bps: number | null;
+      /** Impact Bps Per Side */
+      impact_bps_per_side?: number | null;
+      /** Spread Bps Per Side */
+      spread_bps_per_side?: number | null;
+      /** Fees Bps Per Side */
+      fees_bps_per_side?: number | null;
+      /** Run Id */
+      run_id?: string | null;
+      /** Seconds */
+      seconds?: number | null;
+    };
+    /** CapacityRequest */
+    CapacityRequest: {
+      store?: components['schemas']['StoreSlice'];
+      /**
+       * Navs
+       * @description NAVs in USD
+       */
+      navs: number[];
+      /**
+       * Baseline
+       * @default configs/baseline.yaml
+       */
+      baseline: string;
+      /** Max Days */
+      max_days?: number | null;
+      /**
+       * Use Ml
+       * @default true
+       */
+      use_ml: boolean;
+    };
+    /**
+     * CapacityResult
+     * @description ``runs/_capacity/<id>.json``.  Not a trial: logged with ``kind: capacity``.
+     */
+    CapacityResult: {
+      /** Id */
+      id: string;
+      /** Config Hash */
+      config_hash: string;
+      /** Family */
+      family: string;
+      /** Points */
+      points: components['schemas']['CapacityPoint'][];
+      /** Half Sharpe Nav */
+      half_sharpe_nav: number | null;
+      /** Reference Sharpe Net */
+      reference_sharpe_net: number | null;
+      /** Cache */
+      cache: {
+        [key: string]: string;
+      };
+      /** Sealed End */
+      sealed_end: string | null;
+      /** Notes */
+      notes: string[];
+      /** Json Path */
+      json_path?: string | null;
+    };
+    /** CapacitySummary */
+    CapacitySummary: {
+      /** Id */
+      id: string;
+      /** Config Hash */
+      config_hash: string;
+      /** Family */
+      family: string;
+      /** Navs */
+      navs: number[];
+      /** Half Sharpe Nav */
+      half_sharpe_nav: number | null;
+      /** Reference Sharpe Net */
+      reference_sharpe_net: number | null;
+      /** Sealed End */
+      sealed_end: string | null;
+    };
     /**
      * ColumnarSeries
      * @description Columnar time series: ``series[name][i]`` belongs to ``dates[i]``.
@@ -735,6 +1367,15 @@ export interface components {
       /** Borrow */
       borrow: (number | null)[];
     };
+    /** CoverageWorstDate */
+    CoverageWorstDate: {
+      /** Date */
+      date: string;
+      /** Coverage */
+      coverage: number | null;
+      /** Loaded */
+      loaded: number;
+    };
     /** DecileSpread */
     DecileSpread: {
       /** Mean */
@@ -775,6 +1416,65 @@ export interface components {
        * @enum {string}
        */
       role: 'alpha_theme' | 'risk_only' | 'market';
+    };
+    /**
+     * FamilyResolution
+     * @description The trial family a research command on a store slice logs into, when it can be
+     *     known without reading the store (the full-history market hash is cached).
+     */
+    FamilyResolution: {
+      /** Known */
+      known: boolean;
+      /** Market Hash Full */
+      market_hash_full: string | null;
+      /**
+       * Reason
+       * @description why the family is not known yet; '' when it is
+       */
+      reason: string;
+    };
+    /** FeatureInfo */
+    FeatureInfo: {
+      /** Name */
+      name: string;
+      /**
+       * Theme
+       * @description composite theme it belongs to, or "ml_only"
+       */
+      theme: string;
+      /** Sign */
+      sign: number;
+      /**
+       * Role
+       * @description risk_only_proxy, alpha_theme or model_input
+       */
+      role: string;
+      /**
+       * Feature Set
+       * @description first feature set that has it (v1 / v2)
+       */
+      feature_set: string;
+      /** Description */
+      description: string;
+    };
+    /** FeatureList */
+    FeatureList: {
+      /** Feature Set */
+      feature_set: string;
+      /** Features */
+      features: components['schemas']['FeatureInfo'][];
+      /**
+       * Themes
+       * @description composite themes and their members in this feature set
+       */
+      themes: components['schemas']['FeatureTheme'][];
+    };
+    /** FeatureTheme */
+    FeatureTheme: {
+      /** Theme */
+      theme: string;
+      /** Members */
+      members: string[];
     };
     /** FoldSharpe */
     FoldSharpe: {
@@ -926,6 +1626,17 @@ export interface components {
       /** Mean Ic */
       mean_ic: number;
     };
+    /** IcFold */
+    IcFold: {
+      /** Start */
+      start: string;
+      /** End */
+      end: string;
+      /** Mean Ic */
+      mean_ic: number | null;
+      /** N */
+      n: number;
+    };
     /** IcReport */
     IcReport: {
       /** Mean Ic */
@@ -947,8 +1658,74 @@ export interface components {
       /** By Year */
       by_year: components['schemas']['IcByYear'][];
     };
+    /** IcStats */
+    IcStats: {
+      /** Mean Ic */
+      mean_ic: number | null;
+      /** Sd */
+      sd: number | null;
+      /** T Nw */
+      t_nw: number | null;
+      /** Nw Lags */
+      nw_lags: number;
+      /** N */
+      n: number;
+      /** Hit */
+      hit: number | null;
+    };
+    /** IcYear */
+    IcYear: {
+      /** Mean Ic */
+      mean_ic: number | null;
+      /** N */
+      n: number;
+    };
     /** Job */
     Job: {
+      /**
+       * Task
+       * @description pipeline: a run; otherwise a research or paper-trading task
+       * @enum {string}
+       */
+      task:
+        | 'pipeline'
+        | 'signal_test'
+        | 'sweep_member'
+        | 'sweep_finalize'
+        | 'capacity'
+        | 'risk_calibration'
+        | 'midcap_check'
+        | 'paper_run'
+        | 'paper_reconcile'
+        | 'market_hash';
+      /**
+       * Subject
+       * @description what the task is about: sweep id, book name, signal, ...
+       */
+      subject: string | null;
+      /**
+       * Command
+       * @description the equivalent `qts` command line
+       */
+      command: string | null;
+      /**
+       * Result
+       * @description a finished task's summary (ids, headline numbers)
+       */
+      result: {
+        [key: string]: boolean | number | string | null;
+      } | null;
+      /**
+       * Error Kind
+       * @description failed jobs: stale_data (exit code 3: the vendor has not published the session yet), book_locked (exit code 4), paper, seal, coverage (the store prefilter misses names the universe picks: use --max-rank), refused (a once-only or seal rule), error
+       */
+      error_kind:
+        ('stale_data' | 'book_locked' | 'paper' | 'seal' | 'coverage' | 'refused' | 'error') | null;
+      /**
+       * Exit Code
+       * @description failed paper jobs: the `qts paper` exit code
+       */
+      exit_code: number | null;
       /** Job Id */
       job_id: string;
       /** Run Id */
@@ -1069,6 +1846,42 @@ export interface components {
         [key: string]: number;
       };
     };
+    /**
+     * JsonSchemaArray
+     * @description A multi-select field (``alpha.disabled_features``): the allowed names are
+     *     ``choices[<value of the field at choices_key>]``; as an override it takes a
+     *     comma-separated string of names (``--set`` syntax), ``""`` for none.
+     */
+    JsonSchemaArray: {
+      /**
+       * Type
+       * @constant
+       */
+      type: 'array';
+      /** Title */
+      title?: string;
+      /** Description */
+      description?: string;
+      items: components['schemas']['JsonSchemaItems'];
+      /** Uniqueitems */
+      uniqueItems?: boolean;
+      /** Multiple */
+      multiple?: boolean;
+      /** Default */
+      default?: string[];
+      /**
+       * Choices
+       * @description allowed names keyed by the value of the field at choices_key
+       */
+      choices?: {
+        [key: string]: string[];
+      };
+      /**
+       * Choices Key
+       * @description dotted path of the field whose value picks the list in choices (alpha.feature_set)
+       */
+      choices_key?: string;
+    };
     /** JsonSchemaBoolean */
     JsonSchemaBoolean: {
       /**
@@ -1084,6 +1897,14 @@ export interface components {
       nullable?: boolean;
       /** Default */
       default?: boolean;
+    };
+    /** JsonSchemaItems */
+    JsonSchemaItems: {
+      /**
+       * Type
+       * @constant
+       */
+      type: 'string';
     };
     /** JsonSchemaNumber */
     JsonSchemaNumber: {
@@ -1126,6 +1947,7 @@ export interface components {
           | components['schemas']['JsonSchemaNumber']
           | components['schemas']['JsonSchemaBoolean']
           | components['schemas']['JsonSchemaString']
+          | components['schemas']['JsonSchemaArray']
           | components['schemas']['JsonSchemaObject'];
       };
     };
@@ -1212,6 +2034,16 @@ export interface components {
        */
       min_mcap_ever?: number | null;
       /**
+       * Max Rank
+       * @description store prefilter (`qts run --max-rank K`): every id that ranked <= K by market cap among the names passing the universe's price / ADV screens on some date; covers a top-N universe when K >= N / (1 - exclude_bottom_size_quantile). Not with max_names / min_mcap_ever
+       */
+      max_rank?: number | null;
+      /**
+       * Allow Partial Coverage
+       * @description store runs: load although the prefilter misses names the universe picks (look-ahead; flagged on the ledger record; `qts run --allow-partial-coverage`). Default: such a load is refused
+       */
+      allow_partial_coverage?: boolean | null;
+      /**
        * Cache
        * @description reuse fitted models from the stage cache (qts --cache)
        */
@@ -1231,6 +2063,16 @@ export interface components {
        * @description simulator pricing venue (default routed)
        */
       venue?: ('routed' | 'auction' | 'continuous') | null;
+      /**
+       * Unseal Reason
+       * @description store runs: load the sealed holdout (`qts run --unseal REASON`). Once per configuration, logged in the trial ledger before the run starts; cannot be undone
+       */
+      unseal_reason?: string | null;
+      /**
+       * Force
+       * @description with unseal_reason: unseal a configuration whose holdout was already used (flagged)
+       */
+      force?: boolean | null;
     };
     /** LaunchRunResponse */
     LaunchRunResponse: {
@@ -1256,6 +2098,11 @@ export interface components {
       effective_trials: number;
       /** Var Sr Annual */
       var_sr_annual: number;
+      /**
+       * N Not Counted
+       * @description reference re-runs and records that are not trials
+       */
+      n_not_counted: number;
     };
     /** LedgerTrial */
     LedgerTrial: {
@@ -1279,6 +2126,948 @@ export interface components {
       mean_ic: number | null;
       /** N Reruns */
       n_reruns: number;
+      /**
+       * Kind
+       * @description record kind: trial (absent = trial), unseal, capacity, calibration, ...
+       */
+      kind: string;
+      /**
+       * Reference
+       * @description a re-run of an already counted configuration
+       */
+      reference: boolean;
+      /**
+       * Counted
+       * @description enters the family's N and V (an ordinary trial that is not a reference)
+       */
+      counted: boolean;
+      /**
+       * Note
+       * @description why the record is not counted, in plain words; null when counted
+       */
+      note: string | null;
+      /** Holdout Already Used */
+      holdout_already_used: boolean;
+      /** Unsealed */
+      unsealed: boolean;
+    };
+    /**
+     * MidcapCheckResult
+     * @description ``runs/_checks/midcap_<run_id>.json`` / ``<run>/midcap_check.json``.
+     */
+    MidcapCheckResult: {
+      /** Config Hash */
+      config_hash: string;
+      /** Config Path */
+      config_path: string;
+      store: components['schemas']['StoreSpecView'];
+      coverage: components['schemas']['MidcapCoverage'] | null;
+      /** Preregistration */
+      preregistration: string;
+      /** Preregistration Sha256 */
+      preregistration_sha256: string;
+      /** Previous Runs */
+      previous_runs: components['schemas']['MidcapPreviousRun'][];
+      /** Dry Run */
+      dry_run: boolean;
+      /** Forced */
+      forced: boolean;
+      /** Family */
+      family: string | null;
+      /** Run Dir */
+      run_dir: string | null;
+      verdict: components['schemas']['MidcapVerdict'] | null;
+      /** Json Path */
+      json_path?: string | null;
+    };
+    /** MidcapCoverage */
+    MidcapCoverage: {
+      /** Rank */
+      rank: number;
+      /** Prefilter */
+      prefilter: string;
+      /** N Loaded Ids */
+      n_loaded_ids: number;
+      /** N Dates */
+      n_dates: number;
+      /** Share Dates Full */
+      share_dates_full: number | null;
+      /** Min Coverage */
+      min_coverage: number | null;
+      /** Worst Dates */
+      worst_dates: components['schemas']['CoverageWorstDate'][];
+      /** Min Loaded */
+      min_loaded: number;
+      /** Median Loaded */
+      median_loaded: number | null;
+      /** Needed Loaded */
+      needed_loaded: number;
+      /** Est Load Gb */
+      est_load_gb?: number | null;
+      /** Min Store */
+      min_store?: number | null;
+      /** N Short Dates */
+      n_short_dates?: number | null;
+      /** Min Share */
+      min_share?: number | null;
+      /** Ok */
+      ok: boolean;
+    };
+    /** MidcapCriterion */
+    MidcapCriterion: {
+      /** Id */
+      id: string;
+      /** Name */
+      name: string;
+      /** Value */
+      value: string;
+      /** Threshold */
+      threshold: string;
+      /** Passed */
+      passed: boolean | null;
+      /** Mark */
+      mark: string;
+    };
+    /** MidcapPreregistration */
+    MidcapPreregistration: {
+      /** Path */
+      path: string;
+      /** Exists */
+      exists: boolean;
+      /**
+       * Sha256
+       * @description SHA-256 of the text above the '## Result' heading
+       */
+      sha256: string;
+      /** Text */
+      text: string;
+    };
+    /** MidcapPreviousRun */
+    MidcapPreviousRun: {
+      /** Ts */
+      ts?: string | null;
+      /** Family */
+      family?: string | null;
+      /** Config Hash */
+      config_hash?: string | null;
+      /** Sharpe Annual */
+      sharpe_annual?: number | null;
+      /**
+       * Forced
+       * @default false
+       */
+      forced: boolean;
+    };
+    /** MidcapRequest */
+    MidcapRequest: {
+      /** @description default prefilter: --max-rank 2750 (screened market-cap rank) */
+      store?: components['schemas']['StoreSlice'];
+      /**
+       * Dry Run
+       * @default false
+       */
+      dry_run: boolean;
+      /**
+       * Force
+       * @default false
+       */
+      force: boolean;
+      /**
+       * Confirm
+       * @description with force: the typed force_phrase
+       */
+      confirm?: string | null;
+      /**
+       * Cache
+       * @default true
+       */
+      cache: boolean;
+      /**
+       * Nav
+       * @default 5000000
+       */
+      nav: number;
+    };
+    /** MidcapResultDetail */
+    MidcapResultDetail: {
+      result: components['schemas']['MidcapCheckResult'];
+      /** @description the mid-cap run in the registry (null when not on this machine) */
+      run: components['schemas']['RunSummary'] | null;
+      /** @description the large-cap reference run */
+      reference: components['schemas']['RunSummary'] | null;
+      /** Sha Matches */
+      sha_matches: boolean;
+    };
+    /** MidcapResultSummary */
+    MidcapResultSummary: {
+      /** Run Id */
+      run_id: string;
+      /** Outcome */
+      outcome: string | null;
+      /** Forced */
+      forced: boolean;
+      /** Family */
+      family: string | null;
+      /** Created At */
+      created_at: string | null;
+      /** Preregistration Sha256 */
+      preregistration_sha256: string;
+      /**
+       * Sha Matches
+       * @description the result's pre-registration hash equals the note's hash now
+       */
+      sha_matches: boolean;
+      /**
+       * Source
+       * @description runs/_checks/<file> or <run>/midcap_check.json
+       */
+      source: string;
+    };
+    /** MidcapRule */
+    MidcapRule: {
+      /** Id */
+      id: string;
+      /** Rule */
+      rule: string;
+    };
+    /** MidcapSecondary */
+    MidcapSecondary: {
+      /** Net Sharpe Cost X2 */
+      net_sharpe_cost_x2?: number | null;
+      /** Breakeven Cost Bps */
+      breakeven_cost_bps?: number | null;
+      /** Cost Bps Per Side */
+      cost_bps_per_side?: number | null;
+      /** Psr */
+      psr?: number | null;
+      /** Traded At Cap */
+      traded_at_cap?: number | null;
+      /** Solves With Cap */
+      solves_with_cap?: number | null;
+      /** Median Universe */
+      median_universe?: number | null;
+      /** Ic By Fold */
+      ic_by_fold?: {
+        [key: string]: number | null;
+      } | null;
+      /** Sharpe By Fold */
+      sharpe_by_fold?: {
+        [key: string]: number | null;
+      } | null;
+    };
+    /** MidcapSideBySide */
+    MidcapSideBySide: {
+      /** Metric */
+      metric: string;
+      /** Midcap */
+      midcap: string;
+      /** Largecap */
+      largecap: string;
+      /** Midcap Value */
+      midcap_value?: number | null;
+      /** Largecap Value */
+      largecap_value?: number | null;
+    };
+    /** MidcapStatus */
+    MidcapStatus: {
+      /** Criteria */
+      criteria: components['schemas']['MidcapRule'][];
+      /**
+       * Config Hash
+       * @description baseline + universe.rank_offset=1000
+       */
+      config_hash: string;
+      /** Config Path */
+      config_path: string;
+      /** Preregistration */
+      preregistration: string;
+      /**
+       * Preregistration Sha256
+       * @description '' when the note is missing
+       */
+      preregistration_sha256: string;
+      /**
+       * Previous Runs
+       * @description ledger records of this configuration's check
+       */
+      previous_runs: components['schemas']['MidcapPreviousRun'][];
+      /** Results */
+      results: components['schemas']['MidcapResultSummary'][];
+      /** Can Launch */
+      can_launch: boolean;
+      /**
+       * Blocked Reason
+       * @description why the launch button is disabled
+       */
+      blocked_reason: string | null;
+      /**
+       * Needs Force
+       * @description the check already ran: a repeat needs force + the typed phrase
+       */
+      needs_force: boolean;
+      /** Force Phrase */
+      force_phrase: string;
+      /** Store Configured */
+      store_configured: boolean;
+      /** Reference Run Id */
+      reference_run_id: string;
+      last_dry_run: components['schemas']['MidcapCheckResult'] | null;
+      /** Jobs */
+      jobs: components['schemas']['Job'][];
+    };
+    /** MidcapVerdict */
+    MidcapVerdict: {
+      /**
+       * Outcome
+       * @description "PASS", "PASS, cost-fragile", "FAIL" or "INCONCLUSIVE"
+       */
+      outcome: string;
+      /** Criteria */
+      criteria: components['schemas']['MidcapCriterion'][];
+      /** Validity */
+      validity: components['schemas']['MidcapCriterion'][];
+      secondary: components['schemas']['MidcapSecondary'];
+      /** Side By Side */
+      side_by_side: components['schemas']['MidcapSideBySide'][];
+      /** Reference Run */
+      reference_run: string | null;
+      /** Run Id */
+      run_id: string | null;
+      /** Notes */
+      notes: string[];
+    };
+    /** NuResult */
+    NuResult: {
+      /** Nu Scale */
+      nu_scale: number;
+      overall: components['schemas']['VolStats'];
+      /** By Year */
+      by_year: {
+        [key: string]: components['schemas']['VolStats'];
+      };
+      /** Sharpe Net */
+      sharpe_net: number | null;
+      /** Run Id */
+      run_id?: string | null;
+    };
+    /** PaperAck */
+    PaperAck: {
+      /** Date */
+      date: string;
+      /** Ts */
+      ts: string;
+      /** Level */
+      level: string | null;
+      /** Rules */
+      rules: string[];
+      /** Reasons */
+      reasons: string[];
+      /** Note */
+      note: string;
+      /** User */
+      user: string;
+    };
+    /** PaperAckRequest */
+    PaperAckRequest: {
+      /**
+       * Note
+       * @description why it is safe to continue
+       */
+      note: string;
+    };
+    /** PaperAnalyticCone */
+    PaperAnalyticCone: {
+      /** Expected */
+      expected: (number | null)[];
+      /** Lower */
+      lower: (number | null)[];
+      /** Upper */
+      upper: (number | null)[];
+    };
+    /** PaperBookStats */
+    PaperBookStats: {
+      /** Sharpe Gross */
+      sharpe_gross: number | null;
+      /** Sharpe Net */
+      sharpe_net: number | null;
+      /** Ann Return Gross */
+      ann_return_gross: number | null;
+      /** Ann Vol */
+      ann_vol: number | null;
+      /** Turnover Per Day */
+      turnover_per_day: number | null;
+      /** Cost Bps Per Side */
+      cost_bps_per_side: number | null;
+      /** Breakeven Cost Bps */
+      breakeven_cost_bps: number | null;
+      /** N Days */
+      n_days: number | null;
+    };
+    /** PaperBookSummary */
+    PaperBookSummary: {
+      /** Name */
+      name: string;
+      /**
+       * Sizing
+       * @description moc (live-tradable) or replica (batch-identical pipeline check)
+       */
+      sizing: string;
+      /** Nav0 */
+      nav0: number;
+      /** Start */
+      start: string;
+      /** First Execution */
+      first_execution: string;
+      /** Use Ml */
+      use_ml: boolean;
+      /** Config Hash */
+      config_hash: string;
+      /** Reference Run */
+      reference_run: string | null;
+      /** N Days */
+      n_days: number;
+      /** Last Date */
+      last_date: string | null;
+      /**
+       * Last Mode
+       * @description live or backfill: only live days are paper-trading evidence
+       */
+      last_mode: string | null;
+      /**
+       * Level
+       * @enum {string}
+       */
+      level: 'OK' | 'WATCH' | 'STOP';
+      /** Trading Halted */
+      trading_halted: boolean;
+      /** Nav */
+      nav: number | null;
+    };
+    /** PaperBooks */
+    PaperBooks: {
+      /** Paper Root */
+      paper_root: string;
+      /**
+       * Paper Root Flag
+       * @description the --paper-root value the CLI needs for these books; null when it is the default (paper/)
+       */
+      paper_root_flag: string | null;
+      /** Books */
+      books: components['schemas']['PaperBookSummary'][];
+    };
+    /** PaperBootstrapCone */
+    PaperBootstrapCone: {
+      /** Lower */
+      lower: (number | null)[];
+      /** Median */
+      median: (number | null)[];
+      /** Upper */
+      upper: (number | null)[];
+      /** Max Dd Q01 */
+      max_dd_q01: (number | null)[];
+      /** Max Dd Q05 */
+      max_dd_q05: (number | null)[];
+    };
+    /**
+     * PaperBoundaries
+     * @description The calibrated stop-rule boundaries at each horizon (``boundary_levels`` quantiles
+     *     of the reference run's bootstrap): drawdown and Sharpe, WATCH and STOP.
+     */
+    PaperBoundaries: {
+      /** Dd Watch */
+      dd_watch: (number | null)[];
+      /** Dd Stop */
+      dd_stop: (number | null)[];
+      /** Sharpe Watch */
+      sharpe_watch: (number | null)[];
+      /** Sharpe Stop */
+      sharpe_stop: (number | null)[];
+      /** Levels */
+      levels: {
+        [key: string]: number | null;
+      };
+    };
+    /** PaperCheck */
+    PaperCheck: {
+      /** Rule */
+      rule: string;
+      /**
+       * Level
+       * @enum {string}
+       */
+      level: 'OK' | 'WATCH' | 'STOP';
+      /** Value */
+      value: number | null;
+      /** Threshold */
+      threshold: number | null;
+      /** Message */
+      message: string;
+    };
+    /** PaperCone */
+    PaperCone: {
+      /** Expected */
+      expected?: number | null;
+      /** Lower */
+      lower?: number | null;
+      /** Upper */
+      upper?: number | null;
+      /** Median */
+      median?: number | null;
+    };
+    /**
+     * PaperDataSpec
+     * @description How the book loads market data (``qts.paper.book.DataSpec``): ``max_rank`` is the
+     *     screened-rank prefilter (default 1,500); a book written before it existed keeps its
+     *     peak-cap ``max_names`` / ``min_mcap_ever``, which the load-coverage guard refuses.
+     */
+    PaperDataSpec: {
+      /** Kind */
+      kind?: string | null;
+      /** Store */
+      store?: string | null;
+      /** Start */
+      start?: string | null;
+      /** Max Names */
+      max_names?: number | null;
+      /** Min Mcap Ever */
+      min_mcap_ever?: number | null;
+      /** Max Rank */
+      max_rank?: number | null;
+    };
+    /** PaperFill */
+    PaperFill: {
+      /** Ticker */
+      ticker: string;
+      /** Side */
+      side: string;
+      /** Shares */
+      shares: number | null;
+      /** Px */
+      px: number | null;
+      /** Usd */
+      usd: number | null;
+      /** Spread */
+      spread?: number | null;
+      /** Impact */
+      impact?: number | null;
+      /** Fees */
+      fees?: number | null;
+      /** Kind */
+      kind?: string | null;
+      /** Date */
+      date?: string | null;
+    };
+    /** PaperHeader */
+    PaperHeader: {
+      /** Name */
+      name: string;
+      /** Created At */
+      created_at: string;
+      /** Start */
+      start: string;
+      /** First Execution */
+      first_execution: string;
+      /** Nav0 */
+      nav0: number;
+      /** Sizing */
+      sizing: string;
+      /** Use Ml */
+      use_ml: boolean;
+      /** Config Source */
+      config_source: string;
+      /** Config File */
+      config_file: string;
+      /** Config Hash */
+      config_hash: string;
+      /** Venue */
+      venue: string;
+      /** Calendar */
+      calendar: string;
+      /** Reference Run */
+      reference_run: string | null;
+      /** Expectations Sha256 */
+      expectations_sha256: string;
+      /** Code Version */
+      code_version: string;
+      /** Notes */
+      notes: string[];
+      data?: components['schemas']['PaperDataSpec'] | null;
+    };
+    /** PaperHistory */
+    PaperHistory: {
+      /** Book */
+      book: string;
+      /** Rows */
+      rows: components['schemas']['PaperHistoryRow'][];
+    };
+    /** PaperHistoryRow */
+    PaperHistoryRow: {
+      /** Date */
+      date: string;
+      /** Mode */
+      mode?: string | null;
+      /** Nav */
+      nav?: number | null;
+      /** Ret */
+      ret?: number | null;
+      /** Gross */
+      gross?: number | null;
+      /** Net */
+      net?: number | null;
+      /** N Fills */
+      n_fills?: number | null;
+      /**
+       * N Orders
+       * @default 0
+       */
+      n_orders: number;
+      /** Orders For */
+      orders_for?: string | null;
+      /** Pnl Positions */
+      pnl_positions?: number | null;
+      /** Trading Cost */
+      trading_cost?: number | null;
+      /** Borrow */
+      borrow?: number | null;
+      /** Turnover */
+      turnover?: number | null;
+      /** Exante Vol */
+      exante_vol?: number | null;
+      /** Status */
+      status?: string | null;
+      /**
+       * N Warnings
+       * @default 0
+       */
+      n_warnings: number;
+    };
+    /** PaperHolding */
+    PaperHolding: {
+      /** Ticker */
+      ticker: string;
+      /** Shares */
+      shares: number;
+      /** Px */
+      px: number | null;
+      /** Usd */
+      usd: number | null;
+      /** Weight */
+      weight: number | null;
+    };
+    /** PaperHoldings */
+    PaperHoldings: {
+      /** Date */
+      date: string | null;
+      /** Nav */
+      nav: number | null;
+      /** Holdings */
+      holdings: components['schemas']['PaperHolding'][];
+    };
+    /** PaperLatest */
+    PaperLatest: {
+      /** Date */
+      date: string;
+      /** Data Asof */
+      data_asof?: string | null;
+      /** Mode */
+      mode?: string | null;
+      /** Nav */
+      nav?: number | null;
+      /** Nav Pre */
+      nav_pre?: number | null;
+      /** Cash */
+      cash?: number | null;
+      /** Gross */
+      gross?: number | null;
+      /** Net */
+      net?: number | null;
+      /** N Long */
+      n_long?: number | null;
+      /** N Short */
+      n_short?: number | null;
+      /** Ret */
+      ret?: number | null;
+      /** Orders For */
+      orders_for?: string | null;
+      /**
+       * N Orders
+       * @default 0
+       */
+      n_orders: number;
+      /** Exante Vol */
+      exante_vol?: number | null;
+      /** Warnings */
+      warnings?: string[];
+      /** Code Version */
+      code_version?: string | null;
+      /** Config Hash */
+      config_hash?: string | null;
+    };
+    /** PaperMetrics */
+    PaperMetrics: {
+      /** N Days */
+      n_days?: number | null;
+      /** Cum Return */
+      cum_return?: number | null;
+      /** Cum Log */
+      cum_log?: number | null;
+      /** Max Drawdown */
+      max_drawdown?: number | null;
+      /** Drawdown */
+      drawdown?: number | null;
+      /** Sharpe */
+      sharpe?: number | null;
+      /** Ann Vol */
+      ann_vol?: number | null;
+      cone?: components['schemas']['PaperCone'] | null;
+      bootstrap_cone?: components['schemas']['PaperCone'] | null;
+      /** Vol Ratio */
+      vol_ratio?: number | null;
+      /** Vol Ratio Backtest */
+      vol_ratio_backtest?: number | null;
+      /** Turnover */
+      turnover?: number | null;
+      /** Cost Bps Per Side */
+      cost_bps_per_side?: number | null;
+      /** Gross */
+      gross?: number | null;
+      /** Boundary Levels */
+      boundary_levels?: {
+        [key: string]: number | null;
+      } | null;
+    };
+    /** PaperOrder */
+    PaperOrder: {
+      /** Ticker */
+      ticker: string;
+      /** Side */
+      side: string;
+      /** Shares */
+      shares: number | null;
+      /** Px */
+      px: number | null;
+      /** Usd */
+      usd: number | null;
+      /** Target W */
+      target_w?: number | null;
+      /** Current W */
+      current_w?: number | null;
+      /** Kind */
+      kind?: string | null;
+      /** Close Out */
+      close_out?: boolean | null;
+      /** Exec Date */
+      exec_date?: string | null;
+      /** Est Cost Usd */
+      est_cost_usd?: number | null;
+      /** Est Cost Bps */
+      est_cost_bps?: number | null;
+    };
+    /** PaperOrders */
+    PaperOrders: {
+      /** Date */
+      date: string;
+      /** Orders For */
+      orders_for: string | null;
+      /** Mode */
+      mode: string | null;
+      /** Status */
+      status: string | null;
+      /** Orders */
+      orders: components['schemas']['PaperOrder'][];
+      /** Fills */
+      fills: components['schemas']['PaperFill'][];
+      /** N Orders */
+      n_orders: number;
+      /** Buy Usd */
+      buy_usd: number | null;
+      /** Sell Usd */
+      sell_usd: number | null;
+      /** Est Cost Usd */
+      est_cost_usd: number | null;
+      /**
+       * Cancelled By Stop
+       * @default 0
+       */
+      cancelled_by_stop: number;
+    };
+    /** PaperReconcile */
+    PaperReconcile: {
+      /** Sizing */
+      sizing: string;
+      /** Dates */
+      dates: (string | number)[];
+      /** Seconds */
+      seconds?: number | null;
+      /** Max Abs Weight Diff */
+      max_abs_weight_diff: number | null;
+      /** Max Rel Nav Diff */
+      max_rel_nav_diff: number | null;
+      /** Final Nav Paper Pre */
+      final_nav_paper_pre?: number | null;
+      /** Final Nav Batch */
+      final_nav_batch?: number | null;
+      /** Cum Return Paper */
+      cum_return_paper: number | null;
+      /** Cum Return Batch */
+      cum_return_batch: number | null;
+      /** Daily Return Corr */
+      daily_return_corr: number | null;
+      /** Tracking Error Ann */
+      tracking_error_ann: number | null;
+      /** Max Abs Daily Return Diff */
+      max_abs_daily_return_diff?: number | null;
+      /** Batch Summary */
+      batch_summary?: {
+        [key: string]: number | null;
+      };
+      /** Per Day */
+      per_day: components['schemas']['PaperReconcileDay'][];
+      /** Note */
+      note: string;
+    };
+    /** PaperReconcileDay */
+    PaperReconcileDay: {
+      /** Date */
+      date: string;
+      /** Paper Nav Pre */
+      paper_nav_pre: number | null;
+      /** Batch Nav */
+      batch_nav: number | null;
+      /** Weight Diff */
+      weight_diff?: number | null;
+    };
+    /** PaperRunRequest */
+    PaperRunRequest: {
+      /**
+       * Date
+       * @description process through this day
+       */
+      date?: string | null;
+      /**
+       * Until
+       * @description backfill through this date
+       */
+      until?: string | null;
+      /**
+       * No Sync
+       * @default false
+       */
+      no_sync: boolean;
+      /**
+       * Dry Run
+       * @default false
+       */
+      dry_run: boolean;
+      /**
+       * Redo Last
+       * @default false
+       */
+      redo_last: boolean;
+      /**
+       * Signal Mode
+       * @default daily
+       * @enum {string}
+       */
+      signal_mode: 'daily' | 'single';
+    };
+    /** PaperSchedule */
+    PaperSchedule: {
+      /** Label */
+      label: string;
+      /** Plist */
+      plist: string;
+      /** Crontab */
+      crontab: string;
+      /** Log */
+      log: string;
+      /** Install */
+      install: string;
+    };
+    /** PaperSeries */
+    PaperSeries: {
+      /** Date */
+      date: string[];
+      /** Mode */
+      mode: (string | null)[];
+      /** Nav */
+      nav: (number | null)[];
+      /** Ret */
+      ret: (number | null)[];
+      /** Cum Log */
+      cum_log: (number | null)[];
+      /** Drawdown */
+      drawdown: (number | null)[];
+      /** Gross */
+      gross: (number | null)[];
+      /** Net */
+      net: (number | null)[];
+      /** Turnover */
+      turnover: (number | null)[];
+      /** Exante Vol */
+      exante_vol: (number | null)[];
+      /** Realised Vol 21D */
+      realised_vol_21d: (number | null)[];
+      /** Status */
+      status: (string | null)[];
+      cone_analytic: components['schemas']['PaperAnalyticCone'] | null;
+      cone_bootstrap: components['schemas']['PaperBootstrapCone'] | null;
+      boundaries: components['schemas']['PaperBoundaries'] | null;
+    };
+    /**
+     * PaperStatus
+     * @description ``qts.paper.status`` with the series completed (calibrated boundaries per horizon,
+     *     the live / backfill mode per day), the book's recent jobs and its last reconciliation.
+     */
+    PaperStatus: {
+      /** Book */
+      book: string;
+      /** Root */
+      root: string;
+      header: components['schemas']['PaperHeader'];
+      /** N Days */
+      n_days: number;
+      /** Last Date */
+      last_date: string | null;
+      /** Acks */
+      acks: components['schemas']['PaperAck'][];
+      latest: components['schemas']['PaperLatest'] | null;
+      status: components['schemas']['PaperStatusBlock'];
+      series: components['schemas']['PaperSeries'];
+      /** Jobs */
+      jobs: components['schemas']['Job'][];
+      last_reconcile: components['schemas']['PaperReconcile'] | null;
+      /**
+       * Stop Rules
+       * @description the pre-registered rules frozen at init
+       */
+      stop_rules: {
+        [key: string]: boolean | number | string | null;
+      };
+    };
+    /** PaperStatusBlock */
+    PaperStatusBlock: {
+      /**
+       * Level
+       * @enum {string}
+       */
+      level: 'OK' | 'WATCH' | 'STOP';
+      /** Reasons */
+      reasons: string[];
+      /** Stop Rules */
+      stop_rules: string[];
+      /** Suppressed */
+      suppressed: string[];
+      /** Acknowledged */
+      acknowledged: boolean;
+      /**
+       * Trading Halted
+       * @description STOP and not acknowledged: no orders until `qts paper ack`
+       */
+      trading_halted: boolean;
+      /** Checks */
+      checks: components['schemas']['PaperCheck'][];
+      metrics: components['schemas']['PaperMetrics'];
     };
     /**
      * RankIcSeries
@@ -1293,6 +3082,82 @@ export interface components {
     RankIcValues: {
       /** Rank Ic */
       rank_ic: (number | null)[];
+    };
+    /** RiskCalibrationList */
+    RiskCalibrationList: {
+      /** Results */
+      results: components['schemas']['RiskCalibrationSummary'][];
+    };
+    /** RiskCalibrationRequest */
+    RiskCalibrationRequest: {
+      store?: components['schemas']['StoreSlice'];
+      /**
+       * Nu
+       * @description risk.alignment_nu_scale values
+       */
+      nu: number[];
+      /**
+       * Nav
+       * @default 5000000
+       */
+      nav: number;
+      /**
+       * Baseline
+       * @default configs/baseline.yaml
+       */
+      baseline: string;
+      /** Max Days */
+      max_days?: number | null;
+      /**
+       * Use Ml
+       * @default true
+       */
+      use_ml: boolean;
+    };
+    /**
+     * RiskCalibrationResult
+     * @description ``runs/_risk/<id>.json``.  A report: adopting a value is one logged trial.
+     */
+    RiskCalibrationResult: {
+      /** Id */
+      id: string;
+      /** Config Hash */
+      config_hash: string;
+      /** Current Nu Scale */
+      current_nu_scale: number;
+      /** Results */
+      results: components['schemas']['NuResult'][];
+      /** Recommended Nu Scale */
+      recommended_nu_scale: number | null;
+      /** Rule */
+      rule: string;
+      /** Family */
+      family: string;
+      /** Sealed End */
+      sealed_end: string | null;
+      /** Cache */
+      cache: {
+        [key: string]: string;
+      };
+      /** Notes */
+      notes: string[];
+      /** Json Path */
+      json_path?: string | null;
+    };
+    /** RiskCalibrationSummary */
+    RiskCalibrationSummary: {
+      /** Id */
+      id: string;
+      /** Config Hash */
+      config_hash: string;
+      /** Nus */
+      nus: number[];
+      /** Current Nu Scale */
+      current_nu_scale: number;
+      /** Recommended Nu Scale */
+      recommended_nu_scale: number | null;
+      /** Sealed End */
+      sealed_end: string | null;
     };
     /**
      * RunCompare
@@ -1482,6 +3347,7 @@ export interface components {
       execution_venue: string | null;
       /** Notes */
       notes: string[];
+      seal: components['schemas']['RunSeal'];
     };
     /** RunExposures */
     RunExposures: {
@@ -1577,6 +3443,29 @@ export interface components {
       /** Horizon Days */
       horizon_days: number;
     };
+    /**
+     * RunLoadCoverage
+     * @description The store load-coverage guard's verdict for the run's load (``qts.research.coverage``;
+     *     the ``load_coverage`` field of its ledger record, or ``launch.json`` for API runs).
+     */
+    RunLoadCoverage: {
+      /** Prefilter */
+      prefilter?: string | null;
+      /**
+       * Method
+       * @description by construction | measured | no prefilter | skipped
+       */
+      method?: string | null;
+      /**
+       * Ok
+       * @description false: the load missed names the universe picks (flagged)
+       */
+      ok?: boolean | null;
+      /** Share Dates Full */
+      share_dates_full?: number | null;
+      /** Detail */
+      detail?: string | null;
+    };
     /** RunManifest */
     RunManifest: {
       /** Run Id */
@@ -1615,6 +3504,48 @@ export interface components {
       seeds: {
         [key: string]: number;
       };
+    };
+    /**
+     * RunSeal
+     * @description Where a run stands relative to the research holdout seal (``summary.json``).
+     */
+    RunSeal: {
+      /**
+       * State
+       * @description sealed: data through sealed_end; unsealed: looked at the holdout; exempt: full history by design (mid-cap check); none: no seal was in force
+       * @enum {string}
+       */
+      state: 'sealed' | 'unsealed' | 'exempt' | 'none';
+      /** Holdout Start */
+      holdout_start: string | null;
+      /**
+       * Sealed End
+       * @description last date the run loaded under the seal
+       */
+      sealed_end: string | null;
+      /** Unsealed */
+      unsealed: boolean;
+      /** Unseal Reason */
+      unseal_reason: string | null;
+      /**
+       * Holdout Already Used
+       * @description an earlier unseal of this configuration already looked
+       */
+      holdout_already_used: boolean;
+      /** Seal Exempt */
+      seal_exempt: string | null;
+      /**
+       * Record Kind
+       * @description ledger record kind: trial, capacity, calibration, ...
+       */
+      record_kind: string;
+      /**
+       * Reference
+       * @description a re-run of an already counted configuration: logged, not counted
+       */
+      reference: boolean;
+      /** @description store runs: the load-coverage guard's verdict (null: not recorded) */
+      load_coverage?: components['schemas']['RunLoadCoverage'] | null;
     };
     /**
      * RunSource
@@ -1673,6 +3604,11 @@ export interface components {
        * @description store prefilter: peak market cap floor, USD
        */
       min_mcap_ever: number | null;
+      /**
+       * Max Rank
+       * @description store prefilter: every id ranked <= K by screened market cap on some date
+       */
+      max_rank?: number | null;
       /**
        * Max Days
        * @description backtest only the last N out-of-sample days
@@ -1736,6 +3672,803 @@ export interface components {
       config_leaves: {
         [key: string]: boolean | number | string | null;
       };
+      seal: components['schemas']['RunSeal'];
+    };
+    /** SealExemptRun */
+    SealExemptRun: {
+      /** Ts */
+      ts?: string | null;
+      /** Family */
+      family?: string | null;
+      /** Seal Exempt */
+      seal_exempt?: string | null;
+      /** Config Hash */
+      config_hash?: string | null;
+    };
+    /** SealInfo */
+    SealInfo: {
+      /** Holdout Start */
+      holdout_start: string;
+      /**
+       * Load End
+       * @description the last date a sealed load may contain (the day before holdout_start)
+       */
+      load_end: string;
+      /** Reason */
+      reason: string;
+      /** Sealed By */
+      sealed_by: string;
+      /** Sealed At */
+      sealed_at: string;
+      /** Store End */
+      store_end: string | null;
+      /** Inherit Family */
+      inherit_family: string[];
+      /** Path */
+      path: string;
+    };
+    /**
+     * SealStatus
+     * @description ``qts seal status``: the seal, every unseal, the research runs made under it.
+     */
+    SealStatus: {
+      /** @description null: no seal in force */
+      seal: components['schemas']['SealInfo'] | null;
+      /**
+       * Data Through
+       * @description research loads end here (seal.load_end)
+       */
+      data_through: string | null;
+      /** Unseals */
+      unseals: components['schemas']['SealUnseal'][];
+      /**
+       * N Forced
+       * @description unseals that re-used a holdout already looked at
+       */
+      n_forced: number;
+      /** Runs Under Seal */
+      runs_under_seal: number;
+      /**
+       * By Family
+       * @description family -> {kind: count} of the runs under the seal
+       */
+      by_family: {
+        [key: string]: {
+          [key: string]: number;
+        };
+      };
+      /**
+       * Inherited Families
+       * @description seal.inherit_family -> its trial count (null: not in this ledger)
+       */
+      inherited_families: {
+        [key: string]: number | null;
+      };
+      /** Exempt Runs */
+      exempt_runs: components['schemas']['SealExemptRun'][];
+      /** Ledger Path */
+      ledger_path: string | null;
+    };
+    /** SealUnseal */
+    SealUnseal: {
+      /** Ts */
+      ts?: string | null;
+      /** Config Hash */
+      config_hash?: string | null;
+      /** Family */
+      family?: string | null;
+      /** Phase */
+      phase?: number | null;
+      /** Unseal Reason */
+      unseal_reason?: string | null;
+      /** Forced */
+      forced?: boolean | null;
+      /** N Previous Unseals */
+      n_previous_unseals?: number | null;
+    };
+    /** SignalBaseline */
+    SignalBaseline: {
+      /** Config Hash */
+      config_hash: string;
+      /** Horizon Days */
+      horizon_days: number;
+      /** Signal Lag Days */
+      signal_lag_days: number;
+      /** Use Ml */
+      use_ml: boolean;
+      /** Cache */
+      cache: {
+        [key: string]: string;
+      };
+      /** Sealed End */
+      sealed_end: string | null;
+    };
+    /** SignalDecay */
+    SignalDecay: {
+      /** Ic By Horizon */
+      ic_by_horizon: {
+        [key: string]: number | null;
+      };
+      /** Lag Ic */
+      lag_ic: {
+        [key: string]: number | null;
+      };
+      /** Half Life Days */
+      half_life_days: number | null;
+    };
+    /** SignalDef */
+    SignalDef: {
+      /** Name */
+      name: string;
+      /** Theme */
+      theme: string;
+      /** Sign */
+      sign: number;
+      /** Role */
+      role: string;
+      /**
+       * Feature Set
+       * @description v1, v2 or custom
+       */
+      feature_set: string;
+      /** Description */
+      description: string;
+      /** Industry Demean */
+      industry_demean: boolean;
+      /**
+       * Source
+       * @description builtin or custom
+       */
+      source: string;
+    };
+    /**
+     * SignalFamilyNow
+     * @description The family's multiple-testing state now (later tests raise an earlier test's
+     *     Holm-adjusted p): every test logged so far, Holm over all of them.
+     */
+    SignalFamilyNow: {
+      /** Family */
+      family: string;
+      /** N Tests */
+      n_tests: number;
+      /** Hurdle */
+      hurdle: number;
+      /** Tests */
+      tests: components['schemas']['SignalFamilyTest'][];
+      /**
+       * P Holm
+       * @description this test's Holm-adjusted p over the family as it is now
+       */
+      p_holm: number | null;
+    };
+    /** SignalFamilyTest */
+    SignalFamilyTest: {
+      /** Signal */
+      signal?: string | null;
+      /** T */
+      t?: number | null;
+      /** Ts */
+      ts?: string | null;
+      /** Id */
+      id?: string | null;
+      /** P */
+      p?: number | null;
+      /** P Holm */
+      p_holm?: number | null;
+    };
+    /** SignalIncremental */
+    SignalIncremental: {
+      /** Weight */
+      weight: number;
+      /** Ic By Horizon */
+      ic_by_horizon: {
+        [key: string]: components['schemas']['IcStats'];
+      };
+      /** Resid Var Share */
+      resid_var_share: number | null;
+      baseline_book: components['schemas']['PaperBookStats'];
+      blend_book: components['schemas']['PaperBookStats'];
+      /** Delta Sharpe Net */
+      delta_sharpe_net: number | null;
+      /** Delta Sharpe Gross */
+      delta_sharpe_gross: number | null;
+      /** Delta T Nw */
+      delta_t_nw: number | null;
+    };
+    /** SignalTestDetail */
+    SignalTestDetail: {
+      result: components['schemas']['SignalTestResult'];
+      family_now: components['schemas']['SignalFamilyNow'];
+    };
+    /** SignalTestList */
+    SignalTestList: {
+      /** Tests */
+      tests: components['schemas']['SignalTestSummary'][];
+    };
+    /**
+     * SignalTestPreview
+     * @description Before a test: which family it joins and how many tests that family has.
+     */
+    SignalTestPreview: {
+      /** Family */
+      family: string | null;
+      resolution: components['schemas']['FamilyResolution'];
+      /**
+       * N Tests
+       * @description tests already logged in the family
+       */
+      n_tests: number;
+      /** N Tests After */
+      n_tests_after: number;
+      /**
+       * Adds
+       * @description 1, or 0 with log_trial false (then the test is not counted)
+       */
+      adds: number;
+      /** Hurdle */
+      hurdle: number;
+      /** Command */
+      command: string;
+    };
+    /** SignalTestRequest */
+    SignalTestRequest: {
+      /** Feature */
+      feature: string;
+      store?: components['schemas']['StoreSlice'];
+      /**
+       * Horizons
+       * @description label horizons, trading days
+       */
+      horizons: number[];
+      /**
+       * Step
+       * @description sampling step and paper-book holding, days
+       * @default 5
+       */
+      step: number;
+      /**
+       * Cost Bps
+       * @description default: baseline run
+       */
+      cost_bps?: number | null;
+      /**
+       * Baseline
+       * @default configs/baseline.yaml
+       */
+      baseline: string;
+      /**
+       * Use Ml
+       * @default true
+       */
+      use_ml: boolean;
+      /**
+       * Cache
+       * @description the baseline fit from the stage cache (--no-cache when false)
+       * @default true
+       */
+      cache: boolean;
+      /**
+       * Log Trial
+       * @description false: --no-log (the test is not counted!)
+       * @default true
+       */
+      log_trial: boolean;
+    };
+    /**
+     * SignalTestResult
+     * @description ``runs/_signals/<id>.json`` (``SignalTestResult.to_dict()``).
+     */
+    SignalTestResult: {
+      /** Id */
+      id: string;
+      signal: components['schemas']['SignalDef'];
+      /** Horizons */
+      horizons: number[];
+      /** Primary Horizon */
+      primary_horizon: number;
+      /** Step */
+      step: number;
+      /** Window */
+      window: string[];
+      baseline: components['schemas']['SignalBaseline'];
+      /** Coverage By Year */
+      coverage_by_year: {
+        [key: string]: number | null;
+      };
+      /** Ic By Horizon */
+      ic_by_horizon: {
+        [key: string]: components['schemas']['IcStats'];
+      };
+      /** Ic By Year */
+      ic_by_year: {
+        [key: string]: components['schemas']['IcYear'];
+      };
+      /** Ic By Fold */
+      ic_by_fold: components['schemas']['IcFold'][];
+      decay: components['schemas']['SignalDecay'];
+      paper: components['schemas']['PaperBookStats'];
+      /** Correlations */
+      correlations: {
+        [key: string]: number | null;
+      };
+      incremental: components['schemas']['SignalIncremental'];
+      trial: components['schemas']['SignalTrial'];
+      /** Timings */
+      timings: {
+        [key: string]: number | null;
+      };
+      /** Notes */
+      notes: string[];
+      /** Json Path */
+      json_path?: string | null;
+    };
+    /** SignalTestSummary */
+    SignalTestSummary: {
+      /** Id */
+      id: string;
+      /** Signal */
+      signal: string;
+      /** Theme */
+      theme: string;
+      /** Source */
+      source: string;
+      /** Primary Horizon */
+      primary_horizon: number;
+      /** T */
+      t: number | null;
+      /** P */
+      p: number | null;
+      /** P Holm At Test */
+      p_holm_at_test: number | null;
+      /** P Holm Now */
+      p_holm_now: number | null;
+      /** N Tests Now */
+      n_tests_now: number;
+      /** Passes Hurdle */
+      passes_hurdle: boolean;
+      /** Logged */
+      logged: boolean;
+      /** Family */
+      family: string;
+      /** Window */
+      window: string[];
+      /** Sealed End */
+      sealed_end: string | null;
+      /** Mean Ic Primary */
+      mean_ic_primary: number | null;
+      /** Sharpe Net Paper */
+      sharpe_net_paper: number | null;
+    };
+    /** SignalTrial */
+    SignalTrial: {
+      /** Family */
+      family: string;
+      /** Logged */
+      logged: boolean;
+      /** N Tests */
+      n_tests: number;
+      /** T */
+      t: number | null;
+      /** P */
+      p: number | null;
+      /** P Holm */
+      p_holm: number | null;
+      /** Hurdle */
+      hurdle: number;
+      /** Passes Hurdle */
+      passes_hurdle: boolean;
+      /** Tests */
+      tests: components['schemas']['SignalFamilyTest'][];
+    };
+    /**
+     * StoreSlice
+     * @description The store slice and prefilter of a research command (``qts ... --store`` flags; the
+     *     store itself is the API server's ``QTS_STORE_PATH``).
+     */
+    StoreSlice: {
+      /** Start */
+      start?: string | null;
+      /** End */
+      end?: string | null;
+      /**
+       * Max Names
+       * @description peak-market-cap prefilter: N ids
+       */
+      max_names?: number | null;
+      /**
+       * Min Mcap Ever
+       * @description peak market cap floor (USD)
+       */
+      min_mcap_ever?: number | null;
+      /**
+       * Max Rank
+       * @description screened-rank prefilter (not with max_names / min_mcap_ever)
+       */
+      max_rank?: number | null;
+    };
+    /** StoreSpecView */
+    StoreSpecView: {
+      /** Store */
+      store: string;
+      /** Start */
+      start?: string | null;
+      /** End */
+      end?: string | null;
+      /** Max Names */
+      max_names?: number | null;
+      /** Min Mcap Ever */
+      min_mcap_ever?: number | null;
+      /** Max Rank */
+      max_rank?: number | null;
+      /** Min Price */
+      min_price?: number | null;
+      /** Min Adv Usd */
+      min_adv_usd?: number | null;
+      /** Adv Window */
+      adv_window?: number | null;
+    };
+    /** SweepCreate */
+    SweepCreate: {
+      /** Params */
+      params: components['schemas']['SweepParamRequest'][];
+      /**
+       * Mode
+       * @default grid
+       * @enum {string}
+       */
+      mode: 'grid' | 'zip';
+      /**
+       * Base Config
+       * @default configs/baseline.yaml
+       */
+      base_config: string;
+      store?: components['schemas']['StoreSlice'];
+      /**
+       * Use Ml
+       * @default true
+       */
+      use_ml: boolean;
+      /**
+       * Nav
+       * @default 5000000
+       */
+      nav: number;
+      /** Max Days */
+      max_days?: number | null;
+      /**
+       * Max Runs
+       * @default 12
+       */
+      max_runs: number;
+      /**
+       * Expected Id
+       * @description the id of the confirmed preview: refused if the plan changed
+       */
+      expected_id: string;
+    };
+    /** SweepDetail */
+    SweepDetail: {
+      sweep: components['schemas']['SweepManifest'];
+      /**
+       * Jobs
+       * @description this sweep's member and finalize jobs, newest first
+       */
+      jobs: components['schemas']['Job'][];
+      /**
+       * Active
+       * @description queued or running jobs of this sweep
+       */
+      active: number;
+      /**
+       * Resumable
+       * @description members not done and not queued or running
+       */
+      resumable: number;
+      /** Command */
+      command: string;
+    };
+    /** SweepLaunchResponse */
+    SweepLaunchResponse: {
+      /** Sweep Id */
+      sweep_id: string;
+      /** Job Ids */
+      job_ids: string[];
+      /** Finalize Job Id */
+      finalize_job_id: string | null;
+      /** N Queued */
+      n_queued: number;
+      /** Command */
+      command: string;
+    };
+    /** SweepList */
+    SweepList: {
+      /** Sweeps */
+      sweeps: components['schemas']['SweepSummary'][];
+    };
+    /**
+     * SweepManifest
+     * @description ``runs/_sweeps/<id>.json`` (``SweepPlan.to_dict()``).
+     */
+    SweepManifest: {
+      /** Id */
+      id: string;
+      /** Base Config */
+      base_config: string;
+      /** Base Config Hash */
+      base_config_hash: string;
+      /** Params */
+      params: components['schemas']['SweepParam'][];
+      /** Mode */
+      mode: string;
+      store: components['schemas']['StoreSpecView'] | null;
+      /** Use Ml */
+      use_ml: boolean;
+      /** Nav */
+      nav: number;
+      /** Max Days */
+      max_days: number | null;
+      /** Members */
+      members: components['schemas']['SweepMember'][];
+      /** Family */
+      family: string;
+      impact: components['schemas']['TrialImpact'] | null;
+      /** Created At */
+      created_at: string;
+      pbo: components['schemas']['SweepPbo'] | null;
+      /** Runs Root */
+      runs_root: string;
+      /** N Members */
+      n_members: number;
+      /** Status */
+      status: string;
+    };
+    /** SweepMember */
+    SweepMember: {
+      /** Index */
+      index: number;
+      /** Overrides */
+      overrides: {
+        [key: string]: boolean | number | string | null;
+      };
+      /** Config Hash */
+      config_hash: string;
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: 'pending' | 'running' | 'done' | 'failed';
+      /** Run Id */
+      run_id: string | null;
+      /** Run Dir */
+      run_dir: string | null;
+      /** Reference */
+      reference: boolean;
+      /** Error */
+      error: string | null;
+      metrics: components['schemas']['SweepMemberMetrics'];
+      /** Started At */
+      started_at: string | null;
+      /** Finished At */
+      finished_at: string | null;
+    };
+    /** SweepMemberMetrics */
+    SweepMemberMetrics: {
+      /** Sharpe Net */
+      sharpe_net?: number | null;
+      /** Sharpe Gross */
+      sharpe_gross?: number | null;
+      /** Cagr Net */
+      cagr_net?: number | null;
+      /** Avg Daily Turnover */
+      avg_daily_turnover?: number | null;
+      /** Avg Cost Bps Per Side */
+      avg_cost_bps_per_side?: number | null;
+      /** Max Drawdown Net */
+      max_drawdown_net?: number | null;
+      /** Mean Ic */
+      mean_ic?: number | null;
+      /** Dsr */
+      dsr?: number | null;
+      /** N Trials */
+      n_trials?: number | null;
+      /** Seconds */
+      seconds?: number | null;
+      /** Cache */
+      cache?: {
+        [key: string]: string;
+      } | null;
+    };
+    /** SweepParam */
+    SweepParam: {
+      /** Key */
+      key: string;
+      /** Values */
+      values: (boolean | number | string | null)[];
+    };
+    /** SweepParamRequest */
+    SweepParamRequest: {
+      /** Key */
+      key: string;
+      /** Values */
+      values: (boolean | number | string)[];
+    };
+    /** SweepPbo */
+    SweepPbo: {
+      /** Pbo */
+      pbo?: number | null;
+      /** Reason */
+      reason?: string | null;
+      /** N Blocks */
+      n_blocks?: number | null;
+      /** N Days */
+      n_days?: number | null;
+      /** N Configs */
+      n_configs?: number | null;
+      /** N Combinations */
+      n_combinations?: number | null;
+      /** Prob Oos Loss */
+      prob_oos_loss?: number | null;
+      /** Degradation Slope */
+      degradation_slope?: number | null;
+      /** Degradation R2 */
+      degradation_r2?: number | null;
+      /** Mean Oos Rank Pct */
+      mean_oos_rank_pct?: number | null;
+      /** Logits */
+      logits?: (number | null)[] | null;
+      /** Partial */
+      partial?: boolean | null;
+    };
+    /**
+     * SweepPlanView
+     * @description ``plan_sweep``: the members, the family and the DSR haircut; nothing written.
+     */
+    SweepPlanView: {
+      plan: components['schemas']['SweepManifest'];
+      /**
+       * Exists
+       * @description a manifest with this id exists: launching resumes it
+       */
+      exists: boolean;
+      /**
+       * N Pending
+       * @description members that would run (not done)
+       */
+      n_pending: number;
+      /** Command */
+      command: string;
+    };
+    /** SweepRequest */
+    SweepRequest: {
+      /** Params */
+      params: components['schemas']['SweepParamRequest'][];
+      /**
+       * Mode
+       * @default grid
+       * @enum {string}
+       */
+      mode: 'grid' | 'zip';
+      /**
+       * Base Config
+       * @default configs/baseline.yaml
+       */
+      base_config: string;
+      store?: components['schemas']['StoreSlice'];
+      /**
+       * Use Ml
+       * @default true
+       */
+      use_ml: boolean;
+      /**
+       * Nav
+       * @default 5000000
+       */
+      nav: number;
+      /** Max Days */
+      max_days?: number | null;
+      /**
+       * Max Runs
+       * @default 12
+       */
+      max_runs: number;
+    };
+    /** SweepSummary */
+    SweepSummary: {
+      /** Id */
+      id: string;
+      /** Created At */
+      created_at: string;
+      /** Base Config */
+      base_config: string;
+      /** Params */
+      params: components['schemas']['SweepParam'][];
+      /** Mode */
+      mode: string;
+      /** N Members */
+      n_members: number;
+      /** N Done */
+      n_done: number;
+      /** Status */
+      status: string;
+      /** Family */
+      family: string;
+      /** N New Trials */
+      n_new_trials: number | null;
+      /** Pbo */
+      pbo: number | null;
+      /** Partial */
+      partial: boolean | null;
+      /** Best Sharpe Net */
+      best_sharpe_net: number | null;
+    };
+    /** TaskLaunchResponse */
+    TaskLaunchResponse: {
+      /** Job Id */
+      job_id: string;
+      /** Label */
+      label: string;
+      /**
+       * Command
+       * @description the equivalent `qts` command line (recorded on the job)
+       */
+      command: string;
+    };
+    /**
+     * TrialImpact
+     * @description ``qts.research.sweep.trial_impact``: the effect of new trials on a family's DSR.
+     */
+    TrialImpact: {
+      /** Family */
+      family: string;
+      /** N Trials Raw */
+      n_trials_raw: number;
+      /** N Eff Before */
+      n_eff_before: number;
+      /** N New */
+      n_new: number;
+      /** N Reference */
+      n_reference: number;
+      /** N Eff After */
+      n_eff_after: number;
+      /** Var Sr Annual */
+      var_sr_annual: number;
+      /** Exp Max Sr Before */
+      exp_max_sr_before: number | null;
+      /** Exp Max Sr After */
+      exp_max_sr_after: number | null;
+      /** Best Sharpe */
+      best_sharpe: number | null;
+      /** Best N Obs */
+      best_n_obs: number | null;
+      /** Dsr Best Before */
+      dsr_best_before: number | null;
+      /** Dsr Best After */
+      dsr_best_after: number | null;
+    };
+    /**
+     * UnsealCheck
+     * @description Earlier unseals of one configuration (same normalised config hash and phase).
+     */
+    UnsealCheck: {
+      /** Config Hash */
+      config_hash: string;
+      /**
+       * Phase
+       * @enum {integer}
+       */
+      phase: 1 | 2;
+      /**
+       * Sealed
+       * @description a seal is in force
+       */
+      sealed: boolean;
+      /** Previous */
+      previous: components['schemas']['SealUnseal'][];
+      /**
+       * Requires Force
+       * @description true: this configuration's holdout is already used
+       */
+      requires_force: boolean;
     };
     /** ValidationError */
     ValidationError: {
@@ -1758,6 +4491,19 @@ export interface components {
       msg: string;
       /** Type */
       type: string;
+    };
+    /** VolStats */
+    VolStats: {
+      /** Realised Vol */
+      realised_vol: number | null;
+      /** Exante Vol */
+      exante_vol: number | null;
+      /** Ratio */
+      ratio: number | null;
+      /** Bias Stat */
+      bias_stat: number | null;
+      /** N Days */
+      n_days?: number | null;
     };
     /**
      * Warmup
@@ -2860,6 +5606,1331 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['Health'];
+        };
+      };
+    };
+  };
+  get_seal_api_seal_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SealStatus'];
+        };
+      };
+    };
+  };
+  get_unseals_api_seal_unseals_get: {
+    parameters: {
+      query: {
+        config_hash: string;
+        phase?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['UnsealCheck'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_trial_impact_api_ledger_impact_get: {
+    parameters: {
+      query: {
+        family: string;
+        n_new?: number;
+        n_reference?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TrialImpact'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  resolve_family_api_families_resolve_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['StoreSlice'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['FamilyResolution'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  launch_resolve_family_api_families_resolve_jobs_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['StoreSlice'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskLaunchResponse'];
+        };
+      };
+      /** @description Invalid request */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Too many runs are already queued */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+    };
+  };
+  get_features_api_features_get: {
+    parameters: {
+      query?: {
+        feature_set?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['FeatureList'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_signals_api_signals_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SignalDef'][];
+        };
+      };
+    };
+  };
+  list_signal_tests_api_signals_tests_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SignalTestList'];
+        };
+      };
+    };
+  };
+  launch_signal_test_api_signals_tests_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SignalTestRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskLaunchResponse'];
+        };
+      };
+      /** @description Invalid request */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Too many runs are already queued */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+    };
+  };
+  get_signal_test_api_signals_tests__test_id__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        test_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SignalTestDetail'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  preview_signal_test_api_signals_tests_preview_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SignalTestRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SignalTestPreview'];
+        };
+      };
+      /** @description Invalid request */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+    };
+  };
+  plan_sweep_api_sweeps_plan_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SweepRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SweepPlanView'];
+        };
+      };
+      /** @description The run is still running or failed before writing results */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Invalid request */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+    };
+  };
+  list_sweeps_api_sweeps_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SweepList'];
+        };
+      };
+    };
+  };
+  create_sweep_api_sweeps_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SweepCreate'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SweepLaunchResponse'];
+        };
+      };
+      /** @description The run is still running or failed before writing results */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Invalid request */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Too many runs are already queued */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+    };
+  };
+  get_sweep_api_sweeps__sweep_id__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        sweep_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SweepDetail'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  resume_sweep_api_sweeps__sweep_id__resume_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        sweep_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SweepLaunchResponse'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description The run is still running or failed before writing results */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+      /** @description Too many runs are already queued */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+    };
+  };
+  list_capacity_api_capacity_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['CapacityList'];
+        };
+      };
+    };
+  };
+  launch_capacity_api_capacity_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CapacityRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskLaunchResponse'];
+        };
+      };
+      /** @description Invalid request */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Too many runs are already queued */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+    };
+  };
+  get_capacity_api_capacity__result_id__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        result_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['CapacityResult'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_risk_api_risk_calibrations_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['RiskCalibrationList'];
+        };
+      };
+    };
+  };
+  launch_risk_api_risk_calibrations_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['RiskCalibrationRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskLaunchResponse'];
+        };
+      };
+      /** @description Invalid request */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Too many runs are already queued */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+    };
+  };
+  get_risk_api_risk_calibrations__result_id__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        result_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['RiskCalibrationResult'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_midcap_api_checks_midcap_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['MidcapStatus'];
+        };
+      };
+    };
+  };
+  launch_midcap_api_checks_midcap_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['MidcapRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskLaunchResponse'];
+        };
+      };
+      /** @description The run is still running or failed before writing results */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Invalid request */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Too many runs are already queued */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+    };
+  };
+  get_preregistration_api_checks_midcap_preregistration_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['MidcapPreregistration'];
+        };
+      };
+    };
+  };
+  get_midcap_result_api_checks_midcap_results__run_id__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        run_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['MidcapResultDetail'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_books_api_paper_books_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['PaperBooks'];
+        };
+      };
+    };
+  };
+  get_status_api_paper_books__name__status_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['PaperStatus'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description The run is still running or failed before writing results */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_history_api_paper_books__name__history_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['PaperHistory'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description The run is still running or failed before writing results */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_orders_api_paper_books__name__orders_get: {
+    parameters: {
+      query?: {
+        date?: string | null;
+      };
+      header?: never;
+      path: {
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['PaperOrders'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description The run is still running or failed before writing results */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_holdings_api_paper_books__name__holdings_get: {
+    parameters: {
+      query?: {
+        date?: string | null;
+      };
+      header?: never;
+      path: {
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['PaperHoldings'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description The run is still running or failed before writing results */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_schedule_api_paper_books__name__schedule_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['PaperSchedule'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  post_ack_api_paper_books__name__ack_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['PaperAckRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['PaperAck'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description The run is still running or failed before writing results */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Invalid request */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+    };
+  };
+  post_run_api_paper_books__name__run_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['PaperRunRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskLaunchResponse'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description The run is still running or failed before writing results */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Invalid request */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Too many runs are already queued */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+    };
+  };
+  post_reconcile_api_paper_books__name__reconcile_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskLaunchResponse'];
+        };
+      };
+      /** @description Not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description The run is still running or failed before writing results */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+      /** @description Too many runs are already queued */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/problem+json': components['schemas']['ApiErrorBody'];
         };
       };
     };

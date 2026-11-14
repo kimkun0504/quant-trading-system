@@ -9,6 +9,28 @@ from pathlib import Path
 from typing import Any
 
 from qts.validation import TrialLedger
+from qts.validation.ledger import is_trial_record, record_kind
+
+#: Why a record does not count towards its family's N and V, by kind.
+NOT_COUNTED: dict[str, str] = {
+    "unseal": "An unseal event: it records that the holdout of this configuration was looked at. Not a trial.",
+    "capacity": "A capacity run: the baseline re-run at another NAV. Not an alpha trial, not counted in any DSR.",
+    "calibration": "A risk-calibration run: a report variant of the baseline. Not counted in any DSR.",
+    "event": "A ledger event, not a trial.",
+}
+REFERENCE_NOTE = (
+    "A reference re-run: the same configuration as an already counted trial (for example the baseline re-run "
+    "under the seal). Logged, but not counted again in N."
+)
+
+
+def not_counted_note(r: dict[str, Any]) -> str | None:
+    if is_trial_record(r):
+        return None
+    kind = record_kind(r)
+    if kind == "trial" and r.get("reference"):
+        return REFERENCE_NOTE
+    return NOT_COUNTED.get(kind, f"A {kind} record, not a trial: not counted in N.")
 
 
 def _f(v: Any, default: float = float("nan")) -> float:
@@ -47,7 +69,7 @@ class LedgerService:
     def _build(self) -> dict[str, Any]:
         # TrialLedger(path) creates a missing file; the caller checked it exists.
         led = TrialLedger(str(self.path))
-        recs = led.records()
+        recs = led.records(include_non_trials=True)
         trials = []
         for i, r in enumerate(recs):
             m = r.get("metrics") or {}
@@ -70,6 +92,12 @@ class LedgerService:
                     "n_obs": int(_f(m.get("n_obs"), 0.0)),
                     "mean_ic": None if mic is None or not math.isfinite(_f(mic)) else _f(mic),
                     "n_reruns": int(r.get("n_reruns", 0) or 0),
+                    "kind": record_kind(r),
+                    "reference": bool(r.get("reference")),
+                    "counted": is_trial_record(r),
+                    "note": not_counted_note(r),
+                    "holdout_already_used": bool(r.get("holdout_already_used")),
+                    "unsealed": bool(r.get("unsealed")),
                 }
             )
         families = []
@@ -80,6 +108,7 @@ class LedgerService:
                     "n_trials": led.n_trials(fam),
                     "effective_trials": float(led.effective_trials_for(fam)),
                     "var_sr_annual": float(led.family_sharpe_variance(fam, annual=True, periods_per_year=self.ppy)),
+                    "n_not_counted": sum(1 for t in trials if t["family"] == fam and not t["counted"]),
                 }
             )
         return {"trials": trials, "families": families}

@@ -1,0 +1,42 @@
+{
+  "tests": [
+    {
+      "id": "20261114T042559180079Z_strev_21",
+      "signal": "strev_21",
+      "theme": "ml_only",
+      "source": "builtin",
+      "primary_horizon": 60,
+      "t": 1.0071548349349289,
+      "p": 0.31386037345511486,
+      "p_holm_at_test": 0.6277207469102297,
+      "p_holm_now": 0.6277207469102297,
+      "n_tests_now": 2,
+      "passes_hurdle": false,
+      "logged": true,
+      "family": "signal:20b8af2873cb",
+      "window": ["2019-12-11", "2021-02-25"],
+      "sealed_end": "2021-02-26",
+      "mean_ic_primary": 0.017867056547558362,
+      "sharpe_net_paper": -2.268892737096745
+    },
+    {
+      "id": "20261114T042557607346Z_mom_12_1",
+      "signal": "mom_12_1",
+      "theme": "momentum",
+      "source": "builtin",
+      "primary_horizon": 60,
+      "t": -0.21437371656628373,
+      "p": 0.8302556363708145,
+      "p_holm_at_test": 0.8302556363708145,
+      "p_holm_now": 0.8302556363708145,
+      "n_tests_now": 2,
+      "passes_hurdle": false,
+      "logged": true,
+      "family": "signal:20b8af2873cb",
+      "window": ["2019-12-11", "2021-02-25"],
+      "sealed_end": "2021-02-26",
+      "mean_ic_primary": -0.005429390105629771,
+      "sharpe_net_paper": 0.37187631667577004
+    }
+  ]
+}

@@ -84,6 +84,13 @@ scripts/      contrast check, screenshots, Chromium resolver
 | `/runs/:id/<tab>`                 | Old tab paths redirect to the section (`risk` → `#portfolio`, `alpha` → `#signal`, `execution` → `#costs`)                                              |
 | `/ledger`, `/models`              | Trial ledger, model explorer                                                                                                                            |
 | `/runs`, `/runs/new`              | Redirect to `/` and `/builder`                                                                                                                          |
+| `/seal`                           | Holdout seal: seal date, data through, inherited family, every unseal, runs under the seal (the shell's seal chip links here)                           |
+| `/signals`, `/signals/:testId`    | Signal tests: list, launch form (trial cost and Holm context before confirming), one result                                                             |
+| `/sweeps`, `/sweeps/:sweepId`     | Sweeps: grid editor (≤ 12 members) with the trial / DSR preview; one sweep with every member, PBO, resume                                               |
+| `/capacity`, `/capacity/:id`      | Capacity curve (not a trial): Sharpe and cost split against NAV                                                                                         |
+| `/risk`, `/risk/:id`              | Risk calibration report (ν): realised / ex-ante vol by year, the recommendation (adopting it is one trial)                                              |
+| `/checks/midcap`, `.../:runId`    | Mid-cap confirmation: criteria, results on disk, once-only launch (dry run, typed force); one result vs the large-cap reference                         |
+| `/paper`, `/paper/:book`          | Paper books: status (OK / WATCH / STOP), cones, boundaries, orders, holdings, history, ack, run / reconcile jobs, schedule text                         |
 
 **Selection and tray.** `features/selection` keeps the run ids chosen for comparison (max 8, the
 API's limit) in a module store persisted to `localStorage` (`qts-selection`);

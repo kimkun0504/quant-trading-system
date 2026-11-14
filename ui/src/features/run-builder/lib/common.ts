@@ -57,6 +57,16 @@ export const COMMON_SETTINGS: readonly CommonSetting[] = [
     label: 'Delisting short-gain haircut',
     help: 'Share of a short’s gain that is kept when the name delists. 1 keeps it all; lower values assume the gain could not be fully realised.',
   },
+  {
+    path: 'alpha.feature_set',
+    label: 'Feature set',
+    help: 'v1: the 18 Tier-1 features. v2 adds earnings reaction, abnormal volume, accruals, net issuance and the 52-week high (needs the earnings tables in the store). The feature switches below follow it.',
+  },
+  {
+    path: 'alpha.disabled_features',
+    label: 'Features the model uses',
+    help: 'Switch features off to see what the model does without them. Each setting is one logged trial.',
+  },
 ];
 
 export interface CommonField extends CommonSetting {

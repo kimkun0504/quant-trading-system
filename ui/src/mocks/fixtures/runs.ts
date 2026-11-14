@@ -117,6 +117,22 @@ export const SEED_SPECS: RunSpec[] = [
     varTrials: 0.2,
     pbo: 0.28,
     startDate: '2010-01-04',
+    // loaded with the old peak-cap prefilter and --allow-partial-coverage: flagged
+    source: { max_names: 3000, min_mcap_ever: 3e8, max_rank: null },
+    // a reference re-run under the seal: the same configuration as a counted trial
+    seal: {
+      state: 'sealed',
+      holdout_start: '2023-11-09',
+      sealed_end: '2017-12-29',
+      reference: true,
+      load_coverage: {
+        prefilter: '--max-names 3000 --min-mcap-ever 3e8',
+        method: 'measured',
+        ok: false,
+        share_dates_full: 0.237,
+        detail: '',
+      },
+    },
   },
   {
     // The long one: 24 years of real data with the ML sleeve, for the labs' by-year views
@@ -142,6 +158,12 @@ export const SEED_SPECS: RunSpec[] = [
     pbo: 0.31,
     startDate: '2001-01-02',
     investedDayFrac: 0.995,
+    seal: {
+      state: 'unsealed',
+      holdout_start: '2023-11-09',
+      unsealed: true,
+      unseal_reason: 'final check of the ML candidate before paper trading',
+    },
   },
 ];
 

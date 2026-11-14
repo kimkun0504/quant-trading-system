@@ -1,0 +1,12 @@
+{
+  "results": [
+    {
+      "id": "20261114T042614680785Z_feafa843",
+      "config_hash": "feafa84386ebe781",
+      "nus": [0.0, 0.05, 0.25, 1.0],
+      "current_nu_scale": 0.05,
+      "recommended_nu_scale": 0.0,
+      "sealed_end": "2021-02-26"
+    }
+  ]
+}

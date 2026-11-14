@@ -24,6 +24,7 @@ import {
   signClass,
 } from '@/shared/ui';
 import { Icons } from '@/shared/ui/icons';
+import { RunSealBadge } from '@/features/seal';
 import styles from './ExperimentsPage.module.css';
 
 type SortKey =
@@ -133,6 +134,7 @@ function RunRow({
               {run.label}
             </Link>
             {suspect ? <span className={styles.flag}>suspect</span> : null}
+            <RunSealBadge seal={run.seal} compact />
           </span>
           <span className={styles.descriptor}>
             {runDescriptor(run)}. {dateTime(run.created_at)}

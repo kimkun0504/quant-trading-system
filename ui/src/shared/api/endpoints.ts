@@ -26,6 +26,46 @@ import type {
   RunSummary,
   Warmup,
 } from './schema';
+import type {
+  CapacityList,
+  CapacityRequest,
+  CapacityResult,
+  FamilyResolution,
+  FeatureList,
+  MidcapPreregistration,
+  MidcapRequest,
+  MidcapResultDetail,
+  MidcapStatus,
+  PaperAck,
+  PaperBooks,
+  PaperHistory,
+  PaperHoldings,
+  PaperOrders,
+  PaperRunRequest,
+  PaperSchedule,
+  PaperStatus,
+  RiskCalibrationList,
+  RiskCalibrationRequest,
+  RiskCalibrationResult,
+  SealStatus,
+  SignalDef,
+  SignalTestDetail,
+  SignalTestList,
+  SignalTestPreview,
+  SignalTestRequest,
+  StoreSlice,
+  SweepCreate,
+  SweepDetail,
+  SweepLaunchResponse,
+  SweepList,
+  SweepPlanView,
+  SweepRequest,
+  TaskLaunchResponse,
+  TrialImpact,
+  UnsealCheck,
+} from './research';
+
+const enc = encodeURIComponent;
 
 /** One function per endpoint; the only place that knows URL shapes (relative to API_BASE_URL). */
 export const api = {
@@ -84,6 +124,78 @@ export const api = {
   moveJob: (jobId: string, position: number) =>
     apiPost<Job>(`/jobs/${encodeURIComponent(jobId)}/move`, { position }),
   getHealth: (signal?: AbortSignal) => apiGet<Health>('/health', undefined, signal),
+
+  // ---- the holdout seal, trial families
+  getSeal: (signal?: AbortSignal) => apiGet<SealStatus>('/seal', undefined, signal),
+  getUnsealCheck: (configHash: string, phase: 1 | 2, signal?: AbortSignal) =>
+    apiGet<UnsealCheck>('/seal/unseals', { config_hash: configHash, phase }, signal),
+  getTrialImpact: (family: string, nNew: number, nReference = 0, signal?: AbortSignal) =>
+    apiGet<TrialImpact>('/ledger/impact', { family, n_new: nNew, n_reference: nReference }, signal),
+  resolveFamily: (body: StoreSlice, signal?: AbortSignal) =>
+    apiPost<FamilyResolution>('/families/resolve', body, signal),
+  launchResolveFamily: (body: StoreSlice) =>
+    apiPost<TaskLaunchResponse>('/families/resolve/jobs', body),
+  getFeatures: (featureSet: string, signal?: AbortSignal) =>
+    apiGet<FeatureList>('/features', { feature_set: featureSet }, signal),
+
+  // ---- signal tests
+  listSignals: (signal?: AbortSignal) => apiGet<SignalDef[]>('/signals', undefined, signal),
+  listSignalTests: (signal?: AbortSignal) =>
+    apiGet<SignalTestList>('/signals/tests', undefined, signal),
+  getSignalTest: (id: string, signal?: AbortSignal) =>
+    apiGet<SignalTestDetail>(`/signals/tests/${enc(id)}`, undefined, signal),
+  previewSignalTest: (body: SignalTestRequest, signal?: AbortSignal) =>
+    apiPost<SignalTestPreview>('/signals/tests/preview', body, signal),
+  launchSignalTest: (body: SignalTestRequest) =>
+    apiPost<TaskLaunchResponse>('/signals/tests', body),
+
+  // ---- sweeps
+  planSweep: (body: SweepRequest, signal?: AbortSignal) =>
+    apiPost<SweepPlanView>('/sweeps/plan', body, signal),
+  createSweep: (body: SweepCreate) => apiPost<SweepLaunchResponse>('/sweeps', body),
+  listSweeps: (signal?: AbortSignal) => apiGet<SweepList>('/sweeps', undefined, signal),
+  getSweep: (id: string, signal?: AbortSignal) =>
+    apiGet<SweepDetail>(`/sweeps/${enc(id)}`, undefined, signal),
+  resumeSweep: (id: string) => apiPost<SweepLaunchResponse>(`/sweeps/${enc(id)}/resume`, {}),
+
+  // ---- capacity, risk calibration
+  listCapacity: (signal?: AbortSignal) => apiGet<CapacityList>('/capacity', undefined, signal),
+  getCapacity: (id: string, signal?: AbortSignal) =>
+    apiGet<CapacityResult>(`/capacity/${enc(id)}`, undefined, signal),
+  launchCapacity: (body: CapacityRequest) => apiPost<TaskLaunchResponse>('/capacity', body),
+  listRisk: (signal?: AbortSignal) =>
+    apiGet<RiskCalibrationList>('/risk-calibrations', undefined, signal),
+  getRisk: (id: string, signal?: AbortSignal) =>
+    apiGet<RiskCalibrationResult>(`/risk-calibrations/${enc(id)}`, undefined, signal),
+  launchRisk: (body: RiskCalibrationRequest) =>
+    apiPost<TaskLaunchResponse>('/risk-calibrations', body),
+
+  // ---- the mid-cap check
+  getMidcap: (signal?: AbortSignal) => apiGet<MidcapStatus>('/checks/midcap', undefined, signal),
+  getMidcapResult: (runId: string, signal?: AbortSignal) =>
+    apiGet<MidcapResultDetail>(`/checks/midcap/results/${enc(runId)}`, undefined, signal),
+  getPreregistration: (signal?: AbortSignal) =>
+    apiGet<MidcapPreregistration>('/checks/midcap/preregistration', undefined, signal),
+  launchMidcap: (body: MidcapRequest) => apiPost<TaskLaunchResponse>('/checks/midcap', body),
+
+  // ---- paper books
+  listBooks: (signal?: AbortSignal) => apiGet<PaperBooks>('/paper/books', undefined, signal),
+  getPaperStatus: (name: string, signal?: AbortSignal) =>
+    apiGet<PaperStatus>(`/paper/books/${enc(name)}/status`, undefined, signal),
+  getPaperHistory: (name: string, signal?: AbortSignal) =>
+    apiGet<PaperHistory>(`/paper/books/${enc(name)}/history`, undefined, signal),
+  getPaperOrders: (name: string, date: string | undefined, signal?: AbortSignal) =>
+    apiGet<PaperOrders>(`/paper/books/${enc(name)}/orders`, { date }, signal),
+  getPaperHoldings: (name: string, date: string | undefined, signal?: AbortSignal) =>
+    apiGet<PaperHoldings>(`/paper/books/${enc(name)}/holdings`, { date }, signal),
+  getPaperSchedule: (name: string, signal?: AbortSignal) =>
+    apiGet<PaperSchedule>(`/paper/books/${enc(name)}/schedule`, undefined, signal),
+  paperAck: (name: string, note: string) =>
+    apiPost<PaperAck>(`/paper/books/${enc(name)}/ack`, { note }),
+  paperRun: (name: string, body: PaperRunRequest) =>
+    apiPost<TaskLaunchResponse>(`/paper/books/${enc(name)}/run`, body),
+  paperReconcile: (name: string) =>
+    apiPost<TaskLaunchResponse>(`/paper/books/${enc(name)}/reconcile`, {}),
 };
 
 export type Api = typeof api;

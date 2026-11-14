@@ -1,0 +1,24 @@
+{
+  "sweeps": [
+    {
+      "id": "sw_8503759dfeb8",
+      "created_at": "20261114T042559244087Z",
+      "base_config": "configs/baseline.yaml",
+      "params": [
+        {
+          "key": "portfolio.trade_aversion",
+          "values": [0.5, 1.5]
+        }
+      ],
+      "mode": "grid",
+      "n_members": 2,
+      "n_done": 2,
+      "status": "done",
+      "family": "pipeline_phase1:20b8af2873cb",
+      "n_new_trials": 2,
+      "pbo": 0.7301587301587301,
+      "partial": false,
+      "best_sharpe_net": -0.38328956164783606
+    }
+  ]
+}

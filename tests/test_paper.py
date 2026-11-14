@@ -260,6 +260,32 @@ def test_accounting_identity_and_pnl_split(replica_daily):
         assert r["nav_pre"] == pytest.approx(prev["nav"] + p["total"] + p["trading_cost"], abs=1e-6 * NAV0)
 
 
+def test_holdings_and_boundaries_accessors(replica_daily):
+    """The read-only accessors the API serves: positions of a journal day, and the stop
+    rules' calibrated boundaries per day (the numbers ``evaluate`` compares with)."""
+    root, _, _ = replica_daily
+    recs = _records(root, "replica")
+    h = runner.holdings("replica", paper_root=root)
+    st = recs[-1]["state"]
+    assert h["date"] == recs[-1]["date"] and h["nav"] == pytest.approx(recs[-1]["nav"])
+    assert {p["ticker"] for p in h["positions"]} == {k for k, q in st["shares"].items() if q != 0}
+    for p in h["positions"]:
+        assert p["value"] == pytest.approx(st["shares"][p["ticker"]] * st["px"][p["ticker"]])
+        assert p["weight"] == pytest.approx(p["value"] / recs[-1]["nav"])
+    first = runner.holdings("replica", date=recs[1]["date"], paper_root=root)
+    assert first["date"] == recs[1]["date"]
+    with pytest.raises(PaperError):
+        runner.holdings("replica", date="1999-01-04", paper_root=root)
+    b = runner.boundaries("replica", paper_root=root)
+    st_now = runner.status("replica", paper_root=root)
+    assert b["date"] == st_now["series"]["date"]
+    assert b["levels"] == pytest.approx(st_now["status"]["metrics"]["boundary_levels"])
+    dd = next(c for c in st_now["status"]["checks"] if c["rule"] == "drawdown")
+    expected = b["dd_stop"][-1] if dd["level"] == "STOP" else b["dd_watch"][-1]
+    assert dd["threshold"] == pytest.approx(expected)
+    assert all(s <= w for s, w in zip(b["dd_stop"], b["dd_watch"], strict=True))
+
+
 def test_single_fit_serving_matches_daily_fits(world, replica_daily, tmp_path):
     """``--signal-mode single`` (one fit through the last day) books the same day-by-day
     as a fresh fit per signal date: the fits are point in time."""

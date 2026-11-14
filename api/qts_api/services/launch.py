@@ -86,6 +86,104 @@ def _base_config(body: S.LaunchRunRequest, registry: RunRegistry, errors: list[I
     return cfg.with_overrides({"cache.enabled": False, "cache.root": ""})
 
 
+def coverage_precheck(
+    spec: Any, cfg: Any, allow_partial: bool, warnings: list[Issue], loc: list[str | int]
+) -> Issue | None:
+    """The library's load-coverage guard (:mod:`qts.research.coverage`) where it is cheap:
+    ``max_rank`` (or no prefilter) is checked by construction, without reading the store, so
+    an uncovered rank prefilter is refused here (422) with the guard's own message.  A
+    peak-cap prefilter (``max_names`` / ``min_mcap_ever``) is measured with DuckDB inside the
+    job (a minute or two); here it only gets a warning.  ``$QTS_LOAD_COVERAGE=off`` skips the
+    check, ``warn`` turns a refusal into a warning, as in the library."""
+    from qts.research.coverage import LoadCoverageError, check_load_coverage, mode
+
+    try:
+        m = mode()
+    except LoadCoverageError as e:
+        return _issue(loc, str(e), "value_error.load_coverage")
+    if m == "off":
+        return None
+    if spec.max_rank is None and (spec.max_names is not None or spec.min_mcap_ever is not None):
+        warnings.append(
+            _issue(
+                loc,
+                "a peak-cap prefilter can miss names the universe picks: it is measured before the load (a minute "
+                "or two) and the job is refused unless it covers the universe; --max-rank 1500 is checked "
+                "without reading the store",
+                "warning.coverage_measured",
+            )
+        )
+        return None
+    cov = check_load_coverage(spec, cfg)
+    if cov.ok:
+        if cov.detail:
+            warnings.append(_issue(loc, f"load coverage: {cov.detail}", "warning.coverage_margin"))
+        return None
+    msg = (
+        f"the store prefilter would load an incomplete universe ({cov.line()}). Use --max-rank "
+        f"{cov.recommended_max_rank} (docs/notes/prefilter_lookahead_2026-11-14.md)"
+    )
+    if allow_partial or m == "warn":
+        warnings.append(
+            _issue(loc, f"{msg}; loading anyway (flagged on the ledger record)", "warning.partial_coverage")
+        )
+        return None
+    return _issue(loc, f"{msg}; allow partial coverage to load anyway (flagged)", "value_error.load_coverage")
+
+
+def _seal_check(body: S.LaunchRunRequest, cfg: Any, settings: Settings, warnings: list[Issue]) -> Issue | None:
+    """The research seal's rules for a store run, checked before anything is queued (the
+    worker checks again, as ``qts run`` does): a sealed run gets a warning that says what
+    it loads; an unseal of a configuration already unsealed is an error unless ``force``
+    (then a warning that the result is flagged).  The hash checked is the one ``qts run``
+    checks first: the config before ``top_n_by_mcap`` is clamped to the loaded ids."""
+    from qts.research.seal import SealError, load_seal, previous_unseals
+
+    try:
+        seal = load_seal()
+    except SealError as e:
+        return _issue(["body", "kind"], f"the seal file is unreadable: {e}", "value_error.seal")
+    if seal is None:
+        if body.unseal_reason:
+            warnings.append(
+                _issue(["body", "unseal_reason"], "no seal is in force: there is nothing to unseal", "warning.no_seal")
+            )
+        return None
+    if not body.unseal_reason:
+        warnings.append(
+            _issue(
+                ["body", "kind"],
+                f"sealed: loads data through {seal.load_end_iso} (holdout from {seal.holdout_start_iso} not loaded)",
+                "warning.sealed",
+            )
+        )
+        return None
+    phase = 2 if body.ml else 1
+    prev = previous_unseals(str(settings.ledger), cfg.hash(), phase)
+    if prev and not body.force:
+        when = ", ".join(str(r.get("ts"))[:19] for r in prev)
+        return _issue(
+            ["body", "unseal_reason"],
+            f"this configuration was already unsealed ({when}): its holdout is used. Set force to run it "
+            "again; the result is then flagged 'holdout already used'",
+            "value_error.already_unsealed",
+        )
+    warnings.append(
+        _issue(
+            ["body", "unseal_reason"],
+            (
+                f"holdout already used: this configuration was unsealed {len(prev)} time(s) before; the result "
+                "will be flagged and is not out-of-sample"
+                if prev
+                else f"unseal: loads the holdout from {seal.holdout_start_iso}; logged once per configuration "
+                "before the run starts and cannot be undone"
+            ),
+            "warning.holdout_used" if prev else "warning.unseal",
+        )
+    )
+    return None
+
+
 def prepare_launch(body: S.LaunchRunRequest, settings: Settings, registry: RunRegistry) -> Prepared:
     errors: list[Issue] = []
     warnings: list[Issue] = []
@@ -96,6 +194,25 @@ def prepare_launch(body: S.LaunchRunRequest, settings: Settings, registry: RunRe
             errors.append(_issue(["body", "kind"], "store runs need QTS_STORE_PATH set on the API server"))
         if body.start and body.end and body.start > body.end:
             errors.append(_issue(["body", "end"], f"end ({body.end}) is before start ({body.start})"))
+        if body.max_rank is not None and (body.max_names is not None or body.min_mcap_ever is not None):
+            errors.append(
+                _issue(["body", "max_rank"], "the rank prefilter cannot be combined with max_names / min_mcap_ever")
+            )
+    elif body.allow_partial_coverage:
+        errors.append(
+            _issue(["body", "allow_partial_coverage"], "only data-store runs have a prefilter to cover the universe")
+        )
+    if body.unseal_reason is not None:
+        if body.kind != "store":
+            errors.append(
+                _issue(["body", "unseal_reason"], "only data-store runs are sealed: a synthetic market has no holdout")
+            )
+        elif not body.unseal_reason.strip():
+            errors.append(
+                _issue(["body", "unseal_reason"], "an unseal needs a reason: why must the holdout be looked at?")
+            )
+    elif body.force:
+        errors.append(_issue(["body", "force"], "force only applies together with unseal_reason"))
     base = _base_config(body, registry, errors)
     base_hash = base.hash() if base is not None else None
     cfg = None
@@ -147,6 +264,18 @@ def prepare_launch(body: S.LaunchRunRequest, settings: Settings, registry: RunRe
                     "warning.ml_off",
                 )
             )
+    if body.kind == "store":
+        seal_issue = _seal_check(body, cfg, settings, warnings)
+        if seal_issue is not None:
+            return Prepared(None, [seal_issue], warnings, base_hash, wu)
+        if settings.store_path is not None:
+            from qts_api.services.jobs import store_spec
+
+            spec = store_spec(body.model_dump(), str(settings.store_path))
+            loc: list[str | int] = ["body", "max_rank" if body.max_rank is not None else "max_names"]
+            cov_issue = coverage_precheck(spec, cfg, bool(body.allow_partial_coverage), warnings, loc)
+            if cov_issue is not None:
+                return Prepared(None, [cov_issue], warnings, base_hash, wu)
     h = cfg.hash()
     same = [e for e in registry.entries() if str(e.manifest.get("config_hash", "")) == h]
     if same:

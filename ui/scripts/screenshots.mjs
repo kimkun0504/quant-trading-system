@@ -17,6 +17,7 @@ mkdirSync(out, { recursive: true });
 const RUN = '20261104T175159Z_944dd5b4';
 const SEL = `sel=${RUN},20261106T083015Z_5e2c9f10,20261106T142207Z_9a7b3d44`;
 const LONG = 'sel=20261101T061500Z_e4b17c2d';
+const SIGNAL_TEST = '20261114T042559180079Z_strev_21';
 const LAB3 = `sel=${RUN},20261106T083015Z_5e2c9f10,20261105T091402Z_3be1a7c0`;
 const pages = [
   ['experiments', '/'],
@@ -58,6 +59,21 @@ const pages = [
   ],
   ['ledger', '/ledger'],
   ['models', '/models'],
+  // research tools and paper books (mock fixtures exported from a synthetic research world)
+  ['seal', '/seal'],
+  ['signals', '/signals'],
+  ['signal-test', `/signals/${SIGNAL_TEST}`],
+  ['sweeps', '/sweeps'],
+  ['sweep', '/sweeps/sw_8503759dfeb8'],
+  ['capacity', '/capacity'],
+  ['capacity-curve', '/capacity/20261114T042605395445Z_feafa843'],
+  ['risk', '/risk'],
+  ['risk-report', '/risk/20261114T042614680785Z_feafa843'],
+  ['midcap', '/checks/midcap'],
+  ['midcap-result', '/checks/midcap/20261114T042642805460Z_3ad20e22'],
+  ['paper', '/paper'],
+  ['paper-book', '/paper/check'],
+  ['paper-book-stop', '/paper/baseline'],
 ].filter(([n]) => !only || only.split(',').includes(n));
 
 const browser = await chromium.launch({ executablePath: chromiumPath() });

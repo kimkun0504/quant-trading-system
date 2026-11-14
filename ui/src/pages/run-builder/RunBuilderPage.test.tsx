@@ -67,12 +67,12 @@ describe('Run builder (integration, MSW)', () => {
     const search = await screen.findByRole('searchbox', { name: 'Search settings' });
     await user.type(search, 'leaves');
     expect(await screen.findByLabelText('Num leaves')).toHaveValue('15');
-    expect(screen.getByText('1 of 30 settings')).toBeInTheDocument();
+    expect(screen.getByText('1 of 33 settings')).toBeInTheDocument();
     await user.clear(screen.getByLabelText('Num leaves'));
     await user.type(screen.getByLabelText('Num leaves'), '31');
     await user.clear(search);
     await user.click(screen.getByRole('checkbox', { name: 'Changed only' }));
-    expect(screen.getByText('1 of 30 settings')).toBeInTheDocument();
+    expect(screen.getByText('1 of 33 settings')).toBeInTheDocument();
     expect(screen.getByLabelText('Num leaves')).toHaveValue('31');
     // the API warns that an ML-only key does nothing with the ML sleeve off
     expect(

@@ -36,7 +36,7 @@ test('clone a run, change two fields, queue two variants, find them in Experimen
 
   // the changed-only filter of the full editor shows the same two fields
   await page.getByRole('checkbox', { name: 'Changed only' }).check();
-  await expect(page.getByText('2 of 30 settings')).toBeVisible();
+  await expect(page.getByText('2 of 33 settings')).toBeVisible();
   await page.getByRole('checkbox', { name: 'Changed only' }).uncheck();
 
   // a variant with half-life 0, then both to the queue

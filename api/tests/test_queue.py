@@ -400,10 +400,12 @@ def test_command_source_parsing():
         "end": "2025-06-30",
         "max_names": 1500,
         "min_mcap_ever": 2e9,
+        "max_rank": None,
         "max_days": None,
         "cache": True,
         "venue": None,
     }
+    assert command_source("qts run --store data/store --start 2000-01-01 --max-rank 1500")["max_rank"] == 1500
     demo = command_source("qts/cli.py demo --days 900 --max-days 120")
     assert (demo["kind"], demo["stocks"], demo["days"], demo["max_days"]) == ("synthetic", 300, 900, 120)
     assert command_source("pytest -q") is None and command_source("qts run --yfinance AAPL") is None

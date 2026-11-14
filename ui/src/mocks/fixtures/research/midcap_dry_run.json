@@ -1,0 +1,41 @@
+{
+  "config_hash": "9109eaca361f15fa",
+  "config_path": "configs/baseline.yaml",
+  "store": {
+    "store": "data/store",
+    "start": null,
+    "end": null,
+    "max_names": null,
+    "min_mcap_ever": null,
+    "max_rank": 2750,
+    "min_price": 5.0,
+    "min_adv_usd": 2000000.0,
+    "adv_window": 63
+  },
+  "coverage": {
+    "rank": 2000,
+    "prefilter": "--max-rank 2750",
+    "n_loaded_ids": 60,
+    "n_dates": 970,
+    "share_dates_full": 1.0,
+    "min_coverage": 1.0,
+    "worst_dates": [],
+    "min_loaded": 47,
+    "median_loaded": 59.0,
+    "needed_loaded": 2500,
+    "est_load_gb": 0.31117587089538573,
+    "min_store": 47,
+    "n_short_dates": 0,
+    "min_share": 0.99,
+    "ok": true
+  },
+  "preregistration": "docs/notes/midcap_check_2026-11-13.md",
+  "preregistration_sha256": "3359be2180bbfbfa283bf2e09508d7965ef87ce10d5bb4ee53c71b1d1db297c5",
+  "previous_runs": [],
+  "dry_run": true,
+  "forced": false,
+  "family": null,
+  "run_dir": null,
+  "verdict": null,
+  "json_path": null
+}

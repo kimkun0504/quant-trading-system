@@ -1,0 +1,49 @@
+.meter {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.hurdleZone {
+  fill: var(--color-caution-wash);
+  stroke: var(--color-caution);
+  stroke-width: 1;
+}
+
+.weakMark {
+  stroke: var(--color-border-strong);
+  stroke-width: 2;
+}
+
+.tPass {
+  fill: var(--color-gain);
+  stroke: var(--color-surface);
+  stroke-width: 2;
+}
+
+.tFail {
+  fill: var(--color-loss);
+  stroke: var(--color-surface);
+  stroke-width: 2;
+}
+
+.tLabel {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  fill: var(--color-fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.meterNote {
+  margin: 0;
+  color: var(--color-fg-muted);
+  font-size: var(--text-sm);
+}
+
+.verdict {
+  margin: 0;
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  line-height: var(--leading-sans);
+  max-width: 90ch;
+}

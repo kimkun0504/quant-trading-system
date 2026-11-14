@@ -20,6 +20,7 @@ export function StackedBarChart<K extends string>({
   height = 200,
   ariaLabel,
   labelFor,
+  tickFor,
 }: {
   bars: readonly { label: string; values: Record<K, number> }[];
   keys: readonly StackKey<K>[];
@@ -27,6 +28,8 @@ export function StackedBarChart<K extends string>({
   height?: number;
   ariaLabel: string;
   labelFor: (label: string) => string;
+  /** Categorical bars: label every bar with this text (default: a year tick per date run). */
+  tickFor?: (label: string) => string;
 }) {
   const [ref, width] = useMeasure();
   const [hover, setHover] = useState<number | null>(null);
@@ -129,11 +132,28 @@ export function StackedBarChart<K extends string>({
                   </g>
                 );
               })}
-              {yearTicks.map(({ b }) => (
-                <text key={`y-${b.label}`} x={x(b.label) ?? 0} y={h + 16} className={styles.tick}>
-                  {b.label.slice(0, 4)}
-                </text>
-              ))}
+              {tickFor
+                ? bars.map((b) => (
+                    <text
+                      key={`c-${b.label}`}
+                      x={(x(b.label) ?? 0) + bw / 2}
+                      y={h + 16}
+                      textAnchor="middle"
+                      className={styles.tick}
+                    >
+                      {tickFor(b.label)}
+                    </text>
+                  ))
+                : yearTicks.map(({ b }) => (
+                    <text
+                      key={`y-${b.label}`}
+                      x={x(b.label) ?? 0}
+                      y={h + 16}
+                      className={styles.tick}
+                    >
+                      {b.label.slice(0, 4)}
+                    </text>
+                  ))}
             </g>
           </svg>
         ) : (

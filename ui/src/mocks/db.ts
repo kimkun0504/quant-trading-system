@@ -35,6 +35,22 @@ interface JobRecord {
   request: LaunchRunRequest;
   /** ms since epoch when the job started running (set when it leaves the queue). */
   startedAt: number | null;
+  /** A research / paper task (mocks/research.ts): how it reports and how it ends. */
+  task?: MockTask;
+}
+
+/** A task job in the mock queue: its progress messages, how it ends, and what it changes. */
+export interface MockTask {
+  /** Messages shown while it runs (spread over its duration), the last is the finish. */
+  messages: readonly string[];
+  result: Job['result'];
+  failure?: {
+    message: string;
+    error_kind: NonNullable<Job['error_kind']>;
+    exit_code: number | null;
+  };
+  /** Side effect when it finishes (a new result appears in the mock research state). */
+  onDone?: () => void;
 }
 
 export interface MockDb {
@@ -95,6 +111,7 @@ type Leaf = {
   enum?: string[];
   nullable?: boolean;
   title?: string;
+  choices?: Record<string, string[]>;
 };
 
 function schemaLeaves(): Map<string, Leaf> {
@@ -121,7 +138,29 @@ function overrideIssues(overrides: Record<string, ConfigLeaf>): ValidationIssue[
     const bad = (msg: string, type = 'value_error.invalid') => issues.push({ loc, msg, type });
     if (RESERVED.has(key)) bad(`${key} cannot be overridden here`, 'value_error.reserved');
     else if (!leaf) bad(`unknown config field '${key}'`, 'value_error.unknown_key');
-    else if (v === null) {
+    else if (leaf.type === 'array') {
+      // a multi-select: comma-separated names, each a feature of the active feature set
+      const set = String(overrides['alpha.feature_set'] ?? 'v1');
+      const valid = leaf.choices?.[set] ?? [];
+      const names =
+        typeof v === 'string'
+          ? v
+              .split(',')
+              .map((x) => x.trim())
+              .filter(Boolean)
+          : null;
+      if (names === null) bad(`${leaf.title ?? key} must be a comma-separated list of names`);
+      else {
+        const unknown = names.filter((n) => !valid.includes(n));
+        if (unknown.length)
+          bad(
+            `AlphaConfig: disabled_features [${unknown.map((n) => `'${n}'`).join(', ')}] are not features of feature_set '${set}'`,
+            'value_error.config',
+          );
+        else if (names.length >= valid.length)
+          bad('AlphaConfig: disabled_features would disable every feature', 'value_error.config');
+      }
+    } else if (v === null) {
       if (!leaf.nullable) bad(`${leaf.title ?? key} cannot be empty (null)`);
     } else if (leaf.type === 'boolean') {
       if (typeof v !== 'boolean') bad(`${leaf.title ?? key} must be true or false`);
@@ -174,6 +213,7 @@ function specFor(req: LaunchRunRequest, id: string, createdAt: string): RunSpec 
       ? base.stocks === req.stocks && base.days === req.days
       : (base.startDate ?? null) === (req.start ?? null) &&
         (base.source?.end ?? null) === (req.end ?? null) &&
+        (base.source?.max_rank ?? null) === (req.max_rank ?? null) &&
         base.stocks === (req.max_names ?? base.stocks));
   const spanDays =
     req.start && req.end
@@ -216,6 +256,7 @@ function specFor(req: LaunchRunRequest, id: string, createdAt: string): RunSpec 
             end: req.end ?? null,
             max_names: req.max_names ?? null,
             min_mcap_ever: req.min_mcap_ever ?? null,
+            max_rank: req.max_rank ?? null,
           }),
     },
   };
@@ -237,6 +278,59 @@ export function validate(req: LaunchRunRequest): ConfigValidation {
     errors.push(issue(['body', 'ml'], 'phase 2 tests the ML sleeve: set ml=true or phase=1'));
   if (req.kind === 'store' && req.start && req.end && req.start > req.end)
     errors.push(issue(['body', 'end'], `end (${req.end}) is before start (${req.start})`));
+  if (
+    req.kind === 'store' &&
+    req.max_rank != null &&
+    (req.max_names != null || req.min_mcap_ever != null)
+  )
+    errors.push(
+      issue(
+        ['body', 'max_rank'],
+        'the rank prefilter cannot be combined with max_names / min_mcap_ever',
+      ),
+    );
+  // the load-coverage guard where it is cheap (qts.research.coverage, by construction):
+  // the baseline's 1,000-name universe needs --max-rank >= 1,250
+  if (
+    req.kind === 'store' &&
+    req.max_rank != null &&
+    req.max_names == null &&
+    req.min_mcap_ever == null
+  ) {
+    if (req.max_rank < 1250) {
+      const msg = `the store prefilter would load an incomplete universe (load coverage (--max-rank ${req.max_rank}, by construction): NOT OK; --max-rank ${req.max_rank} < 1250 = universe last rank / (1 - bottom-size quantile)). Use --max-rank 1500 (docs/notes/prefilter_lookahead_2026-11-14.md)`;
+      if (req.allow_partial_coverage)
+        warnings.push(
+          issue(
+            ['body', 'max_rank'],
+            `${msg}; loading anyway (flagged on the ledger record)`,
+            'warning.partial_coverage',
+          ),
+        );
+      else
+        errors.push(
+          issue(
+            ['body', 'max_rank'],
+            `${msg}; allow partial coverage to load anyway (flagged)`,
+            'value_error.load_coverage',
+          ),
+        );
+    }
+  } else if (req.kind === 'store' && (req.max_names != null || req.min_mcap_ever != null))
+    warnings.push(
+      issue(
+        ['body', 'max_names'],
+        'a peak-cap prefilter can miss names the universe picks: it is measured before the load (a minute or two) and the job is refused unless it covers the universe; --max-rank 1500 is checked without reading the store',
+        'warning.coverage_measured',
+      ),
+    );
+  if (req.kind === 'synthetic' && req.allow_partial_coverage)
+    errors.push(
+      issue(
+        ['body', 'allow_partial_coverage'],
+        'only data-store runs have a prefilter to cover the universe',
+      ),
+    );
   const base = req.base_run_id ? db.runs.get(req.base_run_id) : undefined;
   if (req.base_run_id && !base)
     errors.push(
@@ -341,6 +435,14 @@ function clock(ms: number): string {
 /** The log a job has written by `progress` (stage lines, then the simulator's day lines). */
 function logLines(rec: JobRecord, progress: number): string[] {
   if (rec.startedAt === null) return [];
+  if (rec.task) {
+    const t0 = rec.startedAt;
+    const n = rec.task.messages.length;
+    const shown = rec.task.messages.slice(0, Math.max(1, Math.ceil(progress * n)));
+    return shown.map(
+      (m, i) => `${clock(t0 + (i / Math.max(1, n)) * db.jobDurationMs)} qts_api.job: ${m}`,
+    );
+  }
   const t0 = rec.startedAt;
   const at = (p: number) => clock(t0 + p * db.jobDurationMs);
   const lines = [`${at(0)} qts_api.job: job ${rec.job.job_id} -> run ${rec.job.run_id}`];
@@ -384,11 +486,23 @@ function finish(rec: JobRecord, finishedAt: number): void {
     n_obs: s.n_days,
     mean_ic: done.detail.ic_report.mean_ic,
     n_reruns: 0,
+    kind: 'trial',
+    reference: false,
+    counted: true,
+    note: null,
+    holdout_already_used: false,
+    unsealed: false,
   });
   const fam = db.ledger.families.find((f) => f.family === family);
   if (fam) fam.n_trials += 1;
   else {
-    db.ledger.families.push({ family, n_trials: 1, effective_trials: 1, var_sr_annual: 0 });
+    db.ledger.families.push({
+      family,
+      n_trials: 1,
+      effective_trials: 1,
+      var_sr_annual: 0,
+      n_not_counted: 0,
+    });
     db.ledger.families.sort((a, b) => a.family.localeCompare(b.family));
   }
   rec.job = {
@@ -401,6 +515,71 @@ function finish(rec: JobRecord, finishedAt: number): void {
     eta_seconds: null,
     last_log: logLines(rec, 1).at(-1) ?? null,
   };
+}
+
+function finishTask(rec: JobRecord, finishedAt: number): void {
+  const t = rec.task;
+  if (!t) return;
+  const failed = t.failure;
+  if (!failed) t.onDone?.();
+  rec.job = {
+    ...rec.job,
+    status: failed ? 'failed' : 'done',
+    progress: failed ? rec.job.progress : 1,
+    stage: '',
+    message: failed ? failed.message : (t.messages.at(-1) ?? 'Finished'),
+    result: failed ? null : t.result,
+    error_kind: failed ? failed.error_kind : null,
+    exit_code: failed ? failed.exit_code : null,
+    finished_at: new Date(finishedAt).toISOString(),
+    eta_seconds: null,
+    last_log: logLines(rec, 1).at(-1) ?? null,
+  };
+}
+
+/**
+ * Queue a research or paper task (the mock of `JobManager.submit_task`): it waits its turn
+ * in the same FIFO as the runs, runs for `jobDurationMs`, then finishes (or fails) as
+ * `task` says.
+ */
+export function launchTask(
+  fields: Pick<Job, 'task' | 'subject' | 'command' | 'label' | 'ml'>,
+  task: MockTask,
+  now = Date.now(),
+): Job {
+  db.seq += 1;
+  const createdAt = new Date(now + db.seq).toISOString();
+  const jobId = `job_${hashString(`task${fields.label}${db.seq}`).toString(16).padStart(12, '0').slice(0, 12)}`;
+  const job: Job = {
+    ...fields,
+    result: null,
+    error_kind: null,
+    exit_code: null,
+    job_id: jobId,
+    run_id: '',
+    status: 'queued',
+    progress: 0,
+    message: 'Queued',
+    kind: 'store',
+    phase: fields.ml ? 2 : 1,
+    config_hash: '',
+    base_run_id: null,
+    n_overrides: 0,
+    created_at: createdAt,
+    started_at: null,
+    finished_at: null,
+    position: db.queue.length,
+    stage: '',
+    last_log: null,
+    eta_seconds: null,
+    estimated_seconds: db.historySeconds,
+  };
+  // a task has no run spec of its own: it borrows the first seed run's (never written)
+  const spec = SEED_SPECS[0] as RunSpec;
+  db.jobs.set(jobId, { job, spec, request: {} as LaunchRunRequest, startedAt: null, task });
+  db.queue.push(jobId);
+  advanceQueue(now);
+  return db.jobs.get(jobId)?.job ?? job;
 }
 
 function trialsInFamily(spec: RunSpec): number {
@@ -437,8 +616,20 @@ export function advanceQueue(now = Date.now()): void {
     const t0 = running.startedAt ?? now;
     const progress = Math.min(1, (now - t0) / db.jobDurationMs);
     if (progress >= 1) {
-      finish(running, t0 + db.jobDurationMs);
+      if (running.task) finishTask(running, t0 + db.jobDurationMs);
+      else finish(running, t0 + db.jobDurationMs);
       continue;
+    }
+    if (running.task) {
+      const msgs = running.task.messages;
+      const msg = msgs[Math.min(msgs.length - 1, Math.floor(progress * msgs.length))] ?? '';
+      running.job = {
+        ...running.job,
+        progress,
+        message: msg,
+        last_log: logLines(running, progress).at(-1) ?? null,
+      };
+      break;
     }
     const [stage, msg] = stageAt(progress);
     const n = backtestDays(running.spec);
@@ -480,6 +671,12 @@ export function launch(req: LaunchRunRequest, now = Date.now()): Job {
   spec.id = `${stamp}_${hash.slice(0, 8)}`;
   const jobId = `job_${hashString(`${spec.id}${db.seq}`).toString(16).padStart(12, '0').slice(0, 12)}`;
   const job: Job = {
+    task: 'pipeline',
+    subject: null,
+    command: null,
+    result: null,
+    error_kind: null,
+    exit_code: null,
     job_id: jobId,
     run_id: spec.id,
     status: 'queued',
@@ -545,7 +742,7 @@ export function cancelJob(jobId: string, now = Date.now()): Job | undefined {
     message: wasQueued ? 'Cancelled before it started' : 'Cancelled',
     finished_at: new Date(now).toISOString(),
   };
-  db.pending.delete(rec.spec.id); // a cancelled job is not a run
+  if (!rec.task) db.pending.delete(rec.spec.id); // a cancelled job is not a run
   advanceQueue(now);
   return rec.job;
 }

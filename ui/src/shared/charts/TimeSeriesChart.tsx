@@ -30,6 +30,17 @@ export interface Span {
   color?: TokenColor;
 }
 
+/**
+ * A shaded range between two of the chart's series (indexes into `series`), e.g. an
+ * expectation cone whose edges are drawn (and read out) as dashed lines.
+ */
+export interface Band {
+  lower: number;
+  upper: number;
+  color: TokenColor;
+  opacity?: number;
+}
+
 /** One or more lines on one shared y-scale (never dual-axis), with a crosshair readout. */
 export function TimeSeriesChart({
   dates,
@@ -39,6 +50,7 @@ export function TimeSeriesChart({
   ariaLabel,
   refLines = [],
   spans = [],
+  bands = [],
 }: {
   dates: readonly string[];
   series: readonly LineSeries[];
@@ -47,6 +59,7 @@ export function TimeSeriesChart({
   ariaLabel: string;
   refLines?: readonly RefLine[];
   spans?: readonly Span[];
+  bands?: readonly Band[];
 }) {
   const t = useChartTokens();
   const [idx, setIdx] = useState<number | null>(null);
@@ -79,6 +92,44 @@ export function TimeSeriesChart({
       hooks: {
         drawClear: [
           (u: uPlot) => {
+            for (const b of bands) {
+              const lo = series[b.lower]?.values;
+              const hi = series[b.upper]?.values;
+              if (!lo || !hi) continue;
+              const ctx = u.ctx;
+              ctx.save();
+              ctx.fillStyle = withAlpha(colorOf(b.color, t), b.opacity ?? 0.14);
+              let run: number[] = [];
+              const flush = () => {
+                if (run.length > 1) {
+                  ctx.beginPath();
+                  run.forEach((k, j) => {
+                    const x = u.valToPos(xs[k] ?? 0, 'x', true);
+                    const y = u.valToPos(hi[k] ?? 0, 'y', true);
+                    if (j === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                  });
+                  for (let j = run.length - 1; j >= 0; j--) {
+                    const k = run[j] ?? 0;
+                    ctx.lineTo(
+                      u.valToPos(xs[k] ?? 0, 'x', true),
+                      u.valToPos(lo[k] ?? 0, 'y', true),
+                    );
+                  }
+                  ctx.closePath();
+                  ctx.fill();
+                }
+                run = [];
+              };
+              for (let k = 0; k < xs.length; k++) {
+                const a = lo[k];
+                const c = hi[k];
+                if (a === null || a === undefined || c === null || c === undefined) flush();
+                else run.push(k);
+              }
+              flush();
+              ctx.restore();
+            }
             if (!spans.length) return;
             const ctx = u.ctx;
             const x0 = xs[0];
@@ -119,7 +170,7 @@ export function TimeSeriesChart({
         ],
       },
     }),
-    [t, series, format, refLines, spans, xs, colorOf],
+    [t, series, format, refLines, spans, bands, xs, colorOf],
   );
 
   let i = idx ?? dates.length - 1;

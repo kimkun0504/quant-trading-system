@@ -184,6 +184,37 @@ def _store_fingerprint(spec: StoreSpec, datasets: tuple[str, ...]) -> list[list[
     return out
 
 
+def _market_hash_cache_path(spec: StoreSpec, cache_dir: str | None) -> Any:
+    """Cache file of :func:`full_history_market_hash` for ``spec`` (keyed on the flags and
+    the stored files' sizes and modification times); ``None`` without a cache dir."""
+    import hashlib
+    import json
+    from pathlib import Path
+
+    if not cache_dir:
+        return None
+    deps = ("prices_close", "market_cap", "prices_close_raw", "prices_volume")
+    key_src = json.dumps({"spec": spec.to_dict(), "files": _store_fingerprint(spec, deps)}, sort_keys=True)
+    key = hashlib.sha256(key_src.encode()).hexdigest()[:24]
+    return Path(cache_dir) / f"{key}.json"
+
+
+def cached_full_history_market_hash(spec: StoreSpec, cache_dir: str | None) -> str | None:
+    """The cached :func:`full_history_market_hash` of ``spec``, or ``None`` when it has not
+    been computed for this store snapshot and these flags.  Reads only file metadata and
+    the small cache file, never a panel: a UI can show a command's ledger family before
+    launch without blocking on the store."""
+    import json
+
+    path = _market_hash_cache_path(spec, cache_dir)
+    if path is None or not path.exists():
+        return None
+    try:
+        return str(json.loads(path.read_text())["market_hash"])
+    except (OSError, ValueError, KeyError):
+        return None
+
+
 def full_history_market_hash(spec: StoreSpec, cache_dir: str | None = None, log: Printer = _quiet) -> str:
     """:func:`qts.core.manifest.hash_market` of the full-history load with ``spec``'s flags
     (prefilter over ``[start, end]``, close panel ``[start, end]``) -- what ``qts run``
@@ -191,22 +222,13 @@ def full_history_market_hash(spec: StoreSpec, cache_dir: str | None = None, log:
     other panel is read).  Cached as JSON under ``cache_dir`` keyed on the flags and the
     files' sizes / modification times, so a second sealed run does not read the store
     again."""
-    import hashlib
-    import json
-    from pathlib import Path
-
     from qts.core.manifest import hash_close
     from qts.data.store import ParquetStore
 
-    deps = ("prices_close", "market_cap", "prices_close_raw", "prices_volume")
-    key_src = json.dumps({"spec": spec.to_dict(), "files": _store_fingerprint(spec, deps)}, sort_keys=True)
-    key = hashlib.sha256(key_src.encode()).hexdigest()[:24]
-    path = Path(cache_dir) / f"{key}.json" if cache_dir else None
-    if path is not None and path.exists():
-        try:
-            return str(json.loads(path.read_text())["market_hash"])
-        except (OSError, ValueError, KeyError):
-            pass
+    path = _market_hash_cache_path(spec, cache_dir)
+    cached = cached_full_history_market_hash(spec, cache_dir)
+    if cached is not None:
+        return cached
     log("seal: hashing the full-history close panel of this load (once per store snapshot and flags) ...")
     ids = prefilter_ids(spec)
     close = ParquetStore(spec.store).read_wide("prices_close", spec.start, spec.end, ids)
@@ -341,6 +363,7 @@ __all__ = [
     "ResearchLoad",
     "StoreLoadError",
     "StoreSpec",
+    "cached_full_history_market_hash",
     "estimated_load_gb",
     "full_history_market_hash",
     "load_research_market",

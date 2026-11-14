@@ -224,7 +224,8 @@ describe('base, values and diff', () => {
     expect(sb.run).toMatchObject({
       kind: 'store',
       start: '2001-01-02',
-      maxNames: '1500',
+      maxRank: '1500',
+      maxNames: '',
       ml: true,
     });
     expect(sb.storePath).toBe('data/store');
@@ -320,6 +321,7 @@ describe('base, values and diff', () => {
           start: '2010-01-01',
           maxNames: '500',
           minMcapEver: '2e9',
+          maxRank: '',
           ml: true,
           label: ' Store run ',
         },
@@ -393,6 +395,7 @@ describe('CLI command builder', () => {
           end: '2017-12-31',
           maxNames: '1500',
           minMcapEver: '2000000000',
+          maxRank: '',
           ml: true,
           seed: '3',
         },
@@ -502,7 +505,7 @@ describe('trial forecast', () => {
   const family = `pipeline_phase1:${dataHash.slice(0, 12)}`;
   const ledger: Ledger = {
     trials: [],
-    families: [{ family, n_trials: 5, effective_trials: 3, var_sr_annual: 0.2 }],
+    families: [{ family, n_trials: 5, effective_trials: 3, var_sr_annual: 0.2, n_not_counted: 0 }],
   };
   it('counts the next trial in the base run’s family', () => {
     expect(forecastTrial(base, [], false, ledger)).toEqual({
@@ -534,6 +537,12 @@ describe('trial forecast', () => {
           n_obs: 1,
           mean_ic: null,
           n_reruns: 0,
+          kind: 'trial',
+          reference: false,
+          counted: true,
+          note: null,
+          holdout_already_used: false,
+          unsealed: false,
         },
       ],
       families: [
@@ -542,6 +551,7 @@ describe('trial forecast', () => {
           n_trials: 9,
           effective_trials: 4,
           var_sr_annual: 0.1,
+          n_not_counted: 0,
         },
       ],
     };

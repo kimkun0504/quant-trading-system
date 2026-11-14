@@ -38,6 +38,8 @@ export function cliCommand(req: LaunchRunRequest, storePath: string | null): str
       parts.push('--max-names', String(req.max_names));
     if (req.min_mcap_ever !== null && req.min_mcap_ever !== undefined)
       parts.push('--min-mcap-ever', num(req.min_mcap_ever));
+    if (req.max_rank !== null && req.max_rank !== undefined)
+      parts.push('--max-rank', String(req.max_rank));
   }
   if (req.base_run_id) parts.push('--config', `runs/${req.base_run_id}/config.yaml`);
   if (req.ml) parts.push('--ml');
@@ -45,6 +47,11 @@ export function cliCommand(req: LaunchRunRequest, storePath: string | null): str
   if (req.max_days !== null && req.max_days !== undefined)
     parts.push('--max-days', String(req.max_days));
   if (req.cache) parts.push('--cache');
+  if (req.kind === 'store' && req.unseal_reason) {
+    parts.push('--unseal', req.unseal_reason);
+    if (req.force) parts.push('--force');
+  }
+  if (req.kind === 'store' && req.allow_partial_coverage) parts.push('--allow-partial-coverage');
   const overrides: [string, number | boolean | string | null][] = Object.entries(
     req.config_overrides,
   );

@@ -52,6 +52,44 @@ export const Icons = {
       <path d="M6 3.5 10.5 8 6 12.5" />
     </Icon>
   ),
+  Lock: (p: IconProps) => (
+    <Icon {...p}>
+      <rect x="3" y="7" width="10" height="7.5" rx="1.5" />
+      <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" />
+    </Icon>
+  ),
+  Unlock: (p: IconProps) => (
+    <Icon {...p}>
+      <rect x="3" y="7" width="10" height="7.5" rx="1.5" />
+      <path d="M5.5 7V5a2.5 2.5 0 0 1 4.9-.7" />
+    </Icon>
+  ),
+  Paper: (p: IconProps) => (
+    <Icon {...p}>
+      <path d="M2 13.5h12M3.5 11l3-4 2.5 2 3.5-5" />
+      <circle cx="12.5" cy="4" r="1" />
+    </Icon>
+  ),
+  Grid: (p: IconProps) => (
+    <Icon {...p}>
+      <rect x="2" y="2" width="5" height="5" rx="1" />
+      <rect x="9" y="2" width="5" height="5" rx="1" />
+      <rect x="2" y="9" width="5" height="5" rx="1" />
+      <rect x="9" y="9" width="5" height="5" rx="1" />
+    </Icon>
+  ),
+  Gauge: (p: IconProps) => (
+    <Icon {...p}>
+      <path d="M2.5 11a5.5 5.5 0 1 1 11 0" />
+      <path d="M8 11l3-4" />
+    </Icon>
+  ),
+  Target: (p: IconProps) => (
+    <Icon {...p}>
+      <circle cx="8" cy="8" r="6" />
+      <circle cx="8" cy="8" r="2.5" />
+    </Icon>
+  ),
   Flask: (p: IconProps) => (
     <Icon {...p}>
       <path d="M6 1.5h4M6.5 1.5v4.5L2.5 13a1 1 0 0 0 .9 1.5h9.2a1 1 0 0 0 .9-1.5L9.5 6V1.5" />

@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react';
 import type { ConfigValidation, ValidationIssue } from '@/shared/api';
 import { formatLeaf } from '@/entities/run';
-import { shortHash } from '@/shared/lib/format';
+import { useTrialImpact } from '@/entities/research';
+import { num, sharpe, shortHash } from '@/shared/lib/format';
 import { cx } from '@/shared/lib/cx';
 import { Badge, Button, CopyButton, Panel, Table, Td, Th } from '@/shared/ui';
 import { VARIANT_MAX_KEYS, dataChanged, strategyDiffCount } from './lib/draft';
@@ -26,6 +27,22 @@ export interface SlipVariant {
 }
 
 type State = 'ready' | 'checking' | 'blocked';
+
+/**
+ * What the new trial(s) do to the deflated Sharpe of the family's current best trial
+ * (`qts.research.sweep.trial_impact` through the API; nothing is computed here).
+ */
+function Haircut({ family, nNew }: { family: string; nNew: number }) {
+  const q = useTrialImpact(family, nNew);
+  const i = q.data;
+  if (!i || i.best_sharpe === null || i.dsr_best_before === null) return null;
+  return (
+    <span data-testid="dsr-haircut">
+      The family&apos;s current best (net Sharpe {sharpe(i.best_sharpe)}) goes from DSR{' '}
+      {num(i.dsr_best_before, { digits: 3 })} to {num(i.dsr_best_after, { digits: 3 })}.
+    </span>
+  );
+}
 
 function variantState(v: SlipVariant): State {
   if (v.clientErrors > 0 || (v.validation && !v.validation.valid)) return 'blocked';
@@ -266,7 +283,8 @@ export function LaunchSlip({
               This will be trial {t.trialNumber} in family <code>{t.family}</code>: its deflated
               Sharpe is judged against {t.trialNumber} {t.trialNumber === 1 ? 'trial' : 'trials'} (
               {t.nTrials} logged so far
-              {t.trialNumber - t.nTrials > 1 ? ', plus the variants queued before it' : ''}).
+              {t.trialNumber - t.nTrials > 1 ? ', plus the variants queued before it' : ''}).{' '}
+              <Haircut family={t.family} nNew={t.trialNumber - t.nTrials} />
             </span>
           ) : (
             <span data-testid="trial-line">

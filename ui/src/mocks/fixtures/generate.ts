@@ -23,6 +23,7 @@ import type {
   RunIc,
   RunKind,
   RunSeriesName,
+  RunSeal,
   RunSource,
   RunStatus,
   RunSummary,
@@ -78,6 +79,24 @@ export interface RunSpec {
   icLevel?: number;
   /** Recorded data source beyond kind / stocks / days (store slice, prefilter, flags). */
   source?: Partial<RunSource>;
+  /** The run's seal fields (default: no seal in force when it ran). */
+  seal?: Partial<RunSeal>;
+}
+
+/** The seal fields of `summary.json` (`RunContext.summary_fields`); none by default. */
+export function mockSeal(spec: Pick<RunSpec, 'seal'>): RunSeal {
+  return {
+    state: 'none',
+    holdout_start: null,
+    sealed_end: null,
+    unsealed: false,
+    unseal_reason: null,
+    holdout_already_used: false,
+    seal_exempt: null,
+    record_kind: 'trial',
+    reference: false,
+    ...spec.seal,
+  };
 }
 
 export interface GeneratedRun {
@@ -330,8 +349,16 @@ type ConfigTree = { [key: string]: ConfigLeaf | ConfigTree };
 function configTree(spec: RunSpec): ConfigTree {
   const tree: ConfigTree = {
     seed: spec.seed,
-    universe: { top_n_by_mcap: Math.min(1000, spec.stocks), min_price: 5.0, min_adv_usd: 2e6 },
+    universe: {
+      top_n_by_mcap: Math.min(1000, spec.stocks),
+      min_price: 5.0,
+      min_adv_usd: 2e6,
+      rank_offset: 0,
+    },
     alpha: {
+      feature_set: 'v1',
+      // a list leaf is flattened to compact JSON, as the API's config_leaves does
+      disabled_features: '[]',
       horizon_days: 20,
       use_ml: spec.use_ml,
       ic_window: 756,
@@ -395,8 +422,9 @@ export function mockSource(spec: RunSpec): RunSource {
     store_path: synthetic ? null : MOCK_STORE_PATH,
     start: synthetic ? null : (spec.startDate ?? null),
     end: null,
-    max_names: synthetic ? null : spec.stocks,
+    max_names: null,
     min_mcap_ever: null,
+    max_rank: synthetic ? null : 1500,
     max_days: null,
     cache: false,
     venue: null,
@@ -423,7 +451,10 @@ export function mockSource(spec: RunSpec): RunSource {
         ...(base.start ? ['--start', base.start] : []),
         ...(base.end ? ['--end', base.end] : []),
         ...(base.max_names !== null ? ['--max-names', String(base.max_names)] : []),
+        ...(base.min_mcap_ever !== null ? ['--min-mcap-ever', String(base.min_mcap_ever)] : []),
+        ...(base.max_rank != null ? ['--max-rank', String(base.max_rank)] : []),
       ];
+  if (!synthetic && spec.seal?.load_coverage?.ok === false) parts.push('--allow-partial-coverage');
   if (spec.use_ml) parts.push('--ml');
   for (const [k, v] of Object.entries(spec.overrides ?? {}))
     parts.push('--set', `${k}=${String(v)}`);
@@ -739,6 +770,7 @@ export function generateRun(spec: RunSpec): GeneratedRun {
     fold_sharpes,
     execution_venue: 'Closing auction (LOC/MOC), IBKR ClosePx algo above 1% of ADV',
     notes,
+    seal: mockSeal(spec),
   };
 
   const summaryRow: RunSummary = {
@@ -753,6 +785,7 @@ export function generateRun(spec: RunSpec): GeneratedRun {
     ledger_family: ledgerFamily(spec.phase, dataHash),
     git_sha: gitSha,
     status: spec.status,
+    seal: mockSeal(spec),
     headline:
       spec.status === 'done'
         ? {

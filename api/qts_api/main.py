@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 
 from qts_api import __version__, problems
 from qts_api.problems import Problem
-from qts_api.routers import config, health, jobs, ledger, runs
+from qts_api.routers import config, health, jobs, ledger, paper, research, runs
 from qts_api.services.jobs import JobManager
 from qts_api.services.ledger import LedgerService
 from qts_api.services.registry import RunRegistry
@@ -54,7 +54,7 @@ def create_app(settings: Settings | None = None, *, start_jobs: bool = True) -> 
         lifespan=lifespan,
     )
     app.state.settings = settings
-    app.state.registry = RunRegistry(settings.runs_root)
+    app.state.registry = RunRegistry(settings.runs_root, settings.ledger)
     app.state.ledger = LedgerService(settings.ledger)
     app.state.jobs = JobManager(settings, start=start_jobs)
 
@@ -69,7 +69,7 @@ def create_app(settings: Settings | None = None, *, start_jobs: bool = True) -> 
     # Host gets 400 before CORS or any route runs.
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.allowed_hosts), www_redirect=False)
     problems.install(app)
-    for r in (runs.router, jobs.router, ledger.router, config.router, health.router):
+    for r in (runs.router, jobs.router, ledger.router, config.router, health.router, research.router, paper.router):
         app.include_router(r)
 
     @app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], include_in_schema=False)

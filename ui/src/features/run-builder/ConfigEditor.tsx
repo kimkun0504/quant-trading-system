@@ -9,6 +9,20 @@ import { fieldSections, matchesField } from './lib/fields';
 import type { Field } from './lib/fields';
 import styles from './ConfigEditor.module.css';
 
+/** The draft's value of the field a multi-select follows (`alpha.feature_set`). */
+function choiceKeyValue(
+  fields: readonly Field[],
+  draft: Draft,
+  base: Base,
+  f: Field,
+): string | null {
+  if (!f.choicesKey) return null;
+  const key = fields.find((x) => x.path === f.choicesKey);
+  if (!key) return null;
+  const v = rawValue(draft, base, key);
+  return typeof v === 'string' ? v : null;
+}
+
 interface EditorProps {
   fields: readonly Field[];
   draft: Draft;
@@ -37,6 +51,7 @@ export function CommonSettings({ fields, draft, base, errors, onChange, onReset 
             base={baseValue(base, c.field)}
             changed={isChanged(draft, base, c.field)}
             error={errors[c.path]}
+            choiceKey={choiceKeyValue(fields, draft, base, c.field)}
             onChange={(raw) => onChange(c.field, raw)}
             onReset={() => onReset(c.path)}
           />
@@ -164,6 +179,7 @@ export function ConfigEditor({
                     base={baseValue(base, f)}
                     changed={changed.has(f.path)}
                     error={errors[f.path]}
+                    choiceKey={choiceKeyValue(fields, draft, base, f)}
                     onChange={(raw) => onChange(f, raw)}
                     onReset={() => onReset(f.path)}
                   />

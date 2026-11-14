@@ -25,6 +25,7 @@ import {
   validate,
 } from './db';
 import { MOCK_STORE_PATH, mockWarmup, runFileBody, runFiles } from './fixtures/generate';
+import { researchHandlers } from './research';
 
 /**
  * MSW handlers implementing the API contract in shared/api/schema.ts.
@@ -66,6 +67,7 @@ function findRun(id: string) {
 }
 
 export const handlers = [
+  ...researchHandlers,
   http.get('*/api/runs', async () => {
     await delay();
     return HttpResponse.json(listSummaries());

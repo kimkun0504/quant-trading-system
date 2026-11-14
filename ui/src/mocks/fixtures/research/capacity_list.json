@@ -1,0 +1,13 @@
+{
+  "results": [
+    {
+      "id": "20261114T042605395445Z_feafa843",
+      "config_hash": "feafa84386ebe781",
+      "family": "capacity:20b8af2873cb",
+      "navs": [5000000.0, 50000000.0, 250000000.0, 1000000000.0],
+      "half_sharpe_nav": null,
+      "reference_sharpe_net": -0.3613267047935666,
+      "sealed_end": "2021-02-26"
+    }
+  ]
+}

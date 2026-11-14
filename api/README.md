@@ -39,6 +39,7 @@ UI's *Run builder*, or `python -m qts_api.fixture runs` for a tiny run (~30 s).
 | `QTS_JOB_START_METHOD` | `multiprocessing` start method for jobs    | `spawn`                           |
 | `QTS_ALLOWED_HOSTS`    | extra accepted `Host` names (comma-sep.)   | none (`localhost`, `127.0.0.1`, `::1` always) |
 | `QTS_MAX_QUEUED`       | jobs waiting for a worker; more get a 429  | `20`                              |
+| `QTS_PAPER_ROOT`       | paper books (`qts paper --paper-root`)     | `./paper`                         |
 
 Requests whose `Host` header is not on the allow-list get a 400 (`TrustedHostMiddleware`):
 this is the DNS-rebinding defence, since CORS does not stop a rebound page from reading a
@@ -76,6 +77,18 @@ API runs share one registry and one ledger.
 | GET    | `/api/config/warmup?ml=&signal_lag_days=` | `Warmup`          | 422           |
 | POST   | `/api/config/validate`             | `ConfigValidation` (body: `LaunchRunRequest`) | 422 |
 | GET    | `/api/health`                      | `Health`                 |               |
+
+Research tools and paper books (`routers/research.py`, `routers/paper.py`; the library's own JSON
+through permissive models): `/api/seal` (+ `/unseals`), `/api/ledger/impact` (DSR haircut of N new
+trials), `/api/features`, `POST /api/families/resolve` (+ `/jobs`: compute it as a job), `/api/signals`,
+`/api/signals/tests` (+ `/preview`, `POST` launch,
+`/{test_id}`), `/api/sweeps` (+ `/plan`, `POST` create, `/{sweep_id}`, `/{sweep_id}/resume`),
+`/api/capacity`, `/api/risk-calibrations`,
+`/api/checks/midcap` (+ `/preregistration`, `/results/{run_id}`, `POST` launch: once-only, `force`
+needs the typed phrase), `/api/paper/books` (+ `/{name}/status|history|orders|holdings|schedule`,
+`POST /{name}/ack|run|reconcile`). Long work runs as **task jobs** in the same queue (`task`,
+`subject`, `command`, `result`, `error_kind`: `stale_data` exit 3, `book_locked` exit 4, `coverage`,
+`seal`, `refused`); every launch records the exact `qts ...` command. See `/docs` for the schemas.
 
 **Errors** are RFC 7807 problem documents (`application/problem+json`):
 `{type, title, status, detail, errors?}`. `detail` is always a human-readable string (the UI shows
@@ -195,7 +208,10 @@ A launch then fixes the run id (`<UTC timestamp>_<config_hash[:8]>`), puts the j
 answers 202 with the job and run ids (429 when `QTS_MAX_QUEUED` jobs are already waiting).
 
 Store runs (`kind: "store"`) read `QTS_STORE_PATH` the way `qts run --store` does: `start` / `end` slice
-the store and `max_names` / `min_mcap_ever` prefilter by peak market cap before anything is pivoted.
+the store and `max_rank` (screened market-cap rank, `--max-rank`) or `max_names` / `min_mcap_ever` (peak
+market cap) prefilter before anything is pivoted; the library's load-coverage guard refuses a prefilter
+that misses universe names unless `allow_partial_coverage` (`--allow-partial-coverage`, flagged). Store
+runs load under the research seal (`unseal_reason`, `force`: once per configuration).
 `cache: true` is `qts --cache` (stage cache under `<runs root>/_cache`; outside the config hash).
 
 **The queue.** `JobManager` keeps a FIFO queue and runs at most `QTS_MAX_WORKERS` (default 1) jobs, each

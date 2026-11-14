@@ -1,0 +1,167 @@
+/* Page-level layout of the research pages: the launch column beside the results, fact
+   lists, verdict lines and the multiple-testing header. */
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(20rem, 26rem);
+  gap: var(--space-5);
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.stack {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.row2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr));
+  gap: var(--space-4);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+  gap: var(--space-3) var(--space-5);
+  margin: 0;
+}
+
+.facts dt {
+  color: var(--color-fg-muted);
+  font-size: var(--text-sm);
+}
+
+.facts dd {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.factNote {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--text-sm);
+  font-weight: 400;
+  color: var(--color-fg-muted);
+}
+
+.lede {
+  margin: 0;
+  max-width: var(--measure);
+  color: var(--color-fg-muted);
+  line-height: var(--leading-serif);
+}
+
+.muted {
+  color: var(--color-fg-muted);
+}
+
+.gain {
+  color: var(--color-gain);
+}
+
+.loss {
+  color: var(--color-loss);
+}
+
+.caution {
+  color: var(--color-caution-ink);
+}
+
+/* the multiple-testing header: a result never appears without how many were tried */
+.context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-5);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.contextBig {
+  font-size: var(--text-2xl);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-tight);
+}
+
+.contextLabel {
+  color: var(--color-fg-muted);
+  font-size: var(--text-sm);
+}
+
+.notice {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-caution-wash);
+  line-height: var(--leading-sans);
+  max-width: 80ch;
+}
+
+.danger {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-loss-wash);
+  color: var(--color-fg);
+  border-left: 3px solid var(--color-loss);
+}
+
+.list {
+  margin: 0;
+  padding-left: var(--space-5);
+  display: grid;
+  gap: var(--space-1);
+}
+
+.code {
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.pre {
+  margin: 0;
+  max-height: 24rem;
+  overflow: auto;
+  padding: var(--space-3);
+  background: var(--color-surface-2);
+  border-radius: var(--radius-sm);
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+}
+
+.rowLink {
+  font-weight: 500;
+}
+
+.inline {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.small {
+  font-size: var(--text-sm);
+}
+
+/* a table cell of prose (a rule, a check's message): wraps instead of widening the table */
+.wrapCell {
+  white-space: normal;
+  min-width: 16rem;
+  line-height: var(--leading-sans);
+}

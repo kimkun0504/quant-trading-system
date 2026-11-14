@@ -20,6 +20,8 @@ Library entry points (all return JSON-serialisable dicts; shapes in
     paper.replay("baseline")
     paper.schedule_text("baseline")
     paper.reconcile("baseline")
+    paper.holdings("baseline")  # positions at the close of a journal day
+    paper.boundaries("baseline")  # the calibrated stop-rule boundaries per day
 
 Modules: :mod:`~qts.paper.book` (storage), :mod:`~qts.paper.data` (sources, sync,
 freshness, calendars), :mod:`~qts.paper.serving` (frozen walk-forward models,
@@ -32,7 +34,9 @@ from qts.paper.book import BookHeader, BookLockedError, DataSpec, PaperError, St
 from qts.paper.monitor import StopRules
 from qts.paper.runner import (
     ack,
+    boundaries,
     history,
+    holdings,
     init_book,
     orders,
     reconcile,
@@ -50,7 +54,9 @@ __all__ = [
     "StaleDataError",
     "StopRules",
     "ack",
+    "boundaries",
     "history",
+    "holdings",
     "init_book",
     "orders",
     "reconcile",

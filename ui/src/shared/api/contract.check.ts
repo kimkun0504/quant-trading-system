@@ -13,6 +13,7 @@
  */
 import type { components, paths } from './generated';
 import type * as S from './schema';
+import type * as R from './research';
 
 type G = components['schemas'];
 type IsNever<A> = [A] extends [never] ? true : false;
@@ -80,6 +81,8 @@ export type SchemaContract = [
   Assert<Same<G['JsonSchemaNumber'], S.JsonSchemaNumber>>,
   Assert<Same<G['JsonSchemaBoolean'], S.JsonSchemaBoolean>>,
   Assert<Same<G['JsonSchemaString'], S.JsonSchemaString>>,
+  Assert<Same<G['JsonSchemaArray'], S.JsonSchemaArray>>,
+  Assert<Same<G['RunSeal'], S.RunSeal>>,
   Assert<Sub<G['JsonSchemaObject'], S.ConfigSchema>>,
   Assert<Same<G['ValidationIssue'], S.ValidationIssue>>,
   Assert<Same<G['ApiErrorBody'], S.ApiErrorBody>>,
@@ -130,6 +133,52 @@ export type EndpointContract = [
   Assert<Sub<Json<'/api/config/schema', 'get'>, S.ConfigSchema>>,
   Assert<Same<Json<'/api/health', 'get'>, S.Health>>,
   Assert<Same<Json<'/api/config/warmup', 'get'>, S.Warmup>>,
+  // research tools and paper books (the types are the generated shapes; these tie each
+  // api.* call to its operation, so a wrong URL-to-type pairing fails)
+  Assert<Same<Json<'/api/seal', 'get'>, R.SealStatus>>,
+  Assert<Same<Json<'/api/seal/unseals', 'get'>, R.UnsealCheck>>,
+  Assert<Same<Json<'/api/ledger/impact', 'get'>, R.TrialImpact>>,
+  Assert<Same<Json<'/api/families/resolve', 'post'>, R.FamilyResolution>>,
+  Assert<Same<Json<'/api/families/resolve/jobs', 'post'>, R.TaskLaunchResponse>>,
+  Assert<Same<Json<'/api/features', 'get'>, R.FeatureList>>,
+  Assert<Same<Json<'/api/signals', 'get'>, R.SignalDef[]>>,
+  Assert<Same<Json<'/api/signals/tests', 'get'>, R.SignalTestList>>,
+  Assert<Same<Json<'/api/signals/tests', 'post'>, R.TaskLaunchResponse>>,
+  // what the API declares is accepted by the UI's request types (defaulted fields optional)
+  Assert<Sub<Body<'/api/signals/tests', 'post'>, R.SignalTestRequest>>,
+  Assert<Same<Json<'/api/signals/tests/{test_id}', 'get'>, R.SignalTestDetail>>,
+  Assert<Same<Json<'/api/signals/tests/preview', 'post'>, R.SignalTestPreview>>,
+  Assert<Same<Json<'/api/sweeps/plan', 'post'>, R.SweepPlanView>>,
+  Assert<Same<Json<'/api/sweeps', 'post'>, R.SweepLaunchResponse>>,
+  Assert<Sub<Body<'/api/sweeps', 'post'>, R.SweepCreate>>,
+  Assert<Sub<Body<'/api/capacity', 'post'>, R.CapacityRequest>>,
+  Assert<Sub<Body<'/api/risk-calibrations', 'post'>, R.RiskCalibrationRequest>>,
+  Assert<Sub<Body<'/api/checks/midcap', 'post'>, R.MidcapRequest>>,
+  Assert<Sub<Body<'/api/paper/books/{name}/run', 'post'>, R.PaperRunRequest>>,
+  Assert<Same<Json<'/api/sweeps', 'get'>, R.SweepList>>,
+  Assert<Same<Json<'/api/sweeps/{sweep_id}', 'get'>, R.SweepDetail>>,
+  Assert<Same<Json<'/api/sweeps/{sweep_id}/resume', 'post'>, R.SweepLaunchResponse>>,
+  Assert<Same<Json<'/api/capacity', 'get'>, R.CapacityList>>,
+  Assert<Same<Json<'/api/capacity', 'post'>, R.TaskLaunchResponse>>,
+  Assert<Same<Json<'/api/capacity/{result_id}', 'get'>, R.CapacityResult>>,
+  Assert<Same<Json<'/api/risk-calibrations', 'get'>, R.RiskCalibrationList>>,
+  Assert<Same<Json<'/api/risk-calibrations', 'post'>, R.TaskLaunchResponse>>,
+  Assert<Same<Json<'/api/risk-calibrations/{result_id}', 'get'>, R.RiskCalibrationResult>>,
+  Assert<Same<Json<'/api/checks/midcap', 'get'>, R.MidcapStatus>>,
+  Assert<Same<Json<'/api/checks/midcap', 'post'>, R.TaskLaunchResponse>>,
+  Assert<Same<Json<'/api/checks/midcap/results/{run_id}', 'get'>, R.MidcapResultDetail>>,
+  Assert<Same<Json<'/api/checks/midcap/preregistration', 'get'>, R.MidcapPreregistration>>,
+  Assert<Same<Json<'/api/paper/books', 'get'>, R.PaperBooks>>,
+  Assert<Same<Json<'/api/paper/books/{name}/status', 'get'>, R.PaperStatus>>,
+  Assert<Same<Json<'/api/paper/books/{name}/history', 'get'>, R.PaperHistory>>,
+  Assert<Same<Json<'/api/paper/books/{name}/orders', 'get'>, R.PaperOrders>>,
+  Assert<Same<Json<'/api/paper/books/{name}/holdings', 'get'>, R.PaperHoldings>>,
+  Assert<Same<Json<'/api/paper/books/{name}/schedule', 'get'>, R.PaperSchedule>>,
+  Assert<Same<Json<'/api/paper/books/{name}/ack', 'post'>, R.PaperAck>>,
+  Assert<Same<Json<'/api/paper/books/{name}/run', 'post'>, R.TaskLaunchResponse>>,
+  Assert<Same<Json<'/api/paper/books/{name}/reconcile', 'post'>, R.TaskLaunchResponse>>,
+  // a launch's job is a Job: the research jobs carry task, subject, command and result
+  Assert<Same<G['Job'], S.Job>>,
   // error responses are problem documents
   Assert<Same<ErrorBody<'/api/runs/{run_id}', 'get', 404>, S.ApiErrorBody>>,
   Assert<Same<ErrorBody<'/api/runs/{run_id}', 'get', 409>, S.ApiErrorBody>>,

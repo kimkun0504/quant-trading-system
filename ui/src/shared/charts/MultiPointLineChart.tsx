@@ -23,6 +23,8 @@ export function MultiPointLineChart({
   height = 200,
   ariaLabel,
   xLabel,
+  refLine,
+  hint = "Hover a horizon for every run's value",
 }: {
   labels: readonly string[];
   series: readonly PointSeries[];
@@ -30,13 +32,20 @@ export function MultiPointLineChart({
   height?: number;
   ariaLabel: string;
   xLabel: string;
+  /** A dashed horizontal reference (e.g. a calibrated ratio of 1). */
+  refLine?: { value: number; label: string };
+  /** The readout's text before anything is hovered. */
+  hint?: string;
 }) {
   const [ref, width] = useMeasure();
   const [hover, setHover] = useState<number | null>(null);
   const m = { top: 12, right: 24, bottom: 40, left: 56 };
   const w = Math.max(0, width - m.left - m.right);
   const h = height - m.top - m.bottom;
-  const vals = series.flatMap((s) => s.values.filter((v): v is number => v !== null));
+  const vals = [
+    ...series.flatMap((s) => s.values.filter((v): v is number => v !== null)),
+    ...(refLine ? [refLine.value] : []),
+  ];
   const y = scaleLinear()
     .domain([Math.min(0, ...vals), Math.max(1e-9, ...vals)])
     .nice(4)
@@ -68,7 +77,7 @@ export function MultiPointLineChart({
           </>
         ) : (
           <div>
-            <dt>Hover a horizon for every run&apos;s value</dt>
+            <dt>{hint}</dt>
             <dd />
           </div>
         )}
@@ -110,6 +119,25 @@ export function MultiPointLineChart({
               <text x={w / 2} y={h + 34} textAnchor="middle" className={styles.axisLabel}>
                 {xLabel}
               </text>
+              {refLine ? (
+                <g style={{ pointerEvents: 'none' }}>
+                  <line
+                    x1={0}
+                    x2={w}
+                    y1={y(refLine.value)}
+                    y2={y(refLine.value)}
+                    className={styles.threshold}
+                  />
+                  <text
+                    x={w}
+                    y={y(refLine.value) - 4}
+                    textAnchor="end"
+                    className={styles.thresholdLabel}
+                  >
+                    {refLine.label}
+                  </text>
+                </g>
+              ) : null}
               {series.map((s) => {
                 const d =
                   line<number | null>()

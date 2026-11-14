@@ -19,6 +19,7 @@ import {
   signClass,
 } from '@/shared/ui';
 import { Icons } from '@/shared/ui/icons';
+import { RunSealBadge } from '@/features/seal';
 import styles from './DossierHeader.module.css';
 
 function CopyHash({ hash }: { hash: string }) {
@@ -127,6 +128,7 @@ export function DossierHeader({ run, animate }: { run: RunDetail; animate: boole
       <div className={styles.row}>
         <div className={styles.identity}>
           <h1 className={styles.title}>{run.label}</h1>
+          <RunSealBadge seal={run.seal} />
           <p className={styles.meta}>
             <span>
               {runDescriptor({

@@ -24,6 +24,21 @@ const PAGES = [
   `/builder?from=${DEMO}&set=alpha.sample_weight_halflife_years=8&set=alpha.horizon_days=900`,
   '/ledger',
   '/models',
+  // research tools and paper books
+  '/seal',
+  '/signals',
+  '/signals/20261114T042559180079Z_strev_21',
+  '/sweeps',
+  '/sweeps/sw_8503759dfeb8',
+  '/capacity',
+  '/capacity/20261114T042605395445Z_feafa843',
+  '/risk',
+  '/risk/20261114T042614680785Z_feafa843',
+  '/checks/midcap',
+  '/checks/midcap/20261114T042642805460Z_3ad20e22',
+  '/paper',
+  '/paper/check',
+  '/paper/baseline',
 ];
 
 for (const scheme of ['light', 'dark'] as const) {

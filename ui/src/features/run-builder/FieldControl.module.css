@@ -214,3 +214,16 @@
     padding: var(--space-3);
   }
 }
+
+/* a multi-select (feature toggles) takes the whole row: name, then the checklist */
+.fullWidth.row {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    'head'
+    'control'
+    'desc';
+}
+
+.fullWidth {
+  grid-column: 1 / -1;
+}

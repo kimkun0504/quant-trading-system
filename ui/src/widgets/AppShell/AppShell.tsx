@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { QueueIndicator } from '@/features/run-queue';
 import { RunSearch } from '@/features/run-search';
+import { SealChip } from '@/features/seal';
 import { SelectionUrlSync } from '@/features/selection';
 import { ThemeToggle } from '@/features/theme-toggle';
 import { HANDBOOK } from '@/shared/lib/handbook';
@@ -10,7 +11,7 @@ import { cx } from '@/shared/lib/cx';
 import { VisuallyHidden } from '@/shared/ui';
 import { Icons } from '@/shared/ui/icons';
 import { SelectionTray } from '@/widgets/SelectionTray';
-import { REGISTRY_NAV, WORKSPACES } from './nav';
+import { REGISTRY_NAV, RESEARCH_NAV, WORKSPACES } from './nav';
 import type { NavEntry } from './nav';
 import styles from './AppShell.module.css';
 
@@ -75,6 +76,12 @@ export function AppShell() {
               <NavItem key={n.to} entry={n} />
             ))}
           </ul>
+          <div className={styles.navGroup}>Research</div>
+          <ul>
+            {RESEARCH_NAV.map((n) => (
+              <NavItem key={n.to} entry={n} />
+            ))}
+          </ul>
           <div className={styles.navGroup}>Registry</div>
           <ul>
             {REGISTRY_NAV.map((n) => (
@@ -98,6 +105,7 @@ export function AppShell() {
       <header className={styles.topbar}>
         <RunSearch ref={search} />
         <div className={styles.topbarEnd}>
+          <SealChip />
           <QueueIndicator />
           <ThemeToggle />
         </div>

@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { cx } from '@/shared/lib/cx';
 import { IconButton, Panel, SegmentedControl } from '@/shared/ui';
 import { Icons } from '@/shared/ui/icons';
+import { UnsealControl } from '@/features/seal/UnsealControl';
 import type { Base, RunSettingKey, RunSettings } from './lib/draft';
 import fieldStyles from './FieldControl.module.css';
 import styles from './RunSettingsPanel.module.css';
@@ -75,9 +76,12 @@ export function RunSettingsPanel({
   storePath,
   minDays,
   autoLabel,
+  configHash = null,
   onChange,
   onReset,
 }: {
+  /** The resulting config hash (validation): the configuration an unseal applies to. */
+  configHash?: string | null;
   run: RunSettings;
   base: Base;
   errors: Partial<Record<RunSettingKey, string>>;
@@ -98,6 +102,7 @@ export function RunSettingsPanel({
       | 'end'
       | 'maxNames'
       | 'minMcapEver'
+      | 'maxRank'
       | 'maxDays'
       | 'label',
     label: string,
@@ -133,7 +138,7 @@ export function RunSettingsPanel({
       )}
     </Setting>
   );
-  const toggle = (key: 'ml' | 'cache', label: string, hint: ReactNode) => (
+  const toggle = (key: 'ml' | 'cache' | 'allowPartialCoverage', label: string, hint: ReactNode) => (
     <Setting
       label={label}
       hint={hint}
@@ -215,9 +220,15 @@ export function RunSettingsPanel({
               mode: 'text',
             })}
             {text(
+              'maxRank',
+              'Universe prefilter: max screened rank',
+              'Load every name that ranked within the top K by market cap among the names passing the price and ADV screens on at least one date (--max-rank). Covers a top-N universe when K is at least N / (1 − bottom-size cut): 1,250 for the baseline; 1,500 leaves a margin. Not with the two prefilters below.',
+              { placeholder: 'off' },
+            )}
+            {text(
               'maxNames',
               'Universe prefilter: max names',
-              'Load only the N names with the largest peak market cap in the date range. Empty: all names.',
+              'Load only the N names with the largest peak market cap in the date range. Can miss names the universe picks (look-ahead): the load is refused unless it covers the universe. Prefer max screened rank. Empty: all names.',
               { placeholder: 'all' },
             )}
             {text(
@@ -226,6 +237,22 @@ export function RunSettingsPanel({
               'Load only names whose market cap ever reached this in the date range. Empty: no floor.',
               { placeholder: 'none', mode: 'decimal' },
             )}
+            {toggle(
+              'allowPartialCoverage',
+              'Load a partial universe',
+              'Every store load is checked: a prefilter that misses names the universe picks on some date is refused (look-ahead). On: load anyway; the run is flagged on its ledger record (--allow-partial-coverage).',
+            )}
+            <UnsealControl
+              configHash={configHash}
+              phase={run.ml ? 2 : 1}
+              reason={run.unsealReason}
+              force={run.force}
+              error={errors.unsealReason ?? errors.force}
+              onChange={(reason, force) => {
+                onChange('unsealReason', reason);
+                onChange('force', force);
+              }}
+            />
           </>
         ) : (
           <>

@@ -124,6 +124,66 @@ def flatten_config(cfg: Any, prefix: str = "") -> dict[str, Any]:
     return out
 
 
+def run_seal(summary: dict[str, Any]) -> dict[str, Any]:
+    """The run's place relative to the research holdout seal, from the seal fields of
+    ``summary.json`` (``qts.runs.context.RunContext.summary_fields``; absent on runs
+    written before the seal existed -> ``state: "none"``).
+
+    ``state``: ``sealed`` (data through ``sealed_end``, the holdout not loaded),
+    ``unsealed`` (a seal was in force and the run looked at the holdout), ``exempt``
+    (full history by design, e.g. the mid-cap check), ``none`` (no seal in force).
+    ``reference`` and ``record_kind != "trial"`` say the ledger record is not counted."""
+    hs = summary.get("holdout_start")
+    exempt = summary.get("seal_exempt") or None
+    unsealed = bool(summary.get("unsealed"))
+    sealed_end = summary.get("sealed_end")
+    if hs is None:
+        state = "none"
+    elif exempt:
+        state = "exempt"
+    elif unsealed:
+        state = "unsealed"
+    else:
+        state = "sealed" if sealed_end else "none"
+    return {
+        "state": state,
+        "holdout_start": None if hs is None else str(hs),
+        "sealed_end": None if sealed_end is None else str(sealed_end),
+        "unsealed": unsealed,
+        "unseal_reason": summary.get("unseal_reason") or None,
+        "holdout_already_used": bool(summary.get("holdout_already_used")),
+        "seal_exempt": None if exempt is None else str(exempt),
+        "record_kind": str(summary.get("record_kind") or "trial"),
+        "reference": bool(summary.get("reference")),
+    }
+
+
+def pending_seal(req: dict[str, Any]) -> dict[str, Any]:
+    """The seal state a queued or running run will have (known from its request and the
+    seal in force; ``sealed_end`` is known once the data is loaded)."""
+    holdout = None
+    if req.get("kind") == "store":
+        try:
+            from qts.research.seal import load_seal
+
+            seal = load_seal()
+        except Exception:  # a malformed seal file fails the job itself, with the reason
+            seal = None
+        holdout = None if seal is None else seal.holdout_start_iso
+    unseal = bool(req.get("unseal_reason")) and holdout is not None
+    return {
+        "state": "none" if holdout is None else ("unsealed" if unseal else "sealed"),
+        "holdout_start": holdout,
+        "sealed_end": None,
+        "unsealed": unseal,
+        "unseal_reason": req.get("unseal_reason") if unseal else None,
+        "holdout_already_used": False,
+        "seal_exempt": None,
+        "record_kind": "trial",
+        "reference": False,
+    }
+
+
 def thin_axis(n: int, max_points: int) -> list[int]:
     """Indices of at most ``max_points`` evenly spaced positions of ``range(n)``, always
     including the first and the last."""
@@ -209,6 +269,7 @@ _SOURCE_NULLS: dict[str, Any] = {
     "end": None,
     "max_names": None,
     "min_mcap_ever": None,
+    "max_rank": None,
     "max_days": None,
     "cache": False,
     "venue": None,
@@ -256,6 +317,7 @@ def command_source(command: str) -> dict[str, Any] | None:
             end=_flag_value(argv, "--end"),
             max_names=_flag_value(argv, "--max-names", int),
             min_mcap_ever=_flag_value(argv, "--min-mcap-ever", float),
+            max_rank=_flag_value(argv, "--max-rank", int),
         )
         return out
     return None
@@ -280,6 +342,7 @@ def run_source(e: RunEntry) -> dict[str, Any]:
             "end": None if synthetic else req.get("end"),
             "max_names": None if synthetic else req.get("max_names"),
             "min_mcap_ever": None if synthetic else req.get("min_mcap_ever"),
+            "max_rank": None if synthetic else req.get("max_rank"),
             "max_days": req.get("max_days"),
             "cache": bool(req.get("cache", False)),
             "venue": req.get("venue") if req.get("venue") in ("routed", "auction", "continuous") else None,
@@ -376,11 +439,60 @@ class RunEntry:
 
 
 class RunRegistry:
-    def __init__(self, runs_root: Path):
+    def __init__(self, runs_root: Path, ledger_path: Path | None = None):
         self.runs_root = Path(runs_root)
+        self.ledger_path = Path(ledger_path) if ledger_path is not None else None
         self._entries: dict[str, RunEntry] = {}
         self._frames: OrderedDict[str, tuple[tuple, Frames]] = OrderedDict()
         self._lock = threading.RLock()
+        self._coverage: tuple[tuple[int, int] | None, dict[tuple[str, str], dict[str, Any]]] = (None, {})
+
+    # ------------------------------------------------------------------ load coverage
+    def _coverage_index(self) -> dict[tuple[str, str], dict[str, Any]]:
+        """``(config_hash, data_hash) -> load_coverage`` of the ledger's records (the guard's
+        verdict is on the record, not in the run directory); cached by the file's mtime/size."""
+        p = self.ledger_path
+        try:
+            st = p.stat() if p is not None else None
+        except OSError:
+            st = None
+        sig = None if st is None else (st.st_mtime_ns, st.st_size)
+        with self._lock:
+            if sig == self._coverage[0]:
+                return self._coverage[1]
+        out: dict[tuple[str, str], dict[str, Any]] = {}
+        if p is not None and sig is not None:
+            with p.open(encoding="utf-8") as fh:
+                for line in fh:
+                    if '"load_coverage"' not in line:
+                        continue
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    lc = r.get("load_coverage")
+                    if isinstance(lc, dict):
+                        out[(str(r.get("config_hash", "")), str(r.get("data_hash", "")))] = lc
+        with self._lock:
+            self._coverage = (sig, out)
+        return out
+
+    def load_coverage(self, e: RunEntry) -> dict[str, Any] | None:
+        """The guard's verdict for a store run: ``launch.json`` (API runs), else the ledger
+        record of the same configuration and loaded data; ``None`` when not recorded."""
+        lc = e.launch.get("load_coverage")
+        if not isinstance(lc, dict):
+            key = (
+                str(e.manifest.get("config_hash", e.summary.get("config_hash", ""))),
+                str(e.manifest.get("data_hash", e.summary.get("data_hash", ""))),
+            )
+            lc = self._coverage_index().get(key) if all(key) else None
+        if not isinstance(lc, dict):
+            return None
+        return {k: lc.get(k) for k in ("prefilter", "method", "ok", "share_dates_full", "detail")}
+
+    def seal_view(self, e: RunEntry) -> dict[str, Any]:
+        return {**run_seal(e.summary), "load_coverage": self.load_coverage(e)}
 
     # ------------------------------------------------------------------ discovery
     def run_dirs(self) -> list[Path]:
@@ -565,6 +677,7 @@ class RunRegistry:
                 "overall_gate": self.overall(e),
             },
             "config_leaves": flatten_config(e.config),
+            "seal": self.seal_view(e),
         }
 
     def list_summaries(self) -> list[dict[str, Any]]:
@@ -699,6 +812,7 @@ class RunRegistry:
             ],
             "execution_venue": e.facts.get("execution_venue"),
             "notes": [str(n) for n in e.summary.get("notes", [])],
+            "seal": self.seal_view(e),
         }
 
     def compare(self, run_ids: list[str], max_points: int = COMPARE_MAX_POINTS) -> dict[str, Any]:

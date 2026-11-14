@@ -1,0 +1,175 @@
+{
+  "feature_set": "v1",
+  "features": [
+    {
+      "name": "value_bp",
+      "theme": "value",
+      "sign": 1.0,
+      "role": "alpha_theme",
+      "feature_set": "v1",
+      "description": "log book-to-price from the latest filing visible at t (filing date + 1 day)"
+    },
+    {
+      "name": "value_ep",
+      "theme": "value",
+      "sign": 1.0,
+      "role": "alpha_theme",
+      "feature_set": "v1",
+      "description": "earnings yield: trailing earnings / market cap from the latest visible filing"
+    },
+    {
+      "name": "mom_12_1",
+      "theme": "momentum",
+      "sign": 1.0,
+      "role": "alpha_theme",
+      "feature_set": "v1",
+      "description": "12-1 month momentum: return from t-252 to t-21 trading days"
+    },
+    {
+      "name": "mom_6_1",
+      "theme": "momentum",
+      "sign": 1.0,
+      "role": "alpha_theme",
+      "feature_set": "v1",
+      "description": "6-1 month momentum: return from t-126 to t-21 trading days"
+    },
+    {
+      "name": "mom_change",
+      "theme": "ml_only",
+      "sign": 1.0,
+      "role": "alpha_theme",
+      "feature_set": "v1",
+      "description": "change of 12-1 momentum over the last 63 trading days"
+    },
+    {
+      "name": "industry_momentum",
+      "theme": "momentum",
+      "sign": 1.0,
+      "role": "alpha_theme",
+      "feature_set": "v1",
+      "description": "cap-weighted mean 6-1 momentum of the name's industry (eligible names at t)"
+    },
+    {
+      "name": "quality_gpa",
+      "theme": "quality",
+      "sign": 1.0,
+      "role": "alpha_theme",
+      "feature_set": "v1",
+      "description": "gross profitability: gross profits / total assets (latest visible filing)"
+    },
+    {
+      "name": "investment_ag",
+      "theme": "investment",
+      "sign": 1.0,
+      "role": "alpha_theme",
+      "feature_set": "v1",
+      "description": "minus year-over-year total-asset growth (low investment scores high)"
+    },
+    {
+      "name": "beta_252",
+      "theme": "low_risk",
+      "sign": -1.0,
+      "role": "risk_only_proxy",
+      "feature_set": "v1",
+      "description": "252-day rolling beta on the equal-weighted return of the eligible names"
+    },
+    {
+      "name": "idio_vol_252",
+      "theme": "low_risk",
+      "sign": -1.0,
+      "role": "risk_only_proxy",
+      "feature_set": "v1",
+      "description": "252-day residual volatility of that beta regression (daily)"
+    },
+    {
+      "name": "max_ret_21",
+      "theme": "low_risk",
+      "sign": -1.0,
+      "role": "model_input",
+      "feature_set": "v1",
+      "description": "largest daily return of the last 21 trading days (lottery demand)"
+    },
+    {
+      "name": "turnover_63",
+      "theme": "ml_only",
+      "sign": 1.0,
+      "role": "risk_only_proxy",
+      "feature_set": "v1",
+      "description": "63-day mean of dollar volume / market cap"
+    },
+    {
+      "name": "amihud_63",
+      "theme": "ml_only",
+      "sign": 1.0,
+      "role": "model_input",
+      "feature_set": "v1",
+      "description": "log 63-day mean Amihud illiquidity |return| / dollar volume"
+    },
+    {
+      "name": "log_dollar_vol_63",
+      "theme": "ml_only",
+      "sign": 1.0,
+      "role": "risk_only_proxy",
+      "feature_set": "v1",
+      "description": "log 63-day mean dollar volume (as-traded price x shares traded)"
+    },
+    {
+      "name": "log_mcap",
+      "theme": "ml_only",
+      "sign": 1.0,
+      "role": "risk_only_proxy",
+      "feature_set": "v1",
+      "description": "log market capitalisation"
+    },
+    {
+      "name": "short_interest",
+      "theme": "short_interest",
+      "sign": -1.0,
+      "role": "alpha_theme",
+      "feature_set": "v1",
+      "description": "short interest / shares outstanding (where the store has it)"
+    },
+    {
+      "name": "borrow_fee",
+      "theme": "short_interest",
+      "sign": -1.0,
+      "role": "alpha_theme",
+      "feature_set": "v1",
+      "description": "annualised stock-borrow fee (where the store has it)"
+    },
+    {
+      "name": "strev_21",
+      "theme": "ml_only",
+      "sign": 1.0,
+      "role": "risk_only_proxy",
+      "feature_set": "v1",
+      "description": "short-term reversal: minus the 21-day return, demeaned within industry"
+    }
+  ],
+  "themes": [
+    {
+      "theme": "value",
+      "members": ["value_bp", "value_ep"]
+    },
+    {
+      "theme": "momentum",
+      "members": ["mom_12_1", "mom_6_1", "industry_momentum"]
+    },
+    {
+      "theme": "quality",
+      "members": ["quality_gpa"]
+    },
+    {
+      "theme": "investment",
+      "members": ["investment_ag"]
+    },
+    {
+      "theme": "low_risk",
+      "members": ["beta_252", "idio_vol_252", "max_ret_21"]
+    },
+    {
+      "theme": "short_interest",
+      "members": ["short_interest", "borrow_fee"]
+    }
+  ]
+}

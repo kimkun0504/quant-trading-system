@@ -1,0 +1,57 @@
+{
+  "criteria": [
+    {
+      "id": "C1",
+      "rule": "net Sharpe > 0 and Newey-West t of daily net return >= 2"
+    },
+    {
+      "id": "C2",
+      "rule": "traded-score rank IC > 0 in >= 2/3 of purged walk-forward folds"
+    },
+    {
+      "id": "C3",
+      "rule": "net Sharpe > 0 in >= 2/3 of purged walk-forward folds"
+    },
+    {
+      "id": "V1",
+      "rule": "median eligible names per backtest day >= 0.9 x top_n_by_mcap (900)"
+    },
+    {
+      "id": "V2",
+      "rule": "every name ranked <= 2000 by market cap among names passing the price / ADV screens loaded on >= 99% of dates, and >= 2,500 such names loaded per date"
+    },
+    {
+      "id": "V3",
+      "rule": "failed solves <= 2%, risk_model_sanity not FAIL, invested >= 90% of days"
+    },
+    {
+      "id": "S1",
+      "rule": "reported: net Sharpe at 2x modelled cost (PASS, cost-fragile if <= 0)"
+    }
+  ],
+  "config_hash": "9109eaca361f15fa",
+  "config_path": "configs/baseline.yaml",
+  "preregistration": "docs/notes/midcap_check_2026-11-13.md",
+  "preregistration_sha256": "3359be2180bbfbfa283bf2e09508d7965ef87ce10d5bb4ee53c71b1d1db297c5",
+  "previous_runs": [],
+  "results": [
+    {
+      "run_id": "20261114T042642805460Z_3ad20e22",
+      "outcome": "INCONCLUSIVE",
+      "forced": false,
+      "family": "confirm:midcap:770ab7da1011",
+      "created_at": "20261114T04264280546",
+      "preregistration_sha256": "3359be2180bbfbfa283bf2e09508d7965ef87ce10d5bb4ee53c71b1d1db297c5",
+      "sha_matches": true,
+      "source": "_checks/midcap_20261114T042642805460Z_3ad20e22.json"
+    }
+  ],
+  "can_launch": true,
+  "blocked_reason": null,
+  "needs_force": false,
+  "force_phrase": "not out-of-sample",
+  "store_configured": true,
+  "reference_run_id": "20261113T023313333450Z_e4667d90",
+  "last_dry_run": null,
+  "jobs": []
+}

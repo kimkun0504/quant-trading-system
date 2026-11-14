@@ -73,6 +73,45 @@ export interface RunSummary {
   headline: RunHeadline | null;
   /** Flattened config; empty while running or after a failure. */
   config_leaves: ConfigLeaves;
+  seal: RunSeal;
+}
+
+/**
+ * Where a run stands relative to the research holdout seal (`summary.json`):
+ * `sealed` = data through `sealed_end`; `unsealed` = looked at the holdout; `exempt` = full
+ * history by design (the mid-cap check); `none` = no seal was in force.
+ */
+export type SealState = 'sealed' | 'unsealed' | 'exempt' | 'none';
+
+export interface RunSeal {
+  state: SealState;
+  holdout_start: IsoDate | null;
+  sealed_end: IsoDate | null;
+  unsealed: boolean;
+  unseal_reason: string | null;
+  /** An earlier unseal of this configuration already looked: not out-of-sample. */
+  holdout_already_used: boolean;
+  seal_exempt: string | null;
+  /** Ledger record kind: trial, capacity, calibration, ... */
+  record_kind: string;
+  /** A re-run of an already counted configuration: logged, not counted. */
+  reference: boolean;
+  /** Store runs: the load-coverage guard's verdict (null / absent: not recorded). */
+  load_coverage?: RunLoadCoverage | null;
+}
+
+/**
+ * `qts.research.coverage.LoadCoverage` of a store run's load (its ledger record's
+ * `load_coverage`): `ok: false` means the prefilter missed names the universe picks and the
+ * run was loaded anyway (`--allow-partial-coverage`, look-ahead).
+ */
+export interface RunLoadCoverage {
+  prefilter?: string | null;
+  /** "by construction" | "measured" | "no prefilter" | "skipped" */
+  method?: string | null;
+  ok?: boolean | null;
+  share_dates_full?: number | null;
+  detail?: string | null;
 }
 
 /** `BacktestResult.summary()` (qts/backtest/result.py). */
@@ -211,6 +250,8 @@ export interface RunSource {
   max_names: number | null;
   /** Store prefilter: peak market cap floor, USD. */
   min_mcap_ever: number | null;
+  /** Store prefilter: every id ranked <= K by screened market cap on some date (`--max-rank`). */
+  max_rank?: number | null;
   /** Backtest only the last N out-of-sample days. */
   max_days: number | null;
   /** Stage cache on. */
@@ -252,6 +293,7 @@ export interface RunDetail {
   /** Routing venue used by the execution layer, e.g. "closing auction (LOC/MOC)"; null for runs written before it was recorded. */
   execution_venue: string | null;
   notes: string[];
+  seal: RunSeal;
 }
 
 /** One run of `GET /api/runs/compare`. */
@@ -485,9 +527,16 @@ export interface LaunchRunRequest {
   /** Store slice, YYYY-MM-DD. */
   start?: string | null;
   end?: string | null;
-  /** Store prefilter by peak market cap in [start, end]. */
+  /** Store prefilter by peak market cap in [start, end] (can miss universe names). */
   max_names?: number | null;
   min_mcap_ever?: number | null;
+  /**
+   * Store prefilter by screened market-cap rank (`qts run --max-rank K`): covers a top-N
+   * universe when K >= N / (1 - exclude_bottom_size_quantile). Not with the two above.
+   */
+  max_rank?: number | null;
+  /** Load although the prefilter misses universe names (flagged; `--allow-partial-coverage`). */
+  allow_partial_coverage?: boolean | null;
   /** Reuse fitted models from the stage cache (`qts --cache`). */
   cache?: boolean | null;
   /** Run label (default: derived from the model and seed). */
@@ -496,6 +545,13 @@ export interface LaunchRunRequest {
   max_days?: number | null;
   /** Simulator pricing venue (default "routed"). */
   venue?: Venue | null;
+  /**
+   * Store runs: load the sealed holdout (`qts run --unseal REASON`). Once per configuration,
+   * logged in the ledger before the run starts; cannot be undone.
+   */
+  unseal_reason?: string | null;
+  /** With unseal_reason: unseal a configuration whose holdout was already used (flagged). */
+  force?: boolean | null;
 }
 
 /** `GET /api/config/warmup` (`qts.pipeline.estimate_warmup_days`). */
@@ -538,7 +594,37 @@ export interface ConfigValidation {
 
 export type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 
+/** `pipeline` is a run; the others are research or paper-trading tasks. */
+export type JobTask =
+  | 'pipeline'
+  | 'signal_test'
+  | 'sweep_member'
+  | 'sweep_finalize'
+  | 'capacity'
+  | 'risk_calibration'
+  | 'midcap_check'
+  | 'paper_run'
+  | 'paper_reconcile'
+  | 'market_hash';
+
+/**
+ * Why a job failed: `stale_data` (exit code 3: the vendor has not published the session yet),
+ * `book_locked` (exit code 4), `paper`, `seal`, `refused` (a once-only or seal rule), `error`.
+ */
+export type JobErrorKind =
+  'stale_data' | 'book_locked' | 'paper' | 'seal' | 'coverage' | 'refused' | 'error';
+
 export interface Job {
+  task: JobTask;
+  /** What the task is about: sweep id, book name, signal, ... */
+  subject: string | null;
+  /** The equivalent `qts` command line. */
+  command: string | null;
+  /** A finished task's summary (ids, headline numbers). */
+  result: Record<string, boolean | number | string | null> | null;
+  error_kind: JobErrorKind | null;
+  /** Failed paper jobs: the `qts paper` exit code. */
+  exit_code: number | null;
   job_id: string;
   run_id: RunId;
   status: JobStatus;
@@ -601,6 +687,16 @@ export interface LedgerTrial {
   n_obs: number;
   mean_ic: number | null;
   n_reruns: number;
+  /** Record kind: trial, unseal, capacity, calibration, ... */
+  kind: string;
+  /** A re-run of an already counted configuration. */
+  reference: boolean;
+  /** Enters the family's N and V: an ordinary trial that is not a reference. */
+  counted: boolean;
+  /** Why the record is not counted, in plain words; null when counted. */
+  note: string | null;
+  holdout_already_used: boolean;
+  unsealed: boolean;
 }
 
 export interface LedgerFamily {
@@ -608,6 +704,8 @@ export interface LedgerFamily {
   n_trials: number;
   effective_trials: number;
   var_sr_annual: number;
+  /** Reference re-runs and records that are not trials. */
+  n_not_counted: number;
 }
 
 export interface Ledger {
@@ -649,7 +747,31 @@ export interface JsonSchemaString {
   enum?: string[];
 }
 
-export type JsonSchemaLeaf = JsonSchemaNumber | JsonSchemaBoolean | JsonSchemaString;
+export interface JsonSchemaItems {
+  type: 'string';
+}
+
+/**
+ * A multi-select field (`alpha.disabled_features`): the allowed names are
+ * `choices[<value of the field at choices_key>]`; as an override it takes a comma-separated
+ * string of names (the `--set` syntax), `""` for none.
+ */
+export interface JsonSchemaArray {
+  type: 'array';
+  title?: string;
+  description?: string;
+  items: JsonSchemaItems;
+  uniqueItems?: boolean;
+  multiple?: boolean;
+  default?: string[];
+  /** Allowed names keyed by the value of the field at choices_key. */
+  choices?: Record<string, string[]>;
+  /** Dotted path of the field whose value picks the list in choices (alpha.feature_set). */
+  choices_key?: string;
+}
+
+export type JsonSchemaLeaf =
+  JsonSchemaNumber | JsonSchemaBoolean | JsonSchemaString | JsonSchemaArray;
 
 export interface JsonSchemaObject {
   type: 'object';

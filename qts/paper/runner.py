@@ -14,6 +14,8 @@ Every function takes a book *name* (resolved under ``paper_root``, default
 :func:`replay`         validate the journal and rebuild every derived file
 :func:`schedule_text`  launchd plist + crontab line (printed, never installed)
 :func:`reconcile`      paper vs the batch simulator over the book's dates
+:func:`holdings`       positions at the close of a journal day (read-only)
+:func:`boundaries`     the calibrated drawdown / Sharpe boundaries per day (read-only)
 =====================  ==========================================================
 """
 
@@ -763,6 +765,60 @@ def _series(recs: list[dict[str, Any]], header: BookHeader, exp: X.Expectations)
         "max_dd_q05": [exp.quantile_at("max_dd", 0.05, float(k)) for k in n],
     }
     return out
+
+
+def holdings(
+    book: str | os.PathLike[str],
+    date: str | None = None,
+    paper_root: str | os.PathLike[str] = DEFAULT_PAPER_ROOT,
+) -> dict[str, Any]:
+    """Positions at the close of the journal day ``date`` (default: the latest), after
+    that day's fills: ``{"date", "nav", "positions": [{ticker, shares, px, px_date,
+    value, weight}]}`` (:func:`~qts.paper.engine.positions_frame` of the day's state).
+    Read-only, no lock (reads the committed journal)."""
+    _, _, recs = _book(book, paper_root)
+    if not recs:
+        return {"date": None, "nav": None, "positions": []}
+    rec = recs[-1] if date is None else next((r for r in recs if r["date"] == iso(date)), None)
+    if rec is None:
+        raise PaperError(f"no journal day {iso(date)}")
+    st = BookState.from_dict(rec["state"])
+    pos = positions_frame(st).to_dict("records")
+    return json_safe({"date": rec["date"], "nav": float(st.nav), "positions": pos})
+
+
+def boundaries(
+    book: str | os.PathLike[str], paper_root: str | os.PathLike[str] = DEFAULT_PAPER_ROOT
+) -> dict[str, Any]:
+    """The drawdown and Sharpe boundaries the stop rules use, at every execution day of
+    the journal (horizon ``n`` = days since the first fill, as :func:`status`'s series):
+    the bootstrap quantiles of the reference run at the calibrated levels
+    (``status.metrics.boundary_levels``; the fixed quantiles of ``StopRules`` for a book
+    without a calibration).  ``{"date", "dd_watch", "dd_stop", "sharpe_watch",
+    "sharpe_stop", "levels"}``; the same numbers :func:`~qts.paper.monitor.evaluate`
+    compares with on each day.  Read-only."""
+    paths, header, recs = _book(book, paper_root)
+    exp = X.load(paths.expectations, header.expectations_sha256)
+    rules = StopRules.from_dict(header.stop_rules)
+    cal = (exp.summary.get("calibration") or {}).get("levels") or {}
+    lv = {
+        "dd_stop": float(cal.get("dd_stop", rules.dd_stop_quantile)),
+        "dd_watch": float(cal.get("dd_watch", rules.dd_watch_quantile)),
+        "sharpe_stop": float(cal.get("sharpe_stop", rules.sharpe_stop_quantile)),
+        "sharpe_watch": float(cal.get("sharpe_watch", rules.sharpe_watch_quantile)),
+    }
+    rows = [r for r in recs if r["date"] >= header.first_execution]
+    n = range(1, len(rows) + 1)
+    return json_safe(
+        {
+            "date": [r["date"] for r in rows],
+            "dd_watch": [exp.quantile_at("max_dd", lv["dd_watch"], float(k)) for k in n],
+            "dd_stop": [exp.quantile_at("max_dd", lv["dd_stop"], float(k)) for k in n],
+            "sharpe_watch": [exp.quantile_at("sharpe", lv["sharpe_watch"], float(k)) for k in n],
+            "sharpe_stop": [exp.quantile_at("sharpe", lv["sharpe_stop"], float(k)) for k in n],
+            "levels": lv,
+        }
+    )
 
 
 def ack(

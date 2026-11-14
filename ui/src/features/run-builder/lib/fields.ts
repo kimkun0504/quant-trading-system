@@ -20,6 +20,10 @@ export interface Field {
   maximum?: number;
   exclusiveMinimum?: number;
   exclusiveMaximum?: number;
+  /** Multi-select (`type: 'array'`): the allowed names keyed by the value of `choicesKey`. */
+  choices?: Readonly<Record<string, readonly string[]>>;
+  /** Dotted path of the field whose value picks the list in `choices` (`alpha.feature_set`). */
+  choicesKey?: string;
 }
 
 export interface FieldSection {
@@ -61,10 +65,15 @@ export function schemaFields(schema: ConfigSchema | undefined): Field[] {
         type: node.type,
         section: prefix.replace(/\.$/, ''),
         sectionTitle,
-        nullable: node.nullable === true,
+        nullable: node.type !== 'array' && node.nullable === true,
       };
       if (node.description) f.description = node.description;
-      if (node.default !== undefined) f.default = node.default;
+      if (node.type === 'array') {
+        // a multi-select edits a canonical comma-separated list ('' = none), the `--set` syntax
+        f.default = listText(node.default ?? []);
+        if (node.choices) f.choices = node.choices;
+        if (node.choices_key) f.choicesKey = node.choices_key;
+      } else if (node.default !== undefined) f.default = node.default;
       if (node.type === 'string' && node.enum) f.enum = node.enum;
       if (node.type === 'number' || node.type === 'integer') {
         if (node.minimum !== undefined) f.minimum = node.minimum;
@@ -77,6 +86,42 @@ export function schemaFields(schema: ConfigSchema | undefined): Field[] {
   };
   walk(schema, '', GENERAL);
   return out;
+}
+
+/**
+ * A list value in canonical form: sorted, de-duplicated names joined by commas ('' = none),
+ * which is how `AlphaConfig` normalises `disabled_features` (so the config hash does not
+ * depend on order). Accepts a comma-separated string, a JSON list (how `config_leaves`
+ * flattens a list) or an array.
+ */
+export function listText(v: string | readonly string[] | null | undefined): string {
+  let items: string[] = [];
+  if (Array.isArray(v)) items = [...(v as readonly string[])];
+  else if (typeof v === 'string') {
+    const t = v.trim();
+    if (t.startsWith('[')) {
+      try {
+        const parsed: unknown = JSON.parse(t);
+        if (Array.isArray(parsed)) items = parsed.filter((x): x is string => typeof x === 'string');
+      } catch {
+        items = [];
+      }
+    } else items = t.split(',');
+  }
+  return [...new Set(items.map((x) => x.trim()).filter(Boolean))].sort().join(',');
+}
+
+/** The names of a list value ('' = none). */
+export function listItems(v: string): string[] {
+  return v ? v.split(',') : [];
+}
+
+/** The allowed names of a multi-select given the value of the field it follows. */
+export function choicesFor(f: Field, keyValue: string | null | undefined): readonly string[] {
+  if (!f.choices) return [];
+  if (keyValue !== null && keyValue !== undefined && f.choices[keyValue])
+    return f.choices[keyValue];
+  return [];
 }
 
 /** Fields grouped by section in schema order; top-level leaves go last, under "General". */

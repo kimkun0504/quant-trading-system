@@ -7,6 +7,7 @@ import { Icons } from '@/shared/ui/icons';
 import type { Raw } from './lib/draft';
 import { boundsText } from './lib/fields';
 import type { Field } from './lib/fields';
+import { FeatureToggle } from './FeatureToggle';
 import styles from './FieldControl.module.css';
 
 export interface FieldControlProps {
@@ -23,6 +24,8 @@ export interface FieldControlProps {
   help?: string;
   /** `row`: label left, input right (the full editor). `stack`: label above the input. */
   layout?: 'row' | 'stack';
+  /** Multi-select fields: the value of the field `choicesKey` names (`alpha.feature_set`). */
+  choiceKey?: string | null;
   onChange: (raw: Raw) => void;
   onReset: () => void;
 }
@@ -42,6 +45,7 @@ export function FieldControl({
   label,
   help,
   layout = 'row',
+  choiceKey = null,
   onChange,
   onReset,
 }: FieldControlProps) {
@@ -66,6 +70,41 @@ export function FieldControl({
         : '',
   ].filter(Boolean);
   const description = help ?? f.description;
+
+  if (f.type === 'array') {
+    return (
+      <div
+        className={cx(styles.field, styles[layout], styles.fullWidth, changed && styles.changed)}
+        data-field={f.path}
+        data-changed={changed || undefined}
+      >
+        <div className={styles.head}>
+          <code className={styles.path}>{f.path}</code>
+          {changed ? (
+            <span className={styles.was}>
+              Base <code>{formatLeaf(base) || 'none off'}</code>.{' '}
+              <IconButton
+                size="sm"
+                label={`Reset ${label ?? f.title} to the base`}
+                onClick={onReset}
+              >
+                <Icons.Reset />
+              </IconButton>
+            </span>
+          ) : null}
+        </div>
+        <FeatureToggle
+          field={f}
+          raw={typeof raw === 'string' ? raw : ''}
+          featureSet={choiceKey}
+          label={label ?? f.title}
+          error={error}
+          onChange={onChange}
+        />
+        {description ? <p className={styles.description}>{description}</p> : null}
+      </div>
+    );
+  }
 
   let input;
   if (f.type === 'boolean') {

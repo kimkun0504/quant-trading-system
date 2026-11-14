@@ -1,0 +1,48 @@
+.path {
+  font-size: var(--text-sm);
+  word-break: break-all;
+}
+
+.sha {
+  font-size: var(--text-sm);
+  font-weight: 400;
+  word-break: break-all;
+}
+
+.note {
+  max-height: 28rem;
+  overflow: auto;
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  white-space: pre-wrap;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.dry {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.force {
+  border-color: var(--color-caution);
+}
+
+.verdictText {
+  margin: 0;
+  max-width: var(--measure);
+  line-height: var(--leading-serif);
+}
+
+.markPass {
+  color: var(--color-gain);
+  font-weight: 600;
+}
+
+.markFail {
+  color: var(--color-loss);
+  font-weight: 600;
+}
